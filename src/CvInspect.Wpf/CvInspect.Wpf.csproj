@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WPF 컨트롤 — Windows 전용. AnyCPU (네이티브 OpenCV 런타임은 소비자가 플랫폼에 맞게 선택) -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>CvInspect.Wpf</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>cmir79ss</Authors>
+    <Description>WPF display and shape-editing controls for the CvInspect machine-vision toolkit — Mat image display with zoom/pan/pixel probe, renderer-neutral overlay drawing, and draggable teaching shapes that write back to tool option POCOs. Based on OpenCvSharp; the native OpenCV runtime is chosen by the consumer (e.g. OpenCvSharp4.runtime.win).</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>wpf;opencvsharp;machine-vision;inspection;display;overlay;roi;teaching</PackageTags>
+    <!-- 공개 저장소 확정 시 추가: RepositoryUrl + RepositoryType=git + PackageProjectUrl (+ SourceLink/snupkg) -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 코어(알고리즘·오버레이·번역 seam) — 같은 솔루션이라 프로젝트 참조. pack 시 CvInspect 패키지
+         의존성으로 변환된다. OpenCvSharp4 관리 어셈블리는 이 참조로 전이되고,
+         네이티브 런타임(OpenCvSharp4.runtime.*)은 여기서 정하지 않는다 — 소비자(앱) 선택. -->
+    <ProjectReference Include="..\CvInspect\CvInspect.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

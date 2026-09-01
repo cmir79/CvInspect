@@ -1,0 +1,35 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.7.11919.86
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect", "src\CvInspect\CvInspect.csproj", "{8B6E2C1A-4D9F-4A73-B0E5-1F2C3D4E5A6B}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Wpf", "src\CvInspect.Wpf\CvInspect.Wpf.csproj", "{5E9D3B7C-2A41-4F8E-A6D2-8C1B0E4F7A93}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{D4A7F0B2-9C3E-4E61-8A17-5B6C7D8E9F0A}"
+	ProjectSection(SolutionItems) = preProject
+		.gitattributes = .gitattributes
+		.gitignore = .gitignore
+		LICENSE = LICENSE
+		README.md = README.md
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8B6E2C1A-4D9F-4A73-B0E5-1F2C3D4E5A6B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8B6E2C1A-4D9F-4A73-B0E5-1F2C3D4E5A6B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8B6E2C1A-4D9F-4A73-B0E5-1F2C3D4E5A6B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B6E2C1A-4D9F-4A73-B0E5-1F2C3D4E5A6B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5E9D3B7C-2A41-4F8E-A6D2-8C1B0E4F7A93}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5E9D3B7C-2A41-4F8E-A6D2-8C1B0E4F7A93}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5E9D3B7C-2A41-4F8E-A6D2-8C1B0E4F7A93}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5E9D3B7C-2A41-4F8E-A6D2-8C1B0E4F7A93}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

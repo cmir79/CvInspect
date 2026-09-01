@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- netstandard2.1 = Unity/Mono 등 비-.NET 런타임 소비자, net8.0 = 최신 런타임 자산 -->
+    <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>CvInspect</PackageId>
+    <Version>0.1.1</Version>
+    <Authors>cmir79ss</Authors>
+    <Description>Machine-vision inspection toolkit based on OpenCvSharp — calipers, line/circle/pattern/blob finders, color segmentation, geometry fitting, and renderer-neutral overlay primitives. The native OpenCV runtime is chosen by the consumer (e.g. OpenCvSharp4.runtime.win).</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>opencvsharp;machine-vision;inspection;caliper;pattern-matching;blob;metrology</PackageTags>
+    <!-- 공개 저장소 확정 시 추가: RepositoryUrl + RepositoryType=git + PackageProjectUrl (+ SourceLink/snupkg) -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 관리 코드 패키지만 직접 의존 — 네이티브 런타임(OpenCvSharp4.runtime.*)은 소비자가 플랫폼에 맞게 선택.
+         Windows 메타패키지를 묶으면 LGPL ffmpeg 코덱까지 소비자에게 전달되므로 여기서 정하지 않는다. -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <!-- [JsonIgnore]/[JsonConverter] 어트리뷰트와 번역 json 적재 — net8.0 은 인박스 -->
+    <PackageReference Include="System.Text.Json" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 번역: 느슨한 json(게시 후 현장 편집 가능) + 내장 리소스 폴백(파일이 없어도 동작) -->
+    <Content Include="Assets\lang\*.json" Pack="true" PackagePath="contentFiles\any\any\Assets\lang\" PackageCopyToOutput="true">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- WithCulture=false — 파일명의 ".ko/.en" 을 문화권 접미사로 오인해 위성 어셈블리로 빠지는 것 차단 -->
+    <EmbeddedResource Include="Assets\lang\*.json" WithCulture="false" LogicalName="CvInspect.Assets.lang.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
