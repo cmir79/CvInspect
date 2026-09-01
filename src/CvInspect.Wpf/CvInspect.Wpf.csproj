@@ -19,7 +19,9 @@
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>wpf;opencvsharp;machine-vision;inspection;display;overlay;roi;teaching</PackageTags>
-    <!-- 공개 저장소 확정 시 추가: RepositoryUrl + RepositoryType=git + PackageProjectUrl (+ SourceLink/snupkg) -->
+    <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
