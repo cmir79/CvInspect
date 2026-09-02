@@ -19,8 +19,9 @@ the same input always produces the same result, so tools can be replayed and ver
 - **Overlay primitives** (`ViOverlay`, `ViDraw`, `ViHud`) — renderer-neutral result graphics
   (segments, labels, rects, polylines) that any display layer can draw
 
-WPF display / shape-editing controls are developed as a separate companion package
-(**CvInspect.Wpf**), keeping this core package platform-neutral.
+Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display /
+shape-editing controls) and **CvInspect.Imaging** (camera acquisition contract with
+virtual / VideoCapture sources; vendor GigE adapters plug in via factory registration).
 
 ## Install
 
@@ -55,9 +56,11 @@ knowing this library. Resolution order:
 
 1. `CvLoc.Resolver` — inject your own translator (`Func<string, string?>`, return `null` for unknown keys)
 2. Built-in tables — the embedded `cv.{culture}.json` is loaded first, and a loose
-   `Assets/lang/cv.{culture}.json` next to the executable (field-editable) overrides it
-   per key; `CvLoc.Culture` selects the language (`"en"` default, `"ko"` included;
-   regional tags such as `ko-KR` fold to their parent language)
+   `Assets/lang/cv.{culture}.json` next to the executable overrides it per key;
+   `CvLoc.Culture` selects the language (`"en"` default, `"ko"` included; regional tags
+   such as `ko-KR` fold to their parent language). The package ships the tables embedded
+   only — for field edits, create the loose file yourself with just the keys you want to
+   change (partial files merge over the embedded table)
 3. The raw key, with a one-time `CvLoc.MissingKey` notification
 
 Category display order is exposed as `CvCategoryAttribute.Order` (see `ICvOrderedCategory`);

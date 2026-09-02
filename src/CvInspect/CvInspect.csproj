@@ -12,7 +12,8 @@
 
   <PropertyGroup>
     <PackageId>CvInspect</PackageId>
-    <Version>0.1.1</Version>
+    <!-- 규칙: 내용이 한 바이트라도 바뀌면(메타데이터 포함) 반드시 버전 상향 — NuGet 캐시는 id+version 으로만 식별한다 -->
+    <Version>0.1.2</Version>
     <Authors>cmir79ss</Authors>
     <Description>Machine-vision inspection toolkit based on OpenCvSharp — calipers, line/circle/pattern/blob finders, color segmentation, geometry fitting, and renderer-neutral overlay primitives. The native OpenCV runtime is chosen by the consumer (e.g. OpenCvSharp4.runtime.win).</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -35,11 +36,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 번역: 느슨한 json(게시 후 현장 편집 가능) + 내장 리소스 폴백(파일이 없어도 동작) -->
-    <Content Include="Assets\lang\*.json" Pack="true" PackagePath="contentFiles\any\any\Assets\lang\" PackageCopyToOutput="true">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <!-- WithCulture=false — 파일명의 ".ko/.en" 을 문화권 접미사로 오인해 위성 어셈블리로 빠지는 것 차단 -->
+    <!-- 번역은 내장 리소스만 배포한다 — 현장 오버라이드는 소비자가 실행 폴더 Assets/lang 에 부분 파일을
+         만들면 키 단위로 병합된다(CvLoc). contentFiles 복사는 현장 편집 사본과 이중 배치 충돌을 만들어 뺐다.
+         WithCulture=false — 파일명의 ".ko/.en" 을 문화권 접미사로 오인해 위성 어셈블리로 빠지는 것 차단. -->
     <EmbeddedResource Include="Assets\lang\*.json" WithCulture="false" LogicalName="CvInspect.Assets.lang.%(Filename)%(Extension)" />
   </ItemGroup>
 
