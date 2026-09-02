@@ -6,6 +6,12 @@ public sealed class CamOpt
     /// <summary>표시/로그용 카메라 이름. 빈 값이면 구현체가 기본 이름을 쓴다.</summary>
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>디바이스 번호 — 다중 카메라 앱의 라우팅 키 (1부터).</summary>
+    public int No { get; set; } = 1;
+
+    /// <summary>활성 스위치 — 끄면 앱이 이 카메라를 기동/목록에서 걸러낸다.</summary>
+    public bool Enabled { get; set; } = true;
+
     public string ComType { get; set; } = "Virtual";
 
     /// <summary>

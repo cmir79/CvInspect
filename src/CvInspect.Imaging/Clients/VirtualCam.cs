@@ -219,7 +219,8 @@ public sealed class VirtualCam : ICam
             }
             if (file is null) return null;
 
-            var mat = Cv2.ImRead(file, _color ? ImreadModes.Color : ImreadModes.Grayscale);
+            // ImRead 는 Windows 비ASCII(한글) 경로에서 실패한다 — 바이트로 읽어 디코드한다.
+            var mat = Cv2.ImDecode(File.ReadAllBytes(file), _color ? ImreadModes.Color : ImreadModes.Grayscale);
             if (mat.Empty())
             {
                 mat.Dispose();

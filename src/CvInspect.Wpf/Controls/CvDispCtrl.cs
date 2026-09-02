@@ -287,7 +287,8 @@ public sealed partial class CvDispCtrl : Grid
         if (dlg.ShowDialog() != true) return;
         try
         {
-            var mat = Cv2.ImRead(dlg.FileName, ImreadModes.Unchanged);
+            // ImRead 는 Windows 비ASCII(한글) 경로에서 실패한다 — 바이트로 읽어 디코드한다.
+            var mat = Cv2.ImDecode(File.ReadAllBytes(dlg.FileName), ImreadModes.Unchanged);
             if (mat.Empty())
             {
                 mat.Dispose();
@@ -323,16 +324,26 @@ public sealed partial class CvDispCtrl : Grid
                 // JPEG 는 알파 미지원 — BGRA 는 BGR 로 접어 저장
                 using var bgr = new Mat();
                 Cv2.CvtColor(mat, bgr, ColorConversionCodes.BGRA2BGR);
-                if (!Cv2.ImWrite(dlg.FileName, bgr)) throw new IOException("Failed to write image file");
+                WriteImageFile(dlg.FileName, bgr);
             }
-            else if (!Cv2.ImWrite(dlg.FileName, mat))
+            else
             {
-                throw new IOException("Failed to write image file");
+                WriteImageFile(dlg.FileName, mat);
             }
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, CvLoc.T("cv:SaveImage"), MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    /// <summary>ImWrite 는 Windows 비ASCII(한글) 경로에서 실패한다 — 인코드 후 바이트로 쓴다.</summary>
+    private static void WriteImageFile(string path, Mat mat)
+    {
+        var ext = Path.GetExtension(path);
+        if (string.IsNullOrEmpty(ext)) ext = ".png";
+        if (!Cv2.ImEncode(ext, mat, out var bytes))
+            throw new IOException("Failed to encode image file");
+        File.WriteAllBytes(path, bytes);
     }
 }
