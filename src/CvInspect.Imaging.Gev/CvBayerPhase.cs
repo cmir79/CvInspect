@@ -50,9 +50,11 @@ public static class CvBayerPhase
     /// </summary>
     /// <param name="sensorPattern">센서 고유 패턴(전체 화면·미러 꺼짐·오프셋 0 일 때의 배열).</param>
     /// <param name="sensorWidth">미러의 <b>기준 폭</b>. 장치가 센서 전체를 뒤집은 뒤 ROI 를 떼면 WidthMax 이고,
-    /// ROI 안에서 뒤집으면 ROI 폭이다 — 어느 쪽인지는 장치 구현에 달렸으니 실기로 확인해 맞는 값을 넘긴다.
-    /// 다행히 <b>두 해석의 결과는 같다</b>: 둘의 차이가 오프셋의 2배라 패리티가 보존된다(그래서 이 식은 어느
-    /// 모델을 따르는 장치에서도 성립한다). 진단 로그에는 두 치수를 모두 남겨 두는 편이 안전하다.</param>
+    /// ROI 안에서 뒤집으면 ROI 폭이다 — 어느 쪽인지는 장치 구현에 달렸고 SFNC 도 정하지 않으니 실기로 확인한다.
+    /// ⚠ <b>맞는 치수를 넘겨야 한다.</b> 두 해석의 시작 화소는 <c>2·Offset + 폭 − WidthMax</c> 만큼 어긋나는데
+    /// <c>2·Offset</c> 만 짝수로 소거되고 <c>폭 − WidthMax</c> 가 남는다. 그래서 <b>두 치수의 홀짝이 다르면
+    /// 정반대 패턴을 지목</b>한다(예: WidthMax 1920 · 폭 1919 · Offset 0 → 1919 대 1918). 진단 로그에는
+    /// 두 치수를 모두 남겨야 사후에 어느 해석이었는지 가릴 수 있다.</param>
     /// <param name="sensorHeight">같은 의미의 기준 높이(HeightMax 또는 ROI 높이).</param>
     /// <param name="reverseX">카메라 내부 좌우 미러(호스트 측 플립이 아니다).</param>
     /// <param name="reverseY">카메라 내부 상하 미러.</param>
