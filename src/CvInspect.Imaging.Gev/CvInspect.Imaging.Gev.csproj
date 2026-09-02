@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- 미완성 — GigE 취득 백엔드(ICam 구현)가 붙기 전까지는 패키지로 내지 않는다.
+         지금 담긴 것은 백엔드 없이도 성립하는 순수 변환·위상 계산뿐이다. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CvInspect.Imaging\CvInspect.Imaging.csproj" />
+  </ItemGroup>
+
+</Project>
