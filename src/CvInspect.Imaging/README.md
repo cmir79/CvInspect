@@ -47,6 +47,11 @@ copying (disposing the view only unpins; the pixels stay valid), so running CvIn
 tools costs no conversion. Sources materialize one buffer per frame; frames already have
 `CamOpt.Flip` / `Rotation` applied.
 
+Two more contract points implementers must honor: **only complete frames are published**
+(corrupt / partially received frames are dropped with a `CvLog` warning, never delivered),
+and **`Stride` may exceed width × bytes-per-pixel** on devices that pad rows — consumers
+must always walk rows by `Stride` (`AsMat()` handles this automatically).
+
 ## Vendor adapters
 
 Implement `ICam` in your application (or an adapter package) against the vendor SDK —

@@ -1,6 +1,12 @@
 namespace CvInspect.Imaging;
 
-/// <summary>카메라 설정 POCO — <see cref="CamFactory.Create"/> 가 <see cref="ComType"/> 으로 구현체를 고른다.</summary>
+/// <summary>
+/// 카메라 설정 POCO — <see cref="CamFactory.Create"/> 가 <see cref="ComType"/> 으로 구현체를 고른다.
+///
+/// 경계 기준: 이 타입은 팩토리로 주입되는 어댑터·앱이 읽는 <b>공용 옵션 가방</b>이다 — 개별 필드는
+/// 특정 구현체가 안 읽어도 실릴 수 있다(디바이스 일반 어휘 한정, 앱 도메인 개념 금지).
+/// 반면 <b>여러 카메라의 목록 스키마와 영속(파일 위치·직렬화 방식)은 앱 소관</b>이라 여기 싣지 않는다.
+/// </summary>
 public sealed class CamOpt
 {
     /// <summary>표시/로그용 카메라 이름. 빈 값이면 구현체가 기본 이름을 쓴다.</summary>

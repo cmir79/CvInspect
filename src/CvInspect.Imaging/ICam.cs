@@ -12,6 +12,8 @@ public interface ICam : IDisposable
     bool IsConnected { get; }
     bool IsGrabbing { get; }
 
+    /// <summary>완전한 프레임만 발행한다 — 전송 손상·부분 수신 프레임은 구현체가 드롭하고
+    /// <see cref="CvLog"/> 로 경고한다 (불완전 데이터가 검사 판정에 섞이는 것 방지).</summary>
     event EventHandler<CamFrame>? FrameAcquired;
     event EventHandler<ConnArgs>? ConnectionChanged;
 

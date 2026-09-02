@@ -25,6 +25,9 @@ public sealed class CamFrame
     public byte[] Pixels { get; }
     public int Width { get; }
     public int Height { get; }
+
+    /// <summary>행 바이트 수 — 장치에 따라 폭×바이트/픽셀보다 클 수 있다(행 끝 패딩).
+    /// 소비 측은 항상 이 값으로 행을 걸어야 한다 (<see cref="CamFrameMatExt.AsMat"/> 은 자동 반영).</summary>
     public int Stride { get; }
     public CamPixelFormat Format { get; }
 
