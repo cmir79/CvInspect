@@ -13,15 +13,10 @@
 
   <PropertyGroup>
     <PackageId>CvInspect.Wpf</PackageId>
-    <Version>0.1.1</Version>
-    <Authors>cmir79ss</Authors>
+    <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
     <Description>WPF display and shape-editing controls for the CvInspect machine-vision toolkit — Mat image display with zoom/pan/pixel probe, renderer-neutral overlay drawing, and draggable teaching shapes that write back to tool option POCOs. Based on OpenCvSharp; the native OpenCV runtime is chosen by the consumer (e.g. OpenCvSharp4.runtime.win).</Description>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>wpf;opencvsharp;machine-vision;inspection;display;overlay;roi;teaching</PackageTags>
-    <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>

@@ -64,7 +64,7 @@ public sealed class VirtualCam : ICam
     public bool IsConnected { get; private set; }
     public bool IsGrabbing => _timer != null;
 
-    public event EventHandler<CamFrameEvt>? FrameAcquired;
+    public event EventHandler<CamFrame>? FrameAcquired;
     public event EventHandler<ConnArgs>? ConnectionChanged;
     public event EventHandler<bool>? GrabbingChanged;
 
@@ -188,15 +188,21 @@ public sealed class VirtualCam : ICam
     private void Emit()
     {
         // 합성/파일 공급 모두 실 카메라와 동일 파이프라인 유지 — Flip/Rotation 적용 포함
-        using var frame = TryLoadFolderFrame() ?? GenerateFrame();
-        var processed = CamXform.Apply(frame, _opt.Flip, _opt.Rotation);
+        using var mat = TryLoadFolderFrame() ?? GenerateFrame();
+        FrameAcquired?.Invoke(this, Materialize(mat));
+    }
+
+    /// <summary>방향 보정 적용 후 GC 소유 <see cref="CamFrame"/> 으로 실체화 — 발행 프레임은 수명 계약이 없다.</summary>
+    private CamFrame Materialize(Mat src)
+    {
+        var processed = CamXform.Apply(src, _opt.Flip, _opt.Rotation);
         try
         {
-            FrameAcquired?.Invoke(this, new CamFrameEvt(processed, DateTime.UtcNow));
+            return CamFrame.FromMat(processed);
         }
         finally
         {
-            if (!ReferenceEquals(processed, frame)) processed.Dispose();
+            if (!ReferenceEquals(processed, src)) processed.Dispose();
         }
     }
 
@@ -300,7 +306,7 @@ public sealed class VirtualCam : ICam
             }
         }
 
-        // 버퍼 래핑 Mat — 이벤트 스코프 안에서만 살고 함께 정리된다 (Emit 의 using).
+        // 버퍼 래핑 Mat — Emit 파이프라인 안에서만 살고 실체화(CamFrame) 후 정리된다.
         return Mat.FromPixelData(_height, _width, _color ? MatType.CV_8UC3 : MatType.CV_8UC1, buffer, _stride);
     }
 

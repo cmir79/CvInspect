@@ -12,15 +12,10 @@
 
   <PropertyGroup>
     <PackageId>CvInspect.Imaging</PackageId>
-    <Version>0.1.0</Version>
-    <Authors>cmir79ss</Authors>
+    <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
     <Description>Camera acquisition contract and tame frame sources for the CvInspect machine-vision toolkit — an ICam abstraction with factory registration, a virtual camera (test pattern / image-folder replay), and a VideoCapture-backed source (webcam, video file, RTSP). Frames are OpenCvSharp Mat; heavy vendor/GigE backends plug in as separate adapter packages.</Description>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>opencvsharp;machine-vision;camera;acquisition;videocapture;virtual-camera</PackageTags>
-    <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>

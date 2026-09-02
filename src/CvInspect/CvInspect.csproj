@@ -12,16 +12,10 @@
 
   <PropertyGroup>
     <PackageId>CvInspect</PackageId>
-    <!-- 규칙: 내용이 한 바이트라도 바뀌면(메타데이터 포함) 반드시 버전 상향 — NuGet 캐시는 id+version 으로만 식별한다 -->
-    <Version>0.1.2</Version>
-    <Authors>cmir79ss</Authors>
+    <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
     <Description>Machine-vision inspection toolkit based on OpenCvSharp — calipers, line/circle/pattern/blob finders, color segmentation, geometry fitting, and renderer-neutral overlay primitives. The native OpenCV runtime is chosen by the consumer (e.g. OpenCvSharp4.runtime.win).</Description>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>opencvsharp;machine-vision;inspection;caliper;pattern-matching;blob;metrology</PackageTags>
-    <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>

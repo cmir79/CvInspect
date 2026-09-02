@@ -11,7 +11,7 @@ namespace CvInspect.Imaging;
 /// 소스가 주는 속도 그대로 공급한다(Read 가 블로킹).
 ///
 /// IsColor=false 면 3채널 입력을 그레이로 접어 발행한다(반대는 GRAY→BGR 확장).
-/// 프레임 버퍼는 재사용된다 — 이벤트 스코프 유효 계약(<see cref="CamFrameEvt"/>)을 지켜라.
+/// 발행 프레임은 GC 소유 <see cref="CamFrame"/> 으로 실체화된다 — 보관·스레드 전달 자유.
 /// 소스별 코덱/백엔드는 네이티브 videoio 가 제공한다 — 런타임 패키지는 소비자 선택.
 /// </summary>
 public sealed class VideoCaptureCam : ICam
@@ -40,7 +40,7 @@ public sealed class VideoCaptureCam : ICam
     public bool IsConnected { get; private set; }
     public bool IsGrabbing => _liveThread != null;
 
-    public event EventHandler<CamFrameEvt>? FrameAcquired;
+    public event EventHandler<CamFrame>? FrameAcquired;
     public event EventHandler<ConnArgs>? ConnectionChanged;
     public event EventHandler<bool>? GrabbingChanged;
 
@@ -240,14 +240,16 @@ public sealed class VideoCaptureCam : ICam
         }
 
         var processed = CamXform.Apply(src, _opt.Flip, _opt.Rotation);
+        CamFrame frame;
         try
         {
-            FrameAcquired?.Invoke(this, new CamFrameEvt(processed, DateTime.UtcNow));
+            frame = CamFrame.FromMat(processed);   // GC 소유 실체화 — 발행 후 수명 계약 없음
         }
         finally
         {
             if (!ReferenceEquals(processed, src)) processed.Dispose();
         }
+        FrameAcquired?.Invoke(this, frame);
         return true;
     }
 

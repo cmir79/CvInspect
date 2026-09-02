@@ -5,7 +5,9 @@ Camera acquisition contract and tame frame sources for the
 [OpenCvSharp](https://github.com/shimat/opencvsharp).
 
 - **`ICam`** — the acquisition contract: open/close, single grab, continuous grab,
-  connection/grabbing events, best-effort exposure control. Frames are `OpenCvSharp.Mat`.
+  connection/grabbing events, best-effort exposure control. Frames are GC-owned
+  **`CamFrame`** buffers (`byte[]` + width/height/stride/format/timestamp) with **no
+  lifetime contract** — `frame.AsMat()` gives a zero-copy `Mat` view for inspection.
 - **`VirtualCam`** — no-hardware source: a shifting-gradient test pattern, or name-ordered
   cyclic replay of an image folder (`CamOpt.VirtualImageDir`), re-enumerated on folder change.
   Ideal for development, demos and CI regression runs.
@@ -26,11 +28,11 @@ var cam = CamFactory.Create(new CamOpt
     FrameRate = 10,
 });
 
-cam.FrameAcquired += (_, e) =>
+cam.FrameAcquired += (_, frame) =>
 {
-    // e.Frame is only valid during this callback — Clone() to keep or hand off.
-    using var frame = e.Frame.Clone();
+    using var mat = frame.AsMat();   // zero-copy view into frame.Pixels
     // ... run CvInspect tools, update display ...
+    // frame itself is GC-owned — keep it or hand it to another thread freely.
 };
 
 cam.Open();
@@ -39,14 +41,16 @@ cam.StartContinuous();
 
 ## Frame lifetime
 
-`CamFrameEvt.Frame` is **valid only during the event callback** — sources may reuse or
-dispose the buffer afterwards, so high-rate acquisition does not allocate per frame.
-`Clone()` the `Mat` if you store it or post it to another thread (e.g. a UI dispatcher).
-Frames already have `CamOpt.Flip` / `Rotation` applied.
+`CamFrame` is a GC-owned `byte[]` holder — **there is no lifetime contract**: keep it,
+queue it, or post it to a UI dispatcher as-is. `AsMat()` wraps the pixel buffer without
+copying (disposing the view only unpins; the pixels stay valid), so running CvInspect
+tools costs no conversion. Sources materialize one buffer per frame; frames already have
+`CamOpt.Flip` / `Rotation` applied.
 
 ## Vendor adapters
 
-Implement `ICam` in your application (or an adapter package) against the vendor SDK and
+Implement `ICam` in your application (or an adapter package) against the vendor SDK —
+materialize SDK buffers into `CamFrame` directly (or via `CamFrame.FromMat`) — and
 register it once at startup:
 
 ```csharp
