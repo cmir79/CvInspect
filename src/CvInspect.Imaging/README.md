@@ -10,7 +10,9 @@ Camera acquisition contract and tame frame sources for the
   lifetime contract** — `frame.AsMat()` gives a zero-copy `Mat` view for inspection.
 - **`VirtualCam`** — no-hardware source: a shifting-gradient test pattern, or name-ordered
   cyclic replay of an image folder (`CamOpt.VirtualImageDir`), re-enumerated on folder change.
-  Ideal for development, demos and CI regression runs.
+  Ideal for development, demos and CI regression runs. Note: color→gray decoding follows
+  OpenCV's decoder coefficients, so pixel values may differ slightly from images converted
+  by other stacks (e.g. GDI luma) — build regression baselines through the same path.
 - **`VideoCaptureCam`** — webcam (device index), video file (paced by `FrameRate`, loops at
   end) or stream URL (RTSP, …) through OpenCV `VideoCapture` (`CamOpt.VideoSource`).
 - **`CamFactory`** — `ComType` string → implementation, with `Register` as the injection

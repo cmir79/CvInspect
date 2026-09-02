@@ -7,6 +7,8 @@ namespace CvInspect.Imaging;
 /// CamOpt.VirtualImageDir(또는 <see cref="ImageDirProvider"/> 주입)로 폴더를 지정하면 그 폴더의 이미지 파일을
 /// 이름순 순환 공급 — 폴더 무효·이미지 없음·로드 실패 시 테스트 패턴 폴백(항상 프레임 발행 — 그랩 대기 타임아웃 방지).
 /// 폴더 경로는 매 프레임 평가되고 목록은 변경 감지(LastWriteTime) 재열거 — 실행 중 이미지 교체 즉시 반영.
+/// 컬러 이미지의 그레이 변환(IsColor=false)은 OpenCV 디코더 계수를 따른다 — 다른 변환 체계
+/// (GDI 루마 등)로 만든 기대값과 화소값이 조금 다를 수 있으니 회귀 기준은 같은 경로로 만들 것.
 /// 개발/CI 환경용. SerialNumber/UserSettings 무시.
 /// </summary>
 public sealed class VirtualCam : ICam
