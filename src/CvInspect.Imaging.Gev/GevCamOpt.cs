@@ -49,7 +49,6 @@ public sealed class GevCamOpt
     /// 출발점은 <see cref="GevScpd.MultiCamDefaultUs"/>(150us). 한 대만 쓰면 필요 없다.
     ///
     /// 장치 틱으로 환산해 쓰므로 장치마다 숫자가 달라지는 것은 신경 쓰지 않아도 된다.
-    /// 크게 줄 때는 <see cref="PacketTimeoutMs"/> 도 같이 올리는 편이 좋다.
     /// </summary>
     public double? InterPacketDelayUs { get; set; }
 
@@ -58,8 +57,9 @@ public sealed class GevCamOpt
     public int? InterPacketDelayTicks { get; set; }
 
     /// <summary>빠진 패킷을 기다리는 시간(ms). null 이면 취득 라이브러리 기본값.
-    /// <see cref="InterPacketDelayUs"/> 를 크게 주면 <b>"유실" 이 아니라 "벌어진" 패킷에 기본값이 걸려</b>
-    /// 불필요한 재전송 요청이 늘어난다(실측 436건 — 실제 누락은 0 이라 무해하지만 소음이다).</summary>
+    /// <b>재전송 요청이 많은 것을 이 값으로 잠재우려 하지 않는다</b> — 요청은 대개 패킷이 순서가 뒤바뀐 채
+    /// 늦게(그러나 결국) 도착해서 나며, 시한을 늘리면 오히려 늘어난다(실측 20→60ms 에서 23→27건).
+    /// 실제 누락이 0 이면 소음이므로 그대로 둔다.</summary>
     public int? PacketTimeoutMs { get; set; }
 
     /// <summary>단발 그랩이 프레임을 기다리는 상한(ms).</summary>

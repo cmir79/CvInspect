@@ -190,13 +190,15 @@ static async Task RawStreamAsync(GevDevice dev, GenApiNodeMap nodes, Args arg, A
         $"ResendRequests={s.ResendRequests} ResendRecovered={s.ResendRecovered} PacketsMissing={s.PacketsMissing}");
     if (s.PacketsResent == 0 && s.PacketsDuplicated > 0)
         log("  note: this camera returns resend copies with a normal success status — PacketsResent stays 0 even when resend works, and PacketsDuplicated carries the signal");
-    // 재전송 요청 수는 그 자체로 고장 신호가 아니다 — 벌어진 패킷에 타임아웃이 성급히 걸리면
-    // 원본이 재전송보다 먼저 도착해 요청만 남는다(실측: 8시간에 6,392건 요청, 실제 누락 0).
+    // 재전송 요청 수는 그 자체로 고장 신호가 아니다 — 패킷이 순서가 뒤바뀐 채 유예보다 늦게,
+    // 그러나 결국 도착하면 요청만 남고 누락은 0 이다(실측: 8시간에 6,392건 요청, 실제 누락 0).
+    // 시한을 늘려도 줄지 않는다 — 늘렸더니 오히려 늘었다(20→60ms 에서 23→27건).
     // 건강 판정은 PacketsMissing 과 불완전 프레임으로 한다.
     if (s.ResendRequests > 0 && s.PacketsMissing == 0)
-        log("  note: resend requests went out but nothing was actually lost — the packet timeout fired early on widened gaps " +
-            "and the originals arrived first. This is noise, not a fault: judge health by PacketsMissing and incomplete frames, " +
-            "never by the request count. Raise PacketTimeoutMs to quieten it.");
+        log("  note: resend requests went out but nothing was actually lost — packets arrived out of order (typically three " +
+            "consecutive ones), later than the grace period but still in time. This is noise, not a fault: judge health by " +
+            "PacketsMissing and incomplete frames, never by the request count. Raising the timeouts does NOT reduce it " +
+            "(measured: it went up). It shows up under contention — cameras sharing one port — not on a camera of its own.");
     else if (s.ResendRequests > 0 && s.ResendRecovered == 0 && s.PacketsMissing > 0)
         log("  !! resend requests went out, nothing came back, and packets are still missing — the device may already have " +
             "retired the block (PacketTimeoutMs too late, or the loss is upstream of the camera)");
