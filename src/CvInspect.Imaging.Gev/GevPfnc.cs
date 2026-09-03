@@ -41,7 +41,9 @@ public static class GevPfnc
     public const uint Rgba8 = 0x02200016;
     public const uint Bgra8 = 0x02200017;
 
-    /// <summary>화소당 비트 수 — PFNC 코드 자체에 실려 있다.</summary>
+    /// <summary>PFNC 코드가 <b>차지하는</b> 화소당 비트 수 — 코드 자체에 실려 있다.
+    /// ⚠ 유효 비트 수(깊이)와 다르다: Mono10 은 여기서 16 이 나오지만 실제 데이터는 10비트다.
+    /// 변환기에 넘길 값은 <see cref="TryDescribe"/> 의 significantBits 다.</summary>
     public static int BitsPerPixel(uint code) => (int)((code >> 16) & 0xFF);
 
     /// <summary>
@@ -54,31 +56,29 @@ public static class GevPfnc
     /// <c>Mono10p</c>(빈틈없는 lsb 스트림, 5바이트에 4화소)는 배치도 밀도도 달라, 한쪽 해석기로 다른 쪽을 읽으면
     /// 조용히 망가진다.
     /// </remarks>
-    public static bool TryDescribe(uint code, out GevPixelLayout layout, out int bitsPerPixel, out CvBayerPattern? bayer)
+    public static bool TryDescribe(uint code, out GevPixelLayout layout, out int significantBits, out CvBayerPattern? bayer)
     {
-        bitsPerPixel = BitsPerPixel(code);
         bayer = null;
         switch (code)
         {
-            case Mono8:
-            case Mono10:
-            case Mono12:
-            case Mono16:
-                layout = GevPixelLayout.Mono;
-                return true;
+            case Mono8: layout = GevPixelLayout.Mono; significantBits = 8; return true;
+            case Mono10: layout = GevPixelLayout.Mono; significantBits = 10; return true;
+            case Mono12: layout = GevPixelLayout.Mono; significantBits = 12; return true;
+            case Mono16: layout = GevPixelLayout.Mono; significantBits = 16; return true;
 
-            case BayerRG8: layout = GevPixelLayout.Bayer; bayer = CvBayerPattern.RG; return true;
-            case BayerGR8: layout = GevPixelLayout.Bayer; bayer = CvBayerPattern.GR; return true;
-            case BayerGB8: layout = GevPixelLayout.Bayer; bayer = CvBayerPattern.GB; return true;
-            case BayerBG8: layout = GevPixelLayout.Bayer; bayer = CvBayerPattern.BG; return true;
+            case BayerRG8: layout = GevPixelLayout.Bayer; significantBits = 8; bayer = CvBayerPattern.RG; return true;
+            case BayerGR8: layout = GevPixelLayout.Bayer; significantBits = 8; bayer = CvBayerPattern.GR; return true;
+            case BayerGB8: layout = GevPixelLayout.Bayer; significantBits = 8; bayer = CvBayerPattern.GB; return true;
+            case BayerBG8: layout = GevPixelLayout.Bayer; significantBits = 8; bayer = CvBayerPattern.BG; return true;
 
-            case Rgb8: layout = GevPixelLayout.Rgb; return true;
-            case Bgr8: layout = GevPixelLayout.Bgr; return true;
-            case Rgba8: layout = GevPixelLayout.Rgba; return true;
-            case Bgra8: layout = GevPixelLayout.Bgra; return true;
+            case Rgb8: layout = GevPixelLayout.Rgb; significantBits = 8; return true;
+            case Bgr8: layout = GevPixelLayout.Bgr; significantBits = 8; return true;
+            case Rgba8: layout = GevPixelLayout.Rgba; significantBits = 8; return true;
+            case Bgra8: layout = GevPixelLayout.Bgra; significantBits = 8; return true;
 
             default:
                 layout = GevPixelLayout.Mono;
+                significantBits = 0;
                 return false;
         }
     }

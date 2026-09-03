@@ -22,12 +22,15 @@ public static class GevFrameConv
     /// 압축 포맷에서 줄이 바이트 경계에 안 떨어질 때 그렇게 알리는데, 여기 오는 화소는 이미 풀린 뒤라
     /// 그 경우 실제 배치가 빈틈없는 행이 된다.</param>
     /// <param name="layout">채널 배치.</param>
-    /// <param name="bitsPerPixel">화소당 비트 수. Mono/Bayer 의 9~16비트는 16비트 우측 정렬 전제로 상위 8비트만 남긴다.</param>
+    /// <param name="significantBits">화소가 실제로 담고 있는 <b>유효 비트 수</b>(깊이)이지, PFNC 코드가 차지하는
+    /// 비트 수가 아니다 — <b>Mono10 은 10, Mono12 는 12</b> 다(둘 다 16비트 그릇에 담기지만 코드의 점유 비트는 16).
+    /// 이걸 점유 비트로 넘기면 예외 없이 화면이 4배·16배 어두워진다. 9~16 이면 16비트 우측 정렬로 보고
+    /// 상위 8비트만 남기고, 컬러 배치에서는 채널당 비트 수(8)를 넘긴다.</param>
     /// <param name="bayer">Bayer 배치일 때의 패턴 — <b>전송 영상의 실효 패턴</b>이다(<see cref="CvBayerPhase"/> 참조).</param>
     /// <param name="toMono">Bayer 를 컬러로 펴지 않고 흑백으로 바로 접는다(검사만 하고 화면에 색이 필요 없을 때).</param>
     public static CamFrame ToCamFrame(
         byte[] pixels, int width, int height, int stride,
-        GevPixelLayout layout, int bitsPerPixel,
+        GevPixelLayout layout, int significantBits,
         CvBayerPattern? bayer = null, bool toMono = false)
     {
         if (pixels is null) throw new ArgumentNullException(nameof(pixels));
@@ -36,7 +39,7 @@ public static class GevFrameConv
 
         // "줄 간격 없음"(0) 을 빈틈없는 행으로 정규화한다. CamFrame.Stride 는 항상 양수여야 하고,
         // 0 을 그대로 넘기면 그 프레임을 받는 모든 소비자가 행을 못 건다.
-        var lineBytes = width * TightBytesPerPixel(layout, bitsPerPixel);
+        var lineBytes = width * TightBytesPerPixel(layout, significantBits);
         if (stride <= 0) stride = lineBytes;
 
         // 버퍼가 그 기하를 실제로 담는지 확인한다. 짧은 버퍼를 그대로 Mat 에 물리면 <b>관리 힙 밖을 읽는다</b> —
@@ -46,16 +49,16 @@ public static class GevFrameConv
         var need = (long)stride * (height - 1) + lineBytes;
         if (pixels.Length < need)
             throw new ArgumentException(
-                $"Pixel buffer is too small: {pixels.Length} bytes for {width}x{height} {layout}/{bitsPerPixel}bpp at stride {stride} (needs {need}). Are the pixels still packed?",
+                $"Pixel buffer is too small: {pixels.Length} bytes for {width}x{height} {layout}/{significantBits}bit at stride {stride} (needs {need}). Are the pixels still packed?",
                 nameof(pixels));
 
         switch (layout)
         {
             case GevPixelLayout.Mono:
             {
-                if (bitsPerPixel == 8)
+                if (significantBits <= 8)
                     return new CamFrame(pixels, width, height, stride, CamPixelFormat.Mono8);
-                using var mono8 = DownShift(pixels, width, height, stride, bitsPerPixel);
+                using var mono8 = DownShift(pixels, width, height, stride, significantBits);
                 return CamFrame.FromMat(mono8);
             }
 
@@ -63,9 +66,9 @@ public static class GevFrameConv
             {
                 var pattern = bayer ?? throw new ArgumentNullException(
                     nameof(bayer), "A Bayer layout needs the pattern of the transmitted image.");
-                using var src = bitsPerPixel == 8
+                using var src = significantBits <= 8
                     ? Mat.FromPixelData(height, width, MatType.CV_8UC1, pixels, stride)
-                    : DownShift(pixels, width, height, stride, bitsPerPixel);
+                    : DownShift(pixels, width, height, stride, significantBits);
                 using var dst = new Mat();
                 Cv2.CvtColor(src, dst, DemosaicCode(pattern, toMono));
                 return CamFrame.FromMat(dst);
@@ -117,21 +120,21 @@ public static class GevFrameConv
     };
 
     /// <summary>빈틈없이 채웠을 때의 화소당 바이트 수 — 줄 간격이 주어지지 않았을 때 쓴다.</summary>
-    private static int TightBytesPerPixel(GevPixelLayout layout, int bitsPerPixel) => layout switch
+    private static int TightBytesPerPixel(GevPixelLayout layout, int significantBits) => layout switch
     {
-        GevPixelLayout.Mono or GevPixelLayout.Bayer => bitsPerPixel <= 8 ? 1 : 2,
+        GevPixelLayout.Mono or GevPixelLayout.Bayer => significantBits <= 8 ? 1 : 2,
         GevPixelLayout.Rgb or GevPixelLayout.Bgr => 3,
         _ => 4,
     };
 
     /// <summary>9~16비트 → 8비트. 값이 우측 정렬(0 ~ 2^n−1)이라는 전제로 상위 8비트만 남긴다.</summary>
-    private static Mat DownShift(byte[] pixels, int width, int height, int stride, int bitsPerPixel)
+    private static Mat DownShift(byte[] pixels, int width, int height, int stride, int significantBits)
     {
-        if (bitsPerPixel is < 9 or > 16)
-            throw new NotSupportedException($"Unsupported bit depth: {bitsPerPixel}");
+        if (significantBits is < 9 or > 16)
+            throw new NotSupportedException($"Unsupported bit depth: {significantBits}");
         using var src = Mat.FromPixelData(height, width, MatType.CV_16UC1, pixels, stride);
         var dst = new Mat();
-        src.ConvertTo(dst, MatType.CV_8UC1, 1.0 / (1 << (bitsPerPixel - 8)));
+        src.ConvertTo(dst, MatType.CV_8UC1, 1.0 / (1 << (significantBits - 8)));
         return dst;
     }
 }
