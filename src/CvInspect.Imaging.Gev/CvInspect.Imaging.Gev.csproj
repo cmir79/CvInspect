@@ -25,7 +25,7 @@
     <ProjectReference Include="..\CvInspect.Imaging\CvInspect.Imaging.csproj" />
     <!-- GigE 취득 백엔드 - 동봉 패키지(LocalPackages\)에서 받는다.
          OpenCV 무의존이라 이 참조가 네이티브를 끌어오지 않는다. -->
-    <PackageReference Include="GevSharp" Version="0.1.1" />
+    <PackageReference Include="GevSharp" Version="0.1.2" />
   </ItemGroup>
 
 </Project>

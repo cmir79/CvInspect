@@ -39,6 +39,26 @@ public sealed class GevCamOpt
     /// <summary><see cref="UseFixedPacketSize"/> 일 때 쓸 패킷 크기(바이트).</summary>
     public int PacketSize { get; set; } = 1500;
 
+    /// <summary>
+    /// 패킷 사이를 이만큼 벌린다(us). null 이면 장치 값을 건드리지 않는다.
+    /// <b>여러 대를 한 NIC 로 받으면 사실상 필수다</b> — 카메라는 회선 속도로 몰아친 뒤 쉬므로,
+    /// 프레임레이트를 낮춰 평균 대역이 남아돌아도 버스트가 겹치는 순간 유실된다.
+    /// 출발점은 <see cref="GevScpd.MultiCamDefaultUs"/>(150us). 한 대만 쓰면 필요 없다.
+    ///
+    /// 장치 틱으로 환산해 쓰므로 장치마다 숫자가 달라지는 것은 신경 쓰지 않아도 된다.
+    /// 크게 줄 때는 <see cref="PacketTimeoutMs"/> 도 같이 올리는 편이 좋다.
+    /// </summary>
+    public double? InterPacketDelayUs { get; set; }
+
+    /// <summary>SCPD 를 장치 틱 값으로 못 박는다(기본 null = <see cref="InterPacketDelayUs"/> 에서 환산).
+    /// 장치가 틱 주파수를 보고하지 않거나 틀리게 보고할 때의 탈출구다.</summary>
+    public int? InterPacketDelayTicks { get; set; }
+
+    /// <summary>빠진 패킷을 기다리는 시간(ms). null 이면 취득 라이브러리 기본값.
+    /// <see cref="InterPacketDelayUs"/> 를 크게 주면 <b>"유실" 이 아니라 "벌어진" 패킷에 기본값이 걸려</b>
+    /// 불필요한 재전송 요청이 늘어난다(실측 436건 — 실제 누락은 0 이라 무해하지만 소음이다).</summary>
+    public int? PacketTimeoutMs { get; set; }
+
     /// <summary>단발 그랩이 프레임을 기다리는 상한(ms).</summary>
     public int GrabTimeoutMs { get; set; } = 5000;
 

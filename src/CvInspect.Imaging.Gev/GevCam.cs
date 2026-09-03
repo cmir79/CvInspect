@@ -113,7 +113,7 @@ public sealed class GevCam : ICam
             await LogCameraStateAsync(nodes, ct).ConfigureAwait(false);
             _bayerOverride = _gev.BayerPatternOverride ?? await ResolveBayerAsync(nodes, ct).ConfigureAwait(false);
 
-            var stream = await dev.OpenStreamAsync(new GevStreamOpt
+            var streamOpt = new GevStreamOpt
             {
                 BufferCount = _gev.BufferCount,
                 SocketBufferBytes = _gev.SocketBufferBytes,
@@ -121,7 +121,11 @@ public sealed class GevCam : ICam
                 PacketSize = _gev.PacketSize,
                 DeliverIncompleteFrames = false,   // ICam 계약: 완전한 프레임만 발행
                 PayloadSize = (int?)await TryReadIntAsync(nodes, "PayloadSize", ct).ConfigureAwait(false),
-            }, ct).ConfigureAwait(false);
+            };
+            if (ResolveScpdTicks(dev) is { } scpd) streamOpt.InterPacketDelay = scpd;
+            if (_gev.PacketTimeoutMs is { } packetTimeout) streamOpt.PacketTimeoutMs = packetTimeout;
+
+            var stream = await dev.OpenStreamAsync(streamOpt, ct).ConfigureAwait(false);
 
             try
             {
@@ -602,7 +606,7 @@ public sealed class GevCam : ICam
                 $"TriggerMode is On (source '{trigSrc ?? "?"}') — no frames will arrive until the camera receives that trigger. " +
                 "If free-running frames are expected, turn TriggerMode off on the camera or load a user set that has it off.");
 
-        if (await TryReadBoolAsync(nodes, "ChunkModeActive", ct).ConfigureAwait(false) == true)
+        if (await TryReadFlagAsync(nodes, "ChunkModeActive", ct).ConfigureAwait(false) == true)
             WriteLog(CvLogLevel.Warning,
                 "ChunkModeActive is On — frames carrying chunk payloads are not assembled and will be dropped, " +
                 "so acquisition runs but delivers nothing. Turn chunk mode off on the camera.");
@@ -623,8 +627,8 @@ public sealed class GevCam : ICam
         if (ToCvPattern(PixelFormatInfo.BayerPattern(code)) is not { } declared) return null;
 
         // 없는 노드는 중립값으로 — ReverseY 를 아예 선언하지 않는 카메라가 흔하다.
-        var revX = await TryReadBoolAsync(nodes, "ReverseX", ct).ConfigureAwait(false) ?? false;
-        var revY = await TryReadBoolAsync(nodes, "ReverseY", ct).ConfigureAwait(false) ?? false;
+        var revX = await TryReadFlagAsync(nodes, "ReverseX", ct).ConfigureAwait(false) ?? false;
+        var revY = await TryReadFlagAsync(nodes, "ReverseY", ct).ConfigureAwait(false) ?? false;
         var offX = (int)(await TryReadIntAsync(nodes, "OffsetX", ct).ConfigureAwait(false) ?? 0);
         var offY = (int)(await TryReadIntAsync(nodes, "OffsetY", ct).ConfigureAwait(false) ?? 0);
 
@@ -669,11 +673,72 @@ public sealed class GevCam : ICam
         catch (GenApiException) { return null; }   // 미구현·잠김·읽기 불가
     }
 
-    private static async Task<bool?> TryReadBoolAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
+    /// <summary>
+    /// On/Off 성격의 노드를 <b>선언된 종류와 무관하게</b> 읽는다.
+    ///
+    /// 같은 피처를 벤더마다 다른 종류로 선언한다 — 어떤 장치는 Boolean(true/false), 어떤 장치는
+    /// Enumeration(On/Off) 이다. 한 종류만 보면 나머지 장치에서 <b>조용히 null 이 되어</b> 호출부의
+    /// 기본값으로 흘러간다. ReverseX/ReverseY 가 그렇게 되면 Bayer 위상 계산이 어긋나 <b>색만 틀리고
+    /// 예외도 경고도 안 난다</b> — 원인을 장치 쪽에서 찾게 되는 부류다.
+    /// </summary>
+    private static async Task<bool?> TryReadFlagAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
     {
-        if (nodes.GetNode(name) is not IBoolean b) return null;
-        try { return await b.GetAsync(ct).ConfigureAwait(false); }
+        try
+        {
+            switch (nodes.GetNode(name))
+            {
+                case IBoolean b:
+                    return await b.GetAsync(ct).ConfigureAwait(false);
+
+                case IEnumeration e:
+                    return ParseFlag(await e.GetAsync(ct).ConfigureAwait(false));
+
+                // 0/1 정수로 선언하는 장치도 있다.
+                case IInteger i:
+                    return await i.GetAsync(ct).ConfigureAwait(false) != 0;
+
+                default:
+                    return null;
+            }
+        }
         catch (GenApiException) { return null; }
+    }
+
+    /// <summary>알아볼 수 없는 낱말은 null — 억지로 false 로 접으면 꺼져 있다고 잘못 단정한다.</summary>
+    private static bool? ParseFlag(string? symbolic) => symbolic?.Trim().ToUpperInvariant() switch
+    {
+        "ON" or "TRUE" or "ENABLED" or "1" => true,
+        "OFF" or "FALSE" or "DISABLED" or "0" => false,
+        _ => null,
+    };
+
+    /// <summary>
+    /// SCPD 를 장치 틱으로 정한다 — 못 박은 값이 있으면 그것, 없으면 시간에서 환산한다.
+    /// 환산에 실패하면 <b>조용히 넘어가지 않는다</b>: 여러 대를 한 NIC 로 받는 구성에서 이것이
+    /// 빠지면 버스트가 겹쳐 유실되는데, 증상이 "가끔 프레임이 빈다" 라 원인을 찾기 어렵다.
+    /// </summary>
+    private int? ResolveScpdTicks(GevDevice dev)
+    {
+        if (_gev.InterPacketDelayTicks is { } pinned)
+        {
+            WriteLog(CvLogLevel.Info, $"inter-packet delay pinned to {pinned} ticks");
+            return pinned;
+        }
+
+        if (_gev.InterPacketDelayUs is not { } us) return null;
+
+        if (GevScpd.TicksFor(us, dev.TimestampTickFrequency) is not { } ticks)
+        {
+            WriteLog(CvLogLevel.Warning,
+                $"cannot apply the requested {us}us inter-packet delay: the camera reports a timestamp tick " +
+                $"frequency of {dev.TimestampTickFrequency} Hz, so the tick value cannot be derived. " +
+                "If several cameras share this NIC, pin the value with GevCamOpt.InterPacketDelayTicks.");
+            return null;
+        }
+
+        WriteLog(CvLogLevel.Info,
+            $"inter-packet delay {us}us -> {ticks} ticks at {dev.TimestampTickFrequency} Hz");
+        return ticks;
     }
 
     private static async Task<string?> TryReadEnumAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
