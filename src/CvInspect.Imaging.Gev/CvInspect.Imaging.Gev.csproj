@@ -7,15 +7,24 @@
     <LangVersion>latest</LangVersion>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <!-- 미완성 — GigE 취득 백엔드(ICam 구현)가 붙기 전까지는 패키지로 내지 않는다.
-         지금 담긴 것은 백엔드 없이도 성립하는 순수 변환·위상 계산뿐이다. -->
-    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>CvInspect.Imaging.Gev</PackageId>
+    <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
+    <Description>GigE camera acquisition for the CvInspect toolkit - an ICam backend that speaks the protocol directly, with no vendor SDK and no proprietary DLLs. Serial-number binding with actionable discovery diagnostics, user-set load, exposure control across SFNC generations, and PFNC pixel conversion including Bayer demosaic with phase diagnostics. Field validation against production cameras is still in progress.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>gige;genicam;camera;acquisition;machine-vision;opencvsharp;vendor-free</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CvInspect.Imaging\CvInspect.Imaging.csproj" />
-    <!-- GigE 취득 백엔드 — 동봉 패키지(LocalPackages\)에서 받는다. OpenCV 무의존이라 이 참조가
-         네이티브를 끌어오지 않는다. -->
+    <!-- GigE 취득 백엔드 - 동봉 패키지(LocalPackages\)에서 받는다.
+         OpenCV 무의존이라 이 참조가 네이티브를 끌어오지 않는다. -->
     <PackageReference Include="GevSharp" Version="0.1.0" />
   </ItemGroup>
 

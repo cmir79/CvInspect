@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>gevprobe</AssemblyName>
+    <RootNamespace>CvInspect.GevProbe</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- 설비 PC 로 폴더째 복사해 실행한다 — 그 PC 에 SDK 가 없어도 되게 자립 게시를 쓸 수 있다. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CvInspect.Imaging.Gev\CvInspect.Imaging.Gev.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 프레임을 파일로 남기려면 네이티브 런타임이 필요하다 — 소비자가 고르는 것이 규약이라 여기서 고른다. -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+</Project>

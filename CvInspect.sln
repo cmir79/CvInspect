@@ -10,12 +10,15 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Imaging", "src\Cv
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Imaging.Gev", "src\CvInspect.Imaging.Gev\CvInspect.Imaging.Gev.csproj", "{C7A1E9F3-5B24-4D8E-9F16-3A4B7C0D2E88}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.GevProbe", "samples\CvInspect.GevProbe\CvInspect.GevProbe.csproj", "{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{D4A7F0B2-9C3E-4E61-8A17-5B6C7D8E9F0A}"
 	ProjectSection(SolutionItems) = preProject
 		.gitattributes = .gitattributes
 		.gitignore = .gitignore
 		Directory.Build.props = Directory.Build.props
 		LICENSE = LICENSE
+		nuget.config = nuget.config
 		README.md = README.md
 	EndProjectSection
 EndProject
@@ -41,6 +44,10 @@ Global
 		{C7A1E9F3-5B24-4D8E-9F16-3A4B7C0D2E88}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C7A1E9F3-5B24-4D8E-9F16-3A4B7C0D2E88}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C7A1E9F3-5B24-4D8E-9F16-3A4B7C0D2E88}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
