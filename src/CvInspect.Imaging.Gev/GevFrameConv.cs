@@ -36,7 +36,18 @@ public static class GevFrameConv
 
         // "줄 간격 없음"(0) 을 빈틈없는 행으로 정규화한다. CamFrame.Stride 는 항상 양수여야 하고,
         // 0 을 그대로 넘기면 그 프레임을 받는 모든 소비자가 행을 못 건다.
-        if (stride <= 0) stride = width * TightBytesPerPixel(layout, bitsPerPixel);
+        var lineBytes = width * TightBytesPerPixel(layout, bitsPerPixel);
+        if (stride <= 0) stride = lineBytes;
+
+        // 버퍼가 그 기하를 실제로 담는지 확인한다. 짧은 버퍼를 그대로 Mat 에 물리면 <b>관리 힙 밖을 읽는다</b> —
+        // 예외도 없이 쓰레기 화소가 나오거나 프로세스가 죽는다. 마지막 행은 패딩까지 필요하지 않으므로
+        // 정확한 하한으로 잰다(멀쩡한 버퍼를 거절하지 않게).
+        // 부수 효과로, 아직 풀지 않은 압축 화소를 푼 것인 양 넘기는 실수도 대개 여기서 걸린다.
+        var need = (long)stride * (height - 1) + lineBytes;
+        if (pixels.Length < need)
+            throw new ArgumentException(
+                $"Pixel buffer is too small: {pixels.Length} bytes for {width}x{height} {layout}/{bitsPerPixel}bpp at stride {stride} (needs {need}). Are the pixels still packed?",
+                nameof(pixels));
 
         switch (layout)
         {
