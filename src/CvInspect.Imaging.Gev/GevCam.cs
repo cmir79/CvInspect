@@ -41,6 +41,9 @@ public sealed class GevCam : ICam
         _opt = opt ?? throw new ArgumentNullException(nameof(opt));
         _gev = gev ?? new GevCamOpt();
         Name = string.IsNullOrWhiteSpace(opt.Name) ? "GevCam" : opt.Name;
+        // 취득 라이브러리 진단이 어디로도 안 흐르면 설비에서 볼 수 있는 것은 예외 문구뿐이다.
+        // 호스트가 자기 창구를 이미 꽂았으면 건드리지 않는다.
+        GevLogBridge.AttachIfUnset();
     }
 
     public string Name { get; }
@@ -141,16 +144,7 @@ public sealed class GevCam : ICam
             new GevDiscoveryOpt { TimeoutMs = _gev.DiscoveryTimeoutMs }, ct).ConfigureAwait(false);
 
         var hit = found.FirstOrDefault(d => SerialMatches(d.SerialNumber));
-        if (hit is null)
-        {
-            var seen = found.Count == 0
-                ? "(none)"
-                : string.Join(" | ", found.Select(d =>
-                    $"SN='{d.SerialNumber.Trim()}' {d.Manufacturer} {d.Model} ip={d.Address}/{d.Subnet} nic={d.InterfaceAddress}" +
-                    (d.IsReachableDirectly ? "" : " [SUBNET MISMATCH]")));
-            throw new InvalidOperationException(
-                $"GigE camera not found: SN='{_opt.SerialNumber}'. Discovered {found.Count} device(s): {seen}");
-        }
+        if (hit is null) throw new InvalidOperationException(DescribeMiss(found));
 
         if (!hit.IsReachableDirectly)
             WriteLog(CvLogLevel.Warning,
@@ -161,6 +155,54 @@ public sealed class GevCam : ICam
 
     private bool SerialMatches(string candidate)
         => string.Equals(candidate.Trim(), (_opt.SerialNumber ?? string.Empty).Trim(), StringComparison.Ordinal);
+
+    /// <summary>
+    /// 못 찾았을 때의 문구. <b>이 문구가 설비에서 원인을 가르는 유일한 근거</b>이고, 설정에 아직
+    /// 시리얼을 못 적은 첫 기동에서는 <b>여기서 진짜 시리얼을 읽어 채우는</b> 용도로도 쓴다.
+    /// 그래서 장치를 한 줄씩, 사람이 그대로 옮겨 적을 수 있는 모양으로 남긴다.
+    /// </summary>
+    private string DescribeMiss(IReadOnlyList<GevDeviceInfo> found)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"GigE camera not found: SerialNumber='{(_opt.SerialNumber ?? string.Empty).Trim()}'. ");
+
+        if (found.Count == 0)
+        {
+            sb.Append("No device answered the discovery broadcast. Check that the camera has power and link, ")
+              .Append("that the host firewall allows inbound UDP on the GigE control port, ")
+              .Append("and that the NIC facing the camera is up with an IPv4 address.");
+            return sb.ToString();
+        }
+
+        sb.Append($"Discovered {found.Count} device(s) — copy the serial you want into the camera settings:");
+        foreach (var d in found)
+        {
+            var serial = d.SerialNumber.Trim();
+            sb.Append(Environment.NewLine)
+              .Append("  SerialNumber='").Append(serial.Length == 0 ? "(not reported by this camera)" : serial).Append('\'')
+              .Append("  ").Append(d.Manufacturer).Append(' ').Append(d.Model)
+              .Append("  ip=").Append(d.Address).Append('/').Append(d.Subnet)
+              .Append("  mac=").Append(d.Mac)
+              .Append("  nic=").Append(d.InterfaceAddress);
+
+            if (!string.IsNullOrWhiteSpace(d.UserDefinedName))
+                sb.Append("  name='").Append(d.UserDefinedName.Trim()).Append('\'');
+            if (IsLinkLocal(d.Address))
+                sb.Append("  [link-local address — the camera got no DHCP lease and fell back]");
+            if (!d.IsReachableDirectly)
+                sb.Append("  [SUBNET MISMATCH — this NIC cannot stream from that address]");
+            if (serial.Length == 0)
+                sb.Append("  [no serial register — bind this one by address instead]");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>169.254.x.x — DHCP 를 못 받아 스스로 붙인 주소다. 서브넷 불일치의 가장 흔한 원인이다.</summary>
+    private static bool IsLinkLocal(System.Net.IPAddress address)
+    {
+        var b = address.GetAddressBytes();
+        return b.Length == 4 && b[0] == 169 && b[1] == 254;
+    }
 
     public void Close()
     {
