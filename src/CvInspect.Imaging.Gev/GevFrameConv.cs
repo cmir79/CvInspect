@@ -17,7 +17,10 @@ public static class GevFrameConv
     /// 재사용 버퍼가 아니라 갓 만든 배열을 넘겨야 한다.</param>
     /// <param name="width">화소 단위 가로 크기.</param>
     /// <param name="height">화소 단위 세로 크기.</param>
-    /// <param name="stride">행 바이트 수 — 장치가 행 끝을 채우면 가로×바이트/화소보다 클 수 있다.</param>
+    /// <param name="stride">행 바이트 수 — 장치가 행 끝을 채우면 가로×바이트/화소보다 클 수 있다.
+    /// <b>0 이하면 "줄 간격이 없다"</b>로 보고 빈틈없는 값(가로×바이트/화소)으로 친다. 취득 라이브러리가
+    /// 압축 포맷에서 줄이 바이트 경계에 안 떨어질 때 그렇게 알리는데, 여기 오는 화소는 이미 풀린 뒤라
+    /// 그 경우 실제 배치가 빈틈없는 행이 된다.</param>
     /// <param name="layout">채널 배치.</param>
     /// <param name="bitsPerPixel">화소당 비트 수. Mono/Bayer 의 9~16비트는 16비트 우측 정렬 전제로 상위 8비트만 남긴다.</param>
     /// <param name="bayer">Bayer 배치일 때의 패턴 — <b>전송 영상의 실효 패턴</b>이다(<see cref="CvBayerPhase"/> 참조).</param>
@@ -30,6 +33,10 @@ public static class GevFrameConv
         if (pixels is null) throw new ArgumentNullException(nameof(pixels));
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), $"Invalid frame size: {width}x{height}");
+
+        // "줄 간격 없음"(0) 을 빈틈없는 행으로 정규화한다. CamFrame.Stride 는 항상 양수여야 하고,
+        // 0 을 그대로 넘기면 그 프레임을 받는 모든 소비자가 행을 못 건다.
+        if (stride <= 0) stride = width * TightBytesPerPixel(layout, bitsPerPixel);
 
         switch (layout)
         {
@@ -96,6 +103,14 @@ public static class GevFrameConv
         CvBayerPattern.GR => toMono ? ColorConversionCodes.BayerGB2GRAY : ColorConversionCodes.BayerGB2BGR,
         CvBayerPattern.GB => toMono ? ColorConversionCodes.BayerGR2GRAY : ColorConversionCodes.BayerGR2BGR,
         _ => toMono ? ColorConversionCodes.BayerRG2GRAY : ColorConversionCodes.BayerRG2BGR,
+    };
+
+    /// <summary>빈틈없이 채웠을 때의 화소당 바이트 수 — 줄 간격이 주어지지 않았을 때 쓴다.</summary>
+    private static int TightBytesPerPixel(GevPixelLayout layout, int bitsPerPixel) => layout switch
+    {
+        GevPixelLayout.Mono or GevPixelLayout.Bayer => bitsPerPixel <= 8 ? 1 : 2,
+        GevPixelLayout.Rgb or GevPixelLayout.Bgr => 3,
+        _ => 4,
     };
 
     /// <summary>9~16비트 → 8비트. 값이 우측 정렬(0 ~ 2^n−1)이라는 전제로 상위 8비트만 남긴다.</summary>
