@@ -5,8 +5,13 @@ namespace CvInspect.Imaging;
 ///
 /// 여러 대를 쓰는 설비에서 한 대가 없거나 설정이 틀렸다고 앱 전체가 못 뜨면 나머지 검사까지 멈춘다.
 /// 그렇다고 그 자리를 <see cref="VirtualCam"/> 으로 채우면 <b>합성 프레임이 진짜인 척 검사로 흘러든다</b> —
-/// 그쪽이 훨씬 나쁘다. 이 구현은 연결되지 않고, 프레임을 만들지 않으며, 조작을 조용히 삼키지도 않는다:
-/// 즉시 결과가 필요한 <see cref="GrabOne"/> 은 <b>명확히 실패</b>하고 상태 계열은 무시된다.
+/// 그쪽이 훨씬 나쁘다. 이 구현은 연결되지 않고 프레임을 만들지 않는다.
+///
+/// <b>조작에 예외를 던지지 않는다</b> — 대신 무시하고 이유를 로그에 남긴다. 프레임은 <see cref="FrameAcquired"/>
+/// 로 오므로 <see cref="GrabOne"/> 호출부는 <b>"프레임이 안 오는 경우"를 이미 다룰 수밖에 없다</b>
+/// (실제 카메라도 패킷을 잃으면 그렇게 된다). 그 자리를 예외로 대신하면 이 타입만 다른 카메라와 다르게
+/// 흘러 대체 가능성이 깨지고, 타임아웃을 실패 회신으로 바꾸는 호스트에서는 <b>그 회신 경로를 건너뛰어</b>
+/// 상대(설비·상위 시퀀스)가 완료를 영원히 기다린다.
 ///
 /// <see cref="Reason"/> 에 왜 죽은 자리인지 담아 두면 화면·로그에서 그대로 쓸 수 있다.
 /// 카메라가 나중에 돌아올 수 있는 상황이라면 이것 대신 <see cref="ReconnectingCam"/> 을 쓴다 —
@@ -57,15 +62,27 @@ public sealed class DeadCam : ICam
     public void GrabOne()
     {
         ThrowIfDisposed();
-        // 조용히 무시하면 상위가 오지 않을 프레임을 영원히 기다린다.
-        throw new InvalidOperationException($"Camera '{Name}' is unavailable: {Reason}");
+        // 던지지 않는다 — 위 주석 참조. 프레임이 안 오는 것으로 끝나고, 단서는 이 줄이다.
+        WarnIgnored(nameof(GrabOne));
     }
 
-    public void StartContinuous() => ThrowIfDisposed();
+    public void StartContinuous()
+    {
+        ThrowIfDisposed();
+        WarnIgnored(nameof(StartContinuous));
+    }
 
     public void StopContinuous() { }
 
-    public void SetExposureTimeUs(double timeUs) => ThrowIfDisposed();
+    public void SetExposureTimeUs(double timeUs)
+    {
+        ThrowIfDisposed();
+        WarnIgnored(nameof(SetExposureTimeUs));
+    }
+
+    // 사용자 의도가 유실되는 조작만 남긴다 — 청산 계열(Close/StopContinuous/Dispose)은 조용히 끝나는 것이 맞다.
+    private void WarnIgnored(string op) =>
+        CvLog.Publish(CvLogLevel.Warning, LogSource, $"[{Name}] {op} ignored — disconnected stub: {Reason}");
 
     public void Dispose() => _disposed = true;
 
