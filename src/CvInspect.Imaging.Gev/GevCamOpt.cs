@@ -42,6 +42,13 @@ public sealed class GevCamOpt
     /// <summary>단발 그랩이 프레임을 기다리는 상한(ms).</summary>
     public int GrabTimeoutMs { get; set; } = 5000;
 
+    /// <summary>설정 묶음 불러오기 같은 명령이 끝나기를 기다리는 상한(ms).</summary>
+    public int CommandTimeoutMs { get; set; } = 2000;
+
+    /// <summary>명령 뒤 값이 자리 잡기를 기다리는 시간(ms). 카메라가 완료 신호를 제공하지 않으면
+    /// 이것만이 유일한 보호막이다 — 0 으로 두면 아직 적용 중인 값을 읽어 진단이 거짓이 될 수 있다.</summary>
+    public int SettleMs { get; set; } = 300;
+
     /// <summary>Bayer 패턴을 장치 선언 대신 이 값으로 못 박는다(기본 null = 장치 신뢰).
     /// 펌웨어가 미러·ROI 오프셋을 패턴에 반영하지 않고 보고하는 카메라의 탈출구다 —
     /// 그런 장치에서는 색만 뒤바뀌고 예외도 경고도 없다.</summary>

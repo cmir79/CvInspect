@@ -85,7 +85,22 @@ public sealed class ReconnectingCam : ICam
                 _closed = false;              // 게이트 해제 — 이제부터 재연결이 허용된다
                 if (_inner != null) return;   // 이미 열려 있음 (중복 Open 이 인스턴스를 둘로 만들지 않게)
             }
-            AttachAndOpen();
+            try
+            {
+                AttachAndOpen();
+            }
+            catch (Exception ex) when (_opt.RetryInitialOpen)
+            {
+                // 기동 시점에 아직 안 붙은 카메라를 영영 죽은 자리로 만들지 않는다 — 재연결 루프는
+                // '한 번 열린 뒤의 상실' 에만 돌기 때문에, 여기서 손수 태워 줘야 나중에 붙을 때 합류한다.
+                CvLog.Publish(CvLogLevel.Warning, LogSource,
+                    $"[{Name}] initial open failed — retrying in the background.", ex);
+                lock (_sync)
+                {
+                    if (!_disposed && !_closed) ScheduleReconnectLocked();
+                }
+                return;
+            }
         }
         finally
         {

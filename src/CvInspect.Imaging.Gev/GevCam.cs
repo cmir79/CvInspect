@@ -523,6 +523,8 @@ public sealed class GevCam : ICam
         {
             await sel.SetAsync(set, ct).ConfigureAwait(false);
             await load.ExecuteAsync(ct).ConfigureAwait(false);
+            await WaitForCommandAsync(load, ct).ConfigureAwait(false);
+            // 캐시를 버려야 이후 읽기가 세트가 바꿔 놓은 값을 본다 — 안 버리면 로드 이전 값이 그대로 나온다.
             nodes.InvalidateAll();
             WriteLog(CvLogLevel.Info, $"user set '{set}' loaded");
         }
@@ -530,6 +532,28 @@ public sealed class GevCam : ICam
         {
             WriteLog(CvLogLevel.Warning, $"failed to load user set '{set}'", ex);
         }
+    }
+
+    /// <summary>
+    /// 명령이 끝나기를 기다린다. 완료 신호는 믿을 수 있을 때만 쓴다 — 카메라 XML 이 폴링 주기를 선언하지
+    /// 않으면 완료 조회가 <b>무조건 참</b>을 돌려주므로, 그것만 보고 넘어가면 아직 적용 중인 값을 읽는다.
+    /// 그래서 신호를 기다린 뒤 짧은 안정 시간을 한 번 더 준다.
+    ///
+    /// 이게 없으면 사용자 세트가 트리거를 켜는 구성에서 <b>"트리거 Off 로 찍혔는데 프레임이 안 온다"</b> 는
+    /// 최악의 로그가 나온다 — 진단이 오히려 오도한다.
+    /// </summary>
+    private async Task WaitForCommandAsync(ICommand cmd, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, _gev.CommandTimeoutMs));
+        while (DateTime.UtcNow < deadline)
+        {
+            bool done;
+            try { done = await cmd.IsDoneAsync(ct).ConfigureAwait(false); }
+            catch (GenApiException) { break; }   // 완료를 물을 수 없는 명령 — 안정 시간으로만 처리한다
+            if (done) break;
+            await Task.Delay(20, ct).ConfigureAwait(false);
+        }
+        if (_gev.SettleMs > 0) await Task.Delay(_gev.SettleMs, ct).ConfigureAwait(false);
     }
 
     /// <summary>노출 시간(마이크로초) 적용. <b>노드 이름이 하나가 아니다</b> — 표준 세대가 갈려
