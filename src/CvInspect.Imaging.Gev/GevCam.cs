@@ -1,0 +1,602 @@
+using CvInspect.Imaging;
+using GevSharp;
+using GevSharp.GenApi;
+using GevSharp.Pfnc;
+
+namespace CvInspect.Imaging.Gev;
+
+/// <summary>
+/// GigE 카메라 취득 어댑터 — 벤더 SDK 없이 프로토콜로 직접 말하는 백엔드를 <see cref="ICam"/> 에 붙인다.
+/// <see cref="CamFactory.Register"/> 로 등록해 쓴다.
+///
+/// 카메라는 <see cref="CamOpt.SerialNumber"/> 로 찾는다 — IP 는 DHCP 로 바뀌지만 시리얼은 안 바뀐다.
+/// 못 찾으면 그때 보인 장치들을 문구에 실어 던지므로, 망 문제·시리얼 오설정·서브넷 불일치를 로그만으로 가를 수 있다.
+///
+/// <b>동기↔비동기 경계</b>: 취득 라이브러리는 전면 비동기고 ICam 은 동기라, 이 클래스가 그 다리를 전담한다.
+/// 라이브러리가 모든 await 를 컨텍스트 없이 이어 붙이므로 UI 스레드에서 불러도 교착하지 않지만, 그 스레드를
+/// 붙잡기는 하므로 호스트는 취득 조작을 UI 스레드에서 하지 않는 편이 낫다.
+/// </summary>
+public sealed class GevCam : ICam
+{
+    private const string LogSource = nameof(GevCam);
+
+    private readonly CamOpt _opt;
+    private readonly GevCamOpt _gev;
+    private readonly object _sync = new();
+
+    private GevDeviceInfo? _info;      // Close/Open 사이에 남겨 둔다 — 다시 여는 길이 짧아지고 NIC 도 그대로 고른다
+    private GevDevice? _dev;
+    private GenApiNodeMap? _nodes;
+    private GevStream? _stream;
+
+    private Thread? _pump;
+    private CancellationTokenSource? _pumpCts;
+    private bool _disposed;
+
+    // 프레임 해석에 필요한 카메라 상태 — 열 때 한 번 읽는다(프레임마다 레지스터를 읽지 않는다)
+    private CvBayerPattern? _bayerOverride;
+
+    public GevCam(CamOpt opt, GevCamOpt? gev = null)
+    {
+        _opt = opt ?? throw new ArgumentNullException(nameof(opt));
+        _gev = gev ?? new GevCamOpt();
+        Name = string.IsNullOrWhiteSpace(opt.Name) ? "GevCam" : opt.Name;
+    }
+
+    public string Name { get; }
+    public string ComType => "GigE";
+    public bool IsConnected { get; private set; }
+    public bool IsGrabbing => _pump != null;
+
+    public event EventHandler<CamFrame>? FrameAcquired;
+    public event EventHandler<ConnArgs>? ConnectionChanged;
+    public event EventHandler<bool>? GrabbingChanged;
+
+    // === 수명 ===
+
+    public void Open()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            if (_dev != null) return;
+            Run(OpenCoreAsync);
+            IsConnected = true;
+        }
+        ConnectionChanged?.Invoke(this, new ConnArgs(true));
+        WriteLog(CvLogLevel.Info, $"opened (SN={_opt.SerialNumber})");
+    }
+
+    private async Task OpenCoreAsync(CancellationToken ct)
+    {
+        var info = await FindDeviceAsync(ct).ConfigureAwait(false);
+
+        // 옵션 객체는 세션마다 새로 만든다 — 라이브러리가 참조로 붙들고 시작 과정에서 되쓰기도 한다.
+        var dev = await GevDevice.OpenAsync(info, new GevDeviceOpt
+        {
+            AccessMode = GevAccessMode.Control,   // ReadOnly 는 하트비트도 제어권 상실 통지도 없다
+            GvcpTimeoutMs = _gev.GvcpTimeoutMs,
+            HeartbeatTimeoutMs = _gev.HeartbeatTimeoutMs,
+            XmlCacheDir = _gev.XmlCacheDir,
+        }, ct).ConfigureAwait(false);
+
+        try
+        {
+            // 열고 나서 다시 확인한다 — Info 는 장치에서 새로 읽은 값이라 이쪽이 권위 있다.
+            // 캐시한 주소로 열었는데 그 사이 DHCP 가 주소를 다른 카메라에 준 경우가 여기서 걸린다.
+            if (!SerialMatches(dev.Info.SerialNumber))
+                throw new InvalidOperationException(
+                    $"Opened a different camera: expected SN='{_opt.SerialNumber}', found SN='{dev.Info.SerialNumber}' at {dev.Address}.");
+
+            dev.ControlLost += OnControlLost;
+
+            var nodes = await dev.GetNodeMapAsync(ct).ConfigureAwait(false);
+            await LoadUserSetAsync(nodes, ct).ConfigureAwait(false);
+            await ApplyExposureAsync(nodes, _opt.ExposureTimeUs, ct).ConfigureAwait(false);
+            _bayerOverride = _gev.BayerPatternOverride ?? await ResolveBayerAsync(nodes, ct).ConfigureAwait(false);
+
+            var stream = await dev.OpenStreamAsync(new GevStreamOpt
+            {
+                BufferCount = _gev.BufferCount,
+                SocketBufferBytes = _gev.SocketBufferBytes,
+                PacketSizeMode = _gev.UseFixedPacketSize ? PacketSizeMode.Fixed : PacketSizeMode.Auto,
+                PacketSize = _gev.PacketSize,
+                DeliverIncompleteFrames = false,   // ICam 계약: 완전한 프레임만 발행
+                PayloadSize = (int?)await TryReadIntAsync(nodes, "PayloadSize", ct).ConfigureAwait(false),
+            }, ct).ConfigureAwait(false);
+
+            try
+            {
+                stream.FrameDropped += OnFrameDropped;
+                await stream.StartAsync(ct).ConfigureAwait(false);
+                // 전송 파라미터 잠금은 스트림이 선 뒤, 취득을 걸기 전에 — 순서가 뒤바뀌면 장치가 거부한다.
+                await dev.SetTlParamsLockedAsync(true, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                stream.FrameDropped -= OnFrameDropped;
+                await stream.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+
+            _info = info;
+            _dev = dev;
+            _nodes = nodes;
+            _stream = stream;
+        }
+        catch
+        {
+            dev.ControlLost -= OnControlLost;
+            await dev.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>시리얼로 카메라를 고른다. 못 찾으면 그때 보인 것들을 문구에 실어 던진다 —
+    /// 목록이 비었으면 망·방화벽·NIC 쪽이고, 다른 시리얼이 보이면 설정이 틀렸고,
+    /// 보이는데 서브넷이 어긋나면 주소 문제다. 이 문구가 없으면 설비에서 셋을 구분할 방법이 없다.</summary>
+    private async Task<GevDeviceInfo> FindDeviceAsync(CancellationToken ct)
+    {
+        var found = await GevDiscovery.DiscoverAsync(
+            new GevDiscoveryOpt { TimeoutMs = _gev.DiscoveryTimeoutMs }, ct).ConfigureAwait(false);
+
+        var hit = found.FirstOrDefault(d => SerialMatches(d.SerialNumber));
+        if (hit is null)
+        {
+            var seen = found.Count == 0
+                ? "(none)"
+                : string.Join(" | ", found.Select(d =>
+                    $"SN='{d.SerialNumber.Trim()}' {d.Manufacturer} {d.Model} ip={d.Address}/{d.Subnet} nic={d.InterfaceAddress}" +
+                    (d.IsReachableDirectly ? "" : " [SUBNET MISMATCH]")));
+            throw new InvalidOperationException(
+                $"GigE camera not found: SN='{_opt.SerialNumber}'. Discovered {found.Count} device(s): {seen}");
+        }
+
+        if (!hit.IsReachableDirectly)
+            WriteLog(CvLogLevel.Warning,
+                $"camera {hit.Address}/{hit.Subnet} is not on the subnet of NIC {hit.InterfaceAddress} — streaming may fail even though discovery answered.");
+
+        return hit;
+    }
+
+    private bool SerialMatches(string candidate)
+        => string.Equals(candidate.Trim(), (_opt.SerialNumber ?? string.Empty).Trim(), StringComparison.Ordinal);
+
+    public void Close()
+    {
+        lock (_sync)
+        {
+            if (_disposed || _dev is null) return;
+            StopPumpCore();
+            Run(CloseCoreAsync, CancellationToken.None);
+            IsConnected = false;
+        }
+        GrabbingChanged?.Invoke(this, false);
+        ConnectionChanged?.Invoke(this, new ConnArgs(false));
+        WriteLog(CvLogLevel.Info, "closed");
+    }
+
+    /// <summary>정지는 개시의 역순이고 <b>취소 없이</b> 끝까지 간다 — 중간에 그만두면 카메라가 죽은 소켓으로
+    /// 계속 쏘거나 제어권이 걸린 채 남는다. 각 단계는 실패해도 다음 단계를 막지 않는다.</summary>
+    private async Task CloseCoreAsync(CancellationToken ct)
+    {
+        var dev = _dev;
+        var stream = _stream;
+        var nodes = _nodes;
+        _dev = null;
+        _stream = null;
+        _nodes = null;
+
+        if (nodes != null) await TryExecuteAsync(nodes, "AcquisitionStop", ct).ConfigureAwait(false);
+        if (dev != null) await SwallowAsync(() => dev.SetTlParamsLockedAsync(false, ct)).ConfigureAwait(false);
+
+        if (stream != null)
+        {
+            stream.FrameDropped -= OnFrameDropped;
+            await SwallowAsync(() => stream.StopAsync(ct)).ConfigureAwait(false);
+            await SwallowAsync(async () => await stream.DisposeAsync().ConfigureAwait(false)).ConfigureAwait(false);
+        }
+
+        if (dev != null)
+        {
+            dev.ControlLost -= OnControlLost;
+            await SwallowAsync(async () => await dev.DisposeAsync().ConfigureAwait(false)).ConfigureAwait(false);
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_sync)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
+        Close();
+    }
+
+    /// <summary>제어권 상실 — 하트비트가 끊겼거나 다른 응용이 카메라를 가져갔다. 스레드풀에서 오고
+    /// 이 통지 뒤 장치는 못 쓴다. 되살리는 것은 상위 몫이다(<c>ReconnectingCam</c> 으로 감싸면 자동).</summary>
+    private void OnControlLost(GevDevice dev, Exception? ex)
+    {
+        lock (_sync)
+        {
+            if (!ReferenceEquals(dev, _dev)) return;   // 이미 교체·정리된 세션의 늦은 통지
+            if (!IsConnected) return;
+            IsConnected = false;
+        }
+        WriteLog(CvLogLevel.Warning, "control lost", ex);
+        GrabbingChanged?.Invoke(this, false);
+        ConnectionChanged?.Invoke(this, new ConnArgs(false));
+    }
+
+    /// <summary>버려진 프레임 진단. 수신 스레드에서 오므로 세는 것 말고는 하지 않는다 —
+    /// 여기서 무거운 일을 하면 취득이 밀린다.</summary>
+    private void OnFrameDropped(GevFrameDiag diag)
+        => WriteLog(CvLogLevel.Warning,
+            $"frame {diag.FrameId} dropped: {diag.Reason} (missing {diag.MissingPackets}/{diag.ExpectedPackets}, code 0x{diag.Code:X4})");
+
+    // === 조작 ===
+
+    public void GrabOne()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            var stream = EnsureOpen();
+            if (_pump != null) return;   // 연속 취득 중이면 그 흐름이 이미 프레임을 낸다
+            Run(ct => GrabOnceAsync(stream, ct));
+        }
+    }
+
+    private async Task GrabOnceAsync(GevStream stream, CancellationToken ct)
+    {
+        var nodes = _nodes!;
+        await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
+        await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
+
+        // 수신은 반드시 자기 토큰으로 끊는다 — 밖에서 시한을 씌우면 버려진 대기자가 다음 프레임을
+        // 삼키고 그 버퍼가 영영 풀로 돌아오지 않는다.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(Math.Max(1, _gev.GrabTimeoutMs));
+
+        GevFrame? frame = null;
+        try
+        {
+            frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+            Emit(frame);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"No frame within {_gev.GrabTimeoutMs} ms.");
+        }
+        finally
+        {
+            // 취소가 이겨도 프레임이 손에 들어올 수 있다 — 무엇이 오든 반납한다.
+            frame?.Dispose();
+        }
+    }
+
+    public void StartContinuous()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            var stream = EnsureOpen();
+            if (_pump != null) return;
+
+            Run(async ct =>
+            {
+                await TrySetEnumAsync(_nodes!, "AcquisitionMode", "Continuous", ct).ConfigureAwait(false);
+                await TryExecuteAsync(_nodes!, "AcquisitionStart", ct).ConfigureAwait(false);
+            });
+
+            _pumpCts = new CancellationTokenSource();
+            var token = _pumpCts.Token;
+            _pump = new Thread(() => PumpLoop(stream, token)) { IsBackground = true, Name = $"{Name}.Gev" };
+            _pump.Start();
+        }
+        GrabbingChanged?.Invoke(this, true);
+        WriteLog(CvLogLevel.Info, "continuous grab started");
+    }
+
+    public void StopContinuous()
+    {
+        bool stopped;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            stopped = StopPumpCore();
+            if (stopped && _nodes != null)
+                Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
+        }
+        if (stopped)
+        {
+            GrabbingChanged?.Invoke(this, false);
+            WriteLog(CvLogLevel.Info, "continuous grab stopped");
+        }
+    }
+
+    /// <summary>수신 루프 정지. 반환값: 호출 전에 돌고 있었으면 true. <see cref="_sync"/> 보유 전제.</summary>
+    private bool StopPumpCore()
+    {
+        var pump = _pump;
+        if (pump is null) return false;
+        _pump = null;
+        try { _pumpCts?.Cancel(); } catch (ObjectDisposedException) { }
+        if (!ReferenceEquals(Thread.CurrentThread, pump)) pump.Join(2000);
+        _pumpCts?.Dispose();
+        _pumpCts = null;
+        return true;
+    }
+
+    private void PumpLoop(GevStream stream, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            GevFrame? frame = null;
+            try
+            {
+                frame = stream.ReceiveAsync(ct).AsTask().GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException) { break; }
+            catch (GevStreamClosedException) { break; }
+            catch (ObjectDisposedException) { break; }
+            catch (Exception ex)
+            {
+                WriteLog(CvLogLevel.Warning, "frame receive failed", ex);
+                break;
+            }
+
+            try { Emit(frame); }
+            catch (Exception ex) { WriteLog(CvLogLevel.Warning, "frame conversion failed", ex); }
+            finally { frame.Dispose(); }
+        }
+    }
+
+    public void SetExposureTimeUs(double timeUs)
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            if (_nodes is not { } nodes) return;   // 아직 안 열림 — 열 때 CamOpt 값으로 적용된다
+            Run(ct => ApplyExposureAsync(nodes, timeUs, ct));
+        }
+    }
+
+    // === 프레임 변환 ===
+
+    /// <summary>취득 프레임을 <see cref="CamFrame"/> 으로 옮겨 발행한다. 프레임 버퍼는 호출이 끝나면
+    /// 반납되므로 반드시 이 안에서 복사를 마친다.</summary>
+    private void Emit(GevFrame frame)
+    {
+        var cam = Convert(frame);
+        if (cam is null) return;
+        FrameAcquired?.Invoke(this, cam);
+    }
+
+    private CamFrame? Convert(GevFrame frame)
+    {
+        var code = frame.PixelFormatCode;
+        var w = frame.Width;
+        var h = frame.Height;
+
+        if (!PixelFormatInfo.IsKnown(code))
+        {
+            WriteLog(CvLogLevel.Warning, $"unsupported pixel format 0x{code:X8} ({PixelFormatInfo.Name(code)}) — frame dropped");
+            return null;
+        }
+
+        // 압축 포맷은 8비트로 접어서 받는다. CamFrame 이 8비트뿐이라 16비트를 거쳐 가면 재변환이 낭비다.
+        if (PixelUnpack.CanFoldToMono8(code))
+        {
+            // 줄 간격이 없는 프레임(줄이 바이트 경계에 안 떨어지는 압축 포맷)은 한 덩어리로 넘긴다.
+            var src = frame.Data.Span.Slice(0, frame.ImageSize);
+            var folded = frame.Stride > 0
+                ? PixelUnpack.FoldToMono8(code, src, frame.Stride, w, h)
+                : PixelUnpack.FoldToMono8(code, src, frame.ImageSize, w * h, 1);
+            var layoutPacked = PixelFormatInfo.IsBayer(code) ? GevPixelLayout.Bayer : GevPixelLayout.Mono;
+            return GevFrameConv.ToCamFrame(folded, w, h, w, layoutPacked, 8, BayerOf(code), _gev.BayerToMono);
+        }
+
+        if (!TryDescribe(code, out var layout, out var significantBits))
+        {
+            WriteLog(CvLogLevel.Warning, $"unhandled pixel format {PixelFormatInfo.Name(code)} — frame dropped");
+            return null;
+        }
+
+        // 화소를 우리 것으로 실체화한다 — 원본 버퍼는 이 호출이 끝나면 풀로 돌아간다.
+        var pixels = frame.Data.Span.Slice(0, frame.ImageSize).ToArray();
+        return GevFrameConv.ToCamFrame(pixels, w, h, frame.Stride, layout, significantBits, BayerOf(code), _gev.BayerToMono);
+    }
+
+    /// <summary>PFNC 코드를 변환기 입력으로 푼다. 유효 비트(깊이)를 쓴다 — 코드가 차지하는 비트가 아니다.</summary>
+    private static bool TryDescribe(uint code, out GevPixelLayout layout, out int significantBits)
+    {
+        significantBits = PixelFormatInfo.Depth(code);
+        layout = GevPixelLayout.Mono;
+        if (significantBits is < 8 or > 16) return false;   // 8비트 서브셋으로 접을 수 없는 것(부동소수·32비트 등)
+
+        if (PixelFormatInfo.IsBayer(code)) { layout = GevPixelLayout.Bayer; return true; }
+        if (PixelFormatInfo.IsMono(code)) { layout = GevPixelLayout.Mono; return true; }
+
+        // 컬러는 8비트 채널만 받는다 — 채널당 비트가 다른 것은 위 깊이 판정이 아니라 여기서 갈린다.
+        if (significantBits != 8) return false;
+        switch (PixelFormatInfo.ToPixelFormat(code))
+        {
+            case PixelFormat.RGB8: layout = GevPixelLayout.Rgb; return true;
+            case PixelFormat.BGR8: layout = GevPixelLayout.Bgr; return true;
+            case PixelFormat.RGBa8: layout = GevPixelLayout.Rgba; return true;
+            case PixelFormat.BGRa8: layout = GevPixelLayout.Bgra; return true;
+            default: return false;
+        }
+    }
+
+    private CvBayerPattern? BayerOf(uint code)
+    {
+        if (!PixelFormatInfo.IsBayer(code)) return null;
+        if (_bayerOverride is { } forced) return forced;
+        return ToCvPattern(PixelFormatInfo.BayerPattern(code));
+    }
+
+    private static CvBayerPattern? ToCvPattern(BayerPattern p) => p switch
+    {
+        BayerPattern.RG => CvBayerPattern.RG,
+        BayerPattern.GR => CvBayerPattern.GR,
+        BayerPattern.GB => CvBayerPattern.GB,
+        BayerPattern.BG => CvBayerPattern.BG,
+        _ => null,
+    };
+
+    // === 카메라 피처 ===
+
+    /// <summary>저장된 설정 묶음을 불러온다. 불러오면 노드 값이 통째로 바뀌므로 캐시를 버린다.</summary>
+    private async Task LoadUserSetAsync(GenApiNodeMap nodes, CancellationToken ct)
+    {
+        var set = (_opt.UserSettings ?? string.Empty).Trim();
+        if (set.Length == 0) return;
+        if (nodes.GetNode("UserSetSelector") is not IEnumeration sel || nodes.GetNode("UserSetLoad") is not ICommand load)
+        {
+            WriteLog(CvLogLevel.Warning, $"camera has no user set feature — '{set}' ignored");
+            return;
+        }
+        try
+        {
+            await sel.SetAsync(set, ct).ConfigureAwait(false);
+            await load.ExecuteAsync(ct).ConfigureAwait(false);
+            nodes.InvalidateAll();
+            WriteLog(CvLogLevel.Info, $"user set '{set}' loaded");
+        }
+        catch (GenApiException ex)
+        {
+            WriteLog(CvLogLevel.Warning, $"failed to load user set '{set}'", ex);
+        }
+    }
+
+    /// <summary>노출 시간(마이크로초) 적용. <b>노드 이름이 하나가 아니다</b> — 표준 세대가 갈려
+    /// 현장에 신구 이름이 둘 다 있고 취득 라이브러리는 별칭을 만들어 주지 않는다.</summary>
+    private async Task ApplyExposureAsync(GenApiNodeMap nodes, double timeUs, CancellationToken ct)
+    {
+        if (timeUs <= 0) return;
+        var node = Find<IFloat>(nodes, "ExposureTime", "ExposureTimeAbs");
+        if (node is null)
+        {
+            WriteLog(CvLogLevel.Warning, $"camera exposes no exposure-time node — {timeUs}us ignored");
+            return;
+        }
+        try
+        {
+            await node.SetAsync(timeUs, ct).ConfigureAwait(false);
+        }
+        catch (GenApiException ex)
+        {
+            WriteLog(CvLogLevel.Warning, $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
+        }
+    }
+
+    /// <summary>
+    /// 전송 영상의 실효 Bayer 패턴을 판정한다. 미러와 홀수 ROI 오프셋은 2×2 배열의 시작점을 옮기는데,
+    /// 표준은 그때 장치가 PixelFormat 을 고쳐 보고하도록 요구하지 않는다.
+    ///
+    /// 그래서 <b>계산값을 강요하지 않는다</b> — 이미 보정해 보고하는 펌웨어에서는 이중 보정이 된다.
+    /// 선언값을 그대로 쓰되, 계산과 어긋나면 <b>둘 다 로그에 남겨</b> 현장이 판단할 근거를 준다.
+    /// 못 박아야 하면 <see cref="GevCamOpt.BayerPatternOverride"/> 가 탈출구다.
+    /// </summary>
+    private async Task<CvBayerPattern?> ResolveBayerAsync(GenApiNodeMap nodes, CancellationToken ct)
+    {
+        var code = (uint?)await TryReadIntAsync(nodes, "PixelFormat", ct).ConfigureAwait(false) ?? 0u;
+        if (code == 0 || !PixelFormatInfo.IsBayer(code)) return null;
+        if (ToCvPattern(PixelFormatInfo.BayerPattern(code)) is not { } declared) return null;
+
+        // 없는 노드는 중립값으로 — ReverseY 를 아예 선언하지 않는 카메라가 흔하다.
+        var revX = await TryReadBoolAsync(nodes, "ReverseX", ct).ConfigureAwait(false) ?? false;
+        var revY = await TryReadBoolAsync(nodes, "ReverseY", ct).ConfigureAwait(false) ?? false;
+        var offX = (int)(await TryReadIntAsync(nodes, "OffsetX", ct).ConfigureAwait(false) ?? 0);
+        var offY = (int)(await TryReadIntAsync(nodes, "OffsetY", ct).ConfigureAwait(false) ?? 0);
+
+        // 미러의 기준 치수 — 센서 전체를 뒤집고 ROI 를 떼는 장치면 최대 치수, ROI 안에서 뒤집으면 ROI 치수다.
+        // 어느 쪽인지 알 수 없으므로 최대 치수를 먼저 쓰고, 없으면 ROI 치수로 떨어진다.
+        var maxW = (int)(await TryReadIntAsync(nodes, "WidthMax", ct).ConfigureAwait(false)
+                         ?? await TryReadIntAsync(nodes, "Width", ct).ConfigureAwait(false) ?? 0);
+        var maxH = (int)(await TryReadIntAsync(nodes, "HeightMax", ct).ConfigureAwait(false)
+                         ?? await TryReadIntAsync(nodes, "Height", ct).ConfigureAwait(false) ?? 0);
+        if (maxW <= 0 || maxH <= 0) return null;
+
+        var computed = CvBayerPhase.Effective(declared, maxW, maxH, revX, revY, offX, offY);
+        if (computed == declared) return null;   // 선언값을 그대로 쓴다
+
+        WriteLog(CvLogLevel.Warning,
+            $"Bayer phase disagreement: the camera reports {declared} but geometry implies {computed} " +
+            $"(ReverseX={revX} ReverseY={revY} OffsetX={offX} OffsetY={offY} max={maxW}x{maxH}). " +
+            $"Using the reported pattern — if colours look wrong, pin it with BayerPatternOverride.");
+        return null;
+    }
+
+    // === 노드 접근 도우미 ===
+
+    private static T? Find<T>(GenApiNodeMap nodes, params string[] names) where T : class, INode
+    {
+        foreach (var n in names)
+            if (nodes.GetNode(n) is T hit) return hit;
+        return null;
+    }
+
+    private static async Task<long?> TryReadIntAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
+    {
+        try
+        {
+            return nodes.GetNode(name) switch
+            {
+                IInteger i => await i.GetAsync(ct).ConfigureAwait(false),
+                IEnumeration e => await e.GetIntValueAsync(ct).ConfigureAwait(false),
+                _ => null,
+            };
+        }
+        catch (GenApiException) { return null; }   // 미구현·잠김·읽기 불가
+    }
+
+    private static async Task<bool?> TryReadBoolAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
+    {
+        if (nodes.GetNode(name) is not IBoolean b) return null;
+        try { return await b.GetAsync(ct).ConfigureAwait(false); }
+        catch (GenApiException) { return null; }
+    }
+
+    private async Task TrySetEnumAsync(GenApiNodeMap nodes, string name, string symbolic, CancellationToken ct)
+    {
+        if (nodes.GetNode(name) is not IEnumeration e) return;
+        if (e.GetEntry(symbolic) is null) return;   // 선언 자체가 없으면 건드리지 않는다
+        try { await e.SetAsync(symbolic, ct).ConfigureAwait(false); }
+        catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to set {name}={symbolic}", ex); }
+    }
+
+    private async Task TryExecuteAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
+    {
+        if (nodes.GetNode(name) is not ICommand c) return;
+        try { await c.ExecuteAsync(ct).ConfigureAwait(false); }
+        catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
+        catch (GevException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
+    }
+
+    // === 잡동사니 ===
+
+    private GevStream EnsureOpen()
+        => _stream ?? throw new InvalidOperationException("Camera is not opened.");
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(GevCam));
+    }
+
+    /// <summary>비동기 호출을 동기 경계로 넘긴다. 라이브러리가 컨텍스트를 잡지 않으므로 교착하지 않는다.</summary>
+    private static void Run(Func<CancellationToken, Task> body, CancellationToken ct = default)
+        => Task.Run(() => body(ct), ct).GetAwaiter().GetResult();
+
+    private static async Task SwallowAsync(Func<Task> body)
+    {
+        try { await body().ConfigureAwait(false); }
+        catch (Exception ex) { CvLog.Publish(CvLogLevel.Debug, LogSource, "teardown step failed.", ex); }
+    }
+
+    private void WriteLog(CvLogLevel level, string message, Exception? ex = null)
+        => CvLog.Publish(level, LogSource, $"[{Name}] {message}", ex);
+}
