@@ -190,8 +190,16 @@ static async Task RawStreamAsync(GevDevice dev, GenApiNodeMap nodes, Args arg, A
         $"ResendRequests={s.ResendRequests} ResendRecovered={s.ResendRecovered} PacketsMissing={s.PacketsMissing}");
     if (s.PacketsResent == 0 && s.PacketsDuplicated > 0)
         log("  note: this camera returns resend copies with a normal success status — PacketsResent stays 0 even when resend works, and PacketsDuplicated carries the signal");
-    if (s.ResendRequests > 0 && s.ResendRecovered == 0)
-        log("  note: resend requests went out but nothing came back — the device may already have retired the block (PacketTimeoutMs too late)");
+    // 재전송 요청 수는 그 자체로 고장 신호가 아니다 — 벌어진 패킷에 타임아웃이 성급히 걸리면
+    // 원본이 재전송보다 먼저 도착해 요청만 남는다(실측: 8시간에 6,392건 요청, 실제 누락 0).
+    // 건강 판정은 PacketsMissing 과 불완전 프레임으로 한다.
+    if (s.ResendRequests > 0 && s.PacketsMissing == 0)
+        log("  note: resend requests went out but nothing was actually lost — the packet timeout fired early on widened gaps " +
+            "and the originals arrived first. This is noise, not a fault: judge health by PacketsMissing and incomplete frames, " +
+            "never by the request count. Raise PacketTimeoutMs to quieten it.");
+    else if (s.ResendRequests > 0 && s.ResendRecovered == 0 && s.PacketsMissing > 0)
+        log("  !! resend requests went out, nothing came back, and packets are still missing — the device may already have " +
+            "retired the block (PacketTimeoutMs too late, or the loss is upstream of the camera)");
     if (s.FramesDroppedUnsupported > 0)
         log("  !! frames dropped as Unsupported — the camera sends a payload type we do not assemble (chunk mode on?)");
     lock (drops)

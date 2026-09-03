@@ -584,12 +584,18 @@ public sealed class GevCam : ICam
                 WriteLog(CvLogLevel.Warning, $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
                 return;
             }
+            // 격자를 낸 노드가 우리가 쓴 노드와 다르면 사이에 변환이 있다는 뜻이라, 맞춘 값은 어림이다.
+            var sameUnits = string.Equals(ex.NodeName, node.Name, StringComparison.Ordinal);
             try
             {
                 await node.SetAsync(snapped, ct).ConfigureAwait(false);
                 WriteLog(CvLogLevel.Warning,
                     $"exposure {timeUs}us is not on the camera's grid (anchor {anchor}, step {increment}) — " +
-                    $"used {snapped}us instead. Put that value in the configuration to stop this message.");
+                    $"used {snapped}us instead. Put that value in the configuration to stop this message." +
+                    (sameUnits
+                        ? string.Empty
+                        : $" The grid came from '{ex.NodeName}', not '{node.Name}', so a conversion sits in between " +
+                          "and this value is an approximation — check the applied exposure below."));
             }
             catch (GenApiException retryEx)
             {
@@ -608,6 +614,7 @@ public sealed class GevCam : ICam
         }
 
         // 쓰기가 성공해도 카메라가 그 값을 그대로 쓴다는 보장은 없다 — 실제 값을 남긴다.
+        // "썼으니 됐겠지" 가 이 바닥에서 제일 자주 틀리는 가정이다.
         try
         {
             var actual = await node.GetAsync(ct).ConfigureAwait(false);
