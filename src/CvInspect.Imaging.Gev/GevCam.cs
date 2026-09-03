@@ -75,13 +75,27 @@ public sealed class GevCam : ICam
         var info = await FindDeviceAsync(ct).ConfigureAwait(false);
 
         // 옵션 객체는 세션마다 새로 만든다 — 라이브러리가 참조로 붙들고 시작 과정에서 되쓰기도 한다.
-        var dev = await GevDevice.OpenAsync(info, new GevDeviceOpt
+        GevDevice dev;
+        try
         {
-            AccessMode = GevAccessMode.Control,   // ReadOnly 는 하트비트도 제어권 상실 통지도 없다
-            GvcpTimeoutMs = _gev.GvcpTimeoutMs,
-            HeartbeatTimeoutMs = _gev.HeartbeatTimeoutMs,
-            XmlCacheDir = _gev.XmlCacheDir,
-        }, ct).ConfigureAwait(false);
+            dev = await GevDevice.OpenAsync(info, new GevDeviceOpt
+            {
+                AccessMode = GevAccessMode.Control,   // ReadOnly 는 하트비트도 제어권 상실 통지도 없다
+                GvcpTimeoutMs = _gev.GvcpTimeoutMs,
+                HeartbeatTimeoutMs = _gev.HeartbeatTimeoutMs,
+                XmlCacheDir = _gev.XmlCacheDir,
+            }, ct).ConfigureAwait(false);
+        }
+        catch (GevControlLostException ex)
+        {
+            // GigE 는 제어권이 하나다 — 대개 벤더 뷰어나 이 앱의 다른 인스턴스가 아직 잡고 있다.
+            // 원문만 올리면 설비에서 무엇을 하라는 것인지 알 수 없다.
+            throw new InvalidOperationException(
+                $"Camera SN='{info.SerialNumber.Trim()}' at {info.Address} is already controlled by another application. " +
+                "Close the vendor viewer or any other instance holding it, then retry. " +
+                "If nothing is holding it, wait for the previous session's heartbeat to time out " +
+                $"({_gev.HeartbeatTimeoutMs} ms) and retry.", ex);
+        }
 
         try
         {
@@ -96,6 +110,7 @@ public sealed class GevCam : ICam
             var nodes = await dev.GetNodeMapAsync(ct).ConfigureAwait(false);
             await LoadUserSetAsync(nodes, ct).ConfigureAwait(false);
             await ApplyExposureAsync(nodes, _opt.ExposureTimeUs, ct).ConfigureAwait(false);
+            await LogCameraStateAsync(nodes, ct).ConfigureAwait(false);
             _bayerOverride = _gev.BayerPatternOverride ?? await ResolveBayerAsync(nodes, ct).ConfigureAwait(false);
 
             var stream = await dev.OpenStreamAsync(new GevStreamOpt
@@ -309,7 +324,10 @@ public sealed class GevCam : ICam
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException($"No frame within {_gev.GrabTimeoutMs} ms.");
+            // 시한 초과의 원인은 대개 카메라 상태다 — 열 때 남긴 'camera state' 줄을 함께 보게 한다.
+            throw new TimeoutException(
+                $"No frame within {_gev.GrabTimeoutMs} ms. Check the 'camera state' line logged at open: " +
+                "TriggerMode On means the camera waits for its trigger, and ChunkModeActive On means frames are dropped.");
         }
         finally
         {
@@ -536,6 +554,37 @@ public sealed class GevCam : ICam
     }
 
     /// <summary>
+    /// 카메라가 지금 어떤 상태인지 한 줄로 남긴다 — <b>"프레임이 안 온다" 의 원인 대부분이 여기 보인다.</b>
+    /// 특히 트리거가 켜져 있으면 신호가 오기 전까지 아무것도 오지 않는데, 그 사실은 어디에도 드러나지 않고
+    /// 그냥 취득이 조용히 멈춘 것처럼 보인다. 청크가 켜진 카메라도 마찬가지로 프레임이 0 이 된다.
+    /// </summary>
+    private async Task LogCameraStateAsync(GenApiNodeMap nodes, CancellationToken ct)
+    {
+        var pixel = await TryReadEnumAsync(nodes, "PixelFormat", ct).ConfigureAwait(false);
+        var w = await TryReadIntAsync(nodes, "Width", ct).ConfigureAwait(false);
+        var h = await TryReadIntAsync(nodes, "Height", ct).ConfigureAwait(false);
+        var payload = await TryReadIntAsync(nodes, "PayloadSize", ct).ConfigureAwait(false);
+        var acq = await TryReadEnumAsync(nodes, "AcquisitionMode", ct).ConfigureAwait(false);
+        var trigMode = await TryReadEnumAsync(nodes, "TriggerMode", ct).ConfigureAwait(false);
+        var trigSrc = await TryReadEnumAsync(nodes, "TriggerSource", ct).ConfigureAwait(false);
+
+        WriteLog(CvLogLevel.Info,
+            $"camera state: pixelFormat={pixel ?? "?"} size={w?.ToString() ?? "?"}x{h?.ToString() ?? "?"} " +
+            $"payloadSize={payload?.ToString() ?? "?"} acquisitionMode={acq ?? "?"} " +
+            $"triggerMode={trigMode ?? "(absent)"} triggerSource={trigSrc ?? "(absent)"}");
+
+        if (string.Equals(trigMode, "On", StringComparison.OrdinalIgnoreCase))
+            WriteLog(CvLogLevel.Warning,
+                $"TriggerMode is On (source '{trigSrc ?? "?"}') — no frames will arrive until the camera receives that trigger. " +
+                "If free-running frames are expected, turn TriggerMode off on the camera or load a user set that has it off.");
+
+        if (await TryReadBoolAsync(nodes, "ChunkModeActive", ct).ConfigureAwait(false) == true)
+            WriteLog(CvLogLevel.Warning,
+                "ChunkModeActive is On — frames carrying chunk payloads are not assembled and will be dropped, " +
+                "so acquisition runs but delivers nothing. Turn chunk mode off on the camera.");
+    }
+
+    /// <summary>
     /// 전송 영상의 실효 Bayer 패턴을 판정한다. 미러와 홀수 ROI 오프셋은 2×2 배열의 시작점을 옮기는데,
     /// 표준은 그때 장치가 PixelFormat 을 고쳐 보고하도록 요구하지 않는다.
     ///
@@ -603,17 +652,39 @@ public sealed class GevCam : ICam
         catch (GenApiException) { return null; }
     }
 
+    private static async Task<string?> TryReadEnumAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
+    {
+        if (nodes.GetNode(name) is not IEnumeration e) return null;
+        try { return await e.GetAsync(ct).ConfigureAwait(false); }
+        catch (GenApiException) { return null; }
+    }
+
     private async Task TrySetEnumAsync(GenApiNodeMap nodes, string name, string symbolic, CancellationToken ct)
     {
-        if (nodes.GetNode(name) is not IEnumeration e) return;
-        if (e.GetEntry(symbolic) is null) return;   // 선언 자체가 없으면 건드리지 않는다
+        if (nodes.GetNode(name) is not IEnumeration e)
+        {
+            WriteLog(CvLogLevel.Info, $"camera has no {name} node — leaving acquisition mode as the camera has it");
+            return;
+        }
+        if (e.GetEntry(symbolic) is null)
+        {
+            WriteLog(CvLogLevel.Info, $"{name} has no '{symbolic}' entry — leaving it as the camera has it");
+            return;
+        }
         try { await e.SetAsync(symbolic, ct).ConfigureAwait(false); }
         catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to set {name}={symbolic}", ex); }
     }
 
+    /// <summary>명령 실행. <b>없는 명령을 조용히 넘기지 않는다</b> — AcquisitionStart 가 없으면 스트림은 서는데
+    /// 프레임이 한 장도 안 오고, 그 원인이 로그에 없으면 원격에서 절대 못 가른다.</summary>
     private async Task TryExecuteAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
     {
-        if (nodes.GetNode(name) is not ICommand c) return;
+        if (nodes.GetNode(name) is not ICommand c)
+        {
+            WriteLog(CvLogLevel.Warning,
+                $"camera has no {name} command — acquisition cannot be driven through it, so frames may never arrive");
+            return;
+        }
         try { await c.ExecuteAsync(ct).ConfigureAwait(false); }
         catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
         catch (GevException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
