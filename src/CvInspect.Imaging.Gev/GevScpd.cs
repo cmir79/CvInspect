@@ -27,7 +27,7 @@ public static class GevScpd
         if (delayUs <= 0 || tickHz == 0) return null;
 
         var ticks = Math.Round(delayUs * tickHz / 1_000_000.0);
-        if (ticks < 1) return 1;                       // 0 은 "건드리지 않음" 이라 1 로 올린다
+        if (ticks < 1) return 1;                       // 0 은 "지연 없음" 이라 요청이 통째로 사라진다
         return ticks > int.MaxValue ? int.MaxValue : (int)ticks;
     }
 }

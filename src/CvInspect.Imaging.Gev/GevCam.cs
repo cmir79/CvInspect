@@ -575,10 +575,58 @@ public sealed class GevCam : ICam
         {
             await node.SetAsync(timeUs, ct).ConfigureAwait(false);
         }
+        catch (GenApiException ex) when (TryReadGrid(ex, out var anchor, out var increment))
+        {
+            // 격자에서 벗어난 값이다. 여기서 포기하면 카메라가 이전 노출 그대로 돌아 밝기만 틀린 채
+            // 예외도 없이 검사가 돈다 — 가장 가까운 격자 값으로 맞춰 다시 쓰고, 무엇을 썼는지 알린다.
+            if (GevGrid.Snap(timeUs, anchor, increment) is not { } snapped)
+            {
+                WriteLog(CvLogLevel.Warning, $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
+                return;
+            }
+            try
+            {
+                await node.SetAsync(snapped, ct).ConfigureAwait(false);
+                WriteLog(CvLogLevel.Warning,
+                    $"exposure {timeUs}us is not on the camera's grid (anchor {anchor}, step {increment}) — " +
+                    $"used {snapped}us instead. Put that value in the configuration to stop this message.");
+            }
+            catch (GenApiException retryEx)
+            {
+                // 변환 노드에 배율이 있으면 격자 단위가 우리 단위와 달라 이 재시도가 빗나간다.
+                WriteLog(CvLogLevel.Warning,
+                    $"exposure {timeUs}us is off-grid and the nearest value {snapped}us was refused too — " +
+                    $"the camera keeps its previous exposure. Read the accepted range from the camera and set it explicitly.",
+                    retryEx);
+                return;
+            }
+        }
         catch (GenApiException ex)
         {
             WriteLog(CvLogLevel.Warning, $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
+            return;
         }
+
+        // 쓰기가 성공해도 카메라가 그 값을 그대로 쓴다는 보장은 없다 — 실제 값을 남긴다.
+        try
+        {
+            var actual = await node.GetAsync(ct).ConfigureAwait(false);
+            if (Math.Abs(actual - timeUs) > 0.5)
+                WriteLog(CvLogLevel.Info, $"exposure requested {timeUs}us, camera applied {actual}us via '{node.Name}'");
+        }
+        catch (GenApiException) { /* 되읽기 실패는 진단 손실일 뿐이라 넘어간다 */ }
+    }
+
+    /// <summary>거절이 "격자 어긋남" 이면 기준점과 간격을 꺼낸다 — 예외에 값으로 실려 온다.</summary>
+    private static bool TryReadGrid(GenApiException ex, out long anchor, out long increment)
+    {
+        anchor = 0;
+        increment = 0;
+        if (ex.Data[GenApiException.GridAnchorKey] is not long a) return false;
+        if (ex.Data[GenApiException.GridIncrementKey] is not long i) return false;
+        anchor = a;
+        increment = i;
+        return true;
     }
 
     /// <summary>
