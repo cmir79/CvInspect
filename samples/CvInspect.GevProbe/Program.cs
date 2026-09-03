@@ -111,6 +111,92 @@ static async Task DumpFeaturesAsync(GevDeviceInfo info, Args arg, Action<string>
                 log("bayer: !! the two mirror-reference readings disagree — the saved image decides which is right");
         }
     }
+
+    if (arg.RawSeconds > 0) await RawStreamAsync(dev, nodes, arg, log);
+}
+
+// ── 어댑터를 건너뛰고 취득 계층이 직접 보는 것을 남긴다 ────────────────────────────────
+// 프레임 기하(줄 간격·이미지 크기·청크)와 전송 통계는 어댑터를 거치면 사라진다. 실기에서만
+// 확인되는 것들이라(리센드 사본이 어떤 상태로 오는가, 요청이 회수로 이어지는가) 여기서 받아 둔다.
+static async Task RawStreamAsync(GevDevice dev, GenApiNodeMap nodes, Args arg, Action<string> log)
+{
+    log($"--- raw stream for {arg.RawSeconds}s (adapter bypassed) ---");
+    var payload = (int?)await ReadIntAsync(nodes, "PayloadSize");
+
+    await using var stream = await dev.OpenStreamAsync(new GevStreamOpt
+    {
+        BufferCount = 8,
+        DeliverIncompleteFrames = false,
+        PayloadSize = payload,
+    });
+
+    var drops = new Dictionary<GevFrameDropReason, int>();
+    stream.FrameDropped += d => { lock (drops) drops[d.Reason] = drops.TryGetValue(d.Reason, out var c) ? c + 1 : 1; };
+
+    await stream.StartAsync();
+    log($"stream: negotiated packetSize={stream.PacketSize} localPort={stream.LocalPort} payloadSize={payload?.ToString() ?? "(from leader)"}");
+    log("  (the socket receive buffer the OS actually granted is in the [gev ...] lines above — it may be less than requested)");
+
+    if (nodes.GetNode("AcquisitionMode") is IEnumeration mode && mode.GetEntry("Continuous") is not null)
+        await mode.SetAsync("Continuous");
+    if (nodes.GetNode("AcquisitionStart") is ICommand start) await start.ExecuteAsync();
+
+    var sw = Stopwatch.StartNew();
+    var got = 0;
+    try
+    {
+        while (sw.Elapsed.TotalSeconds < arg.RawSeconds)
+        {
+            // 수신 시한은 반드시 넘긴 토큰으로 — 밖에서 씌우면 버려진 대기자가 다음 프레임을 삼킨다.
+            using var cts = new CancellationTokenSource(2000);
+            GevFrame frame;
+            try { frame = await stream.ReceiveAsync(cts.Token); }
+            catch (OperationCanceledException) { log("  (no frame within 2s)"); continue; }
+            catch (Exception ex) { log($"  !! receive failed: {ex.GetType().Name}: {ex.Message}"); break; }
+
+            try
+            {
+                got++;
+                if (got <= 3)
+                    log($"  frame#{got} id={frame.FrameId} {frame.Width}x{frame.Height} " +
+                        $"fmt={PixelFormatInfo.Name(frame.PixelFormatCode)} depth={PixelFormatInfo.Depth(frame.PixelFormatCode)} " +
+                        $"stride={frame.Stride} imageSize={frame.ImageSize} payloadSize={frame.PayloadSize} " +
+                        $"chunk={frame.HasChunkData} padding=({frame.PaddingX},{frame.PaddingY}) " +
+                        $"offset=({frame.OffsetX},{frame.OffsetY}) complete={frame.IsComplete} " +
+                        $"packets={frame.ExpectedPackets - frame.MissingPackets}/{frame.ExpectedPackets}");
+                if (got == 1)
+                {
+                    if (frame.Stride == 0)
+                        log("  !! Stride == 0 — this geometry genuinely has no line pitch (packed format whose width does not land on a byte boundary)");
+                    if (frame.HasChunkData && frame.ImageSize == frame.PayloadSize)
+                        log("  !! HasChunkData is true but ImageSize == PayloadSize — the image/chunk split looks wrong");
+                }
+            }
+            finally { frame.Dispose(); }
+        }
+    }
+    finally
+    {
+        // 정지는 취소 없이 — 중간에 그만두면 카메라가 죽은 소켓으로 계속 쏜다.
+        if (nodes.GetNode("AcquisitionStop") is ICommand stop)
+            try { await stop.ExecuteAsync(CancellationToken.None); } catch (Exception ex) { log($"  AcquisitionStop failed: {ex.Message}"); }
+        await stream.StopAsync(CancellationToken.None);
+    }
+
+    var s = stream.Stats.Snapshot();
+    log($"raw stream: {got} frames in {sw.Elapsed.TotalSeconds:F1}s = {got / Math.Max(0.001, sw.Elapsed.TotalSeconds):F1} fps");
+    log($"stats: {s}");
+    log($"stats/resend: PacketsResent={s.PacketsResent} PacketsDuplicated={s.PacketsDuplicated} " +
+        $"ResendRequests={s.ResendRequests} ResendRecovered={s.ResendRecovered} PacketsMissing={s.PacketsMissing}");
+    if (s.PacketsResent == 0 && s.PacketsDuplicated > 0)
+        log("  note: this camera returns resend copies with a normal success status — PacketsResent stays 0 even when resend works, and PacketsDuplicated carries the signal");
+    if (s.ResendRequests > 0 && s.ResendRecovered == 0)
+        log("  note: resend requests went out but nothing came back — the device may already have retired the block (PacketTimeoutMs too late)");
+    if (s.FramesDroppedUnsupported > 0)
+        log("  !! frames dropped as Unsupported — the camera sends a payload type we do not assemble (chunk mode on?)");
+    lock (drops)
+        if (drops.Count > 0)
+            log("dropped frames by reason: " + string.Join(", ", drops.Select(kv => $"{kv.Key}={kv.Value}")));
 }
 
 // ── 어댑터를 통해 실제로 프레임을 받아 본다 ────────────────────────────────────────────
@@ -251,6 +337,7 @@ sealed class Args
 {
     public string? Serial { get; }
     public int Seconds { get; }
+    public int RawSeconds { get; }
     public int DiscoveryMs { get; }
     public string OutDir { get; }
     public bool Mono { get; }
@@ -272,6 +359,7 @@ sealed class Args
         Help = a.Length == 0 || Has("--help") || Has("-h");
         Serial = Val("--sn")?.Trim();
         Seconds = int.TryParse(Val("--seconds"), out var s) ? s : 0;
+        RawSeconds = int.TryParse(Val("--raw-seconds"), out var r) ? r : 0;
         DiscoveryMs = int.TryParse(Val("--discovery-ms"), out var d) ? d : 1500;
         OutDir = Val("--out") ?? Path.Combine(AppContext.BaseDirectory, "probe-out");
         Mono = Has("--mono");
@@ -298,6 +386,8 @@ sealed class Args
         옵션
           --sn <시리얼>          대상 카메라 (탐색 목록의 SN 과 정확히 일치)
           --seconds <N>         연속 취득 시간 (0=안 함)
+          --raw-seconds <N>     어댑터를 건너뛴 취득 — 프레임 기하(줄 간격·이미지 크기·청크)와
+                                전송 통계(리센드·중복·유실)를 남긴다. 취득 라이브러리 검증용.
           --discovery-ms <N>    탐색 대기 (기본 1500)
           --out <폴더>          로그·이미지 출력 (기본 실행 폴더의 probe-out)
           --mono                Bayer 를 흑백으로 접는다
