@@ -34,6 +34,10 @@ internal sealed class GevPumpStats
     private long _excessMaxTicks;
     private int _timedFrames;
 
+    private long _absTicks;
+    private long _absMaxTicks;
+    private int _alignedFrames;
+
     /// <param name="intervalMs">0 이하면 끈다.</param>
     public GevPumpStats(int intervalMs)
     {
@@ -54,7 +58,10 @@ internal sealed class GevPumpStats
     /// <param name="deliveredAt">발행 시각(<see cref="Now"/> 기준).</param>
     /// <param name="capture">장치가 찍은 촬영 시각. 없으면 초과 지연은 세지 않는다.</param>
     /// <param name="frameId">장치가 매긴 프레임 번호. 0 이면 세지 않는다.</param>
-    public string? Add(long handlerTicks, long deliveredAt, TimeSpan? capture, ulong frameId = 0)
+    /// <param name="clockOffsetTicks">호스트 시계 − 장치 시계. 두 시계를 맞춘 값이 있으면
+    /// <b>절대 지연</b>(촬영에서 발행까지 실제로 걸린 시간)을 낸다. null 이면 못 낸다.</param>
+    public string? Add(long handlerTicks, long deliveredAt, TimeSpan? capture, ulong frameId = 0,
+                       long? clockOffsetTicks = null)
     {
         _frames++;
 
@@ -81,6 +88,16 @@ internal sealed class GevPumpStats
             _excessTicks += excess;
             if (excess > _excessMaxTicks) _excessMaxTicks = excess;
             _timedFrames++;
+
+            // 두 시계를 맞춰 뒀으면 초과가 아니라 실제로 걸린 시간을 낸다.
+            if (clockOffsetTicks is { } off)
+            {
+                var abs = offset - off;
+                if (abs < 0) abs = 0;              // 맞춤 오차가 음수를 만들 수 있다
+                _absTicks += abs;
+                if (abs > _absMaxTicks) _absMaxTicks = abs;
+                _alignedFrames++;
+            }
         }
 
         var elapsed = deliveredAt - _windowStart;
@@ -99,10 +116,17 @@ internal sealed class GevPumpStats
         if (_gaps > 0)
             line += $" | {_missed} frame(s) never arrived in {_gaps} gap(s)";
 
+        if (_alignedFrames > 0)
+        {
+            // 절대 지연 — 최소값을 빼지 않으므로 "일정하게 깔린 지연" 도 보인다.
+            line += $" | capture->deliver {(_absTicks / (double)_alignedFrames / Freq * 1000.0):F1}ms avg, "
+                  + $"{(_absMaxTicks / Freq * 1000.0):F1}ms max";
+        }
+
         line += _timedFrames > 0
-            ? $" | capture->deliver {(_excessTicks / (double)_timedFrames / Freq * 1000.0):F1}ms avg, "
+            ? $" | variation {(_excessTicks / (double)_timedFrames / Freq * 1000.0):F1}ms avg, "
               + $"{(_excessMaxTicks / Freq * 1000.0):F1}ms max above the best seen"
-            : " | the camera reports no timestamp, so queueing time cannot be measured";
+            : " | the camera reports no timestamp, so latency cannot be measured";
 
         _windowStart = deliveredAt;
         _frames = 0;
@@ -113,6 +137,9 @@ internal sealed class GevPumpStats
         _excessTicks = 0;
         _excessMaxTicks = 0;
         _timedFrames = 0;
+        _absTicks = 0;
+        _absMaxTicks = 0;
+        _alignedFrames = 0;
         return line;
     }
 }

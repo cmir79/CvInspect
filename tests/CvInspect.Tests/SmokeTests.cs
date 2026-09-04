@@ -830,5 +830,33 @@ public class SmokeTests
         var line5 = s5.Add(Ms(1), start5 + Ms(80), null, 8);
         Check(line5 is not null && !line5.Contains("never arrived"),
             $"a contiguous sequence says nothing about losses: {line5}");
+
+        // 절대 지연 — 최소값을 빼는 지표의 사각을 메운다.
+        // 모든 프레임이 똑같이 200ms 늦으면 "변동" 은 0 이지만 실제로는 200ms 늦은 것이다.
+        var start6 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s6 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        // 시계가 정확히 맞았다고 둔다(offset 0) → 장치 시각은 호스트 틱과 같은 자로 읽힌다.
+        var capSec = start6 / (double)freq;
+        s6.Add(Ms(1), start6 + Ms(200), TimeSpan.FromSeconds(capSec), 1, 0);
+        var line6 = s6.Add(Ms(1), start6 + Ms(300), TimeSpan.FromSeconds(capSec + 0.1), 2, 0);
+        Check(line6 is not null, "the window fires");
+
+        var abs = System.Text.RegularExpressions.Regex.Match(line6!, @"capture->deliver ([\d.]+)ms avg");
+        Check(abs.Success, $"an aligned clock yields absolute latency: {line6}");
+        var absMs = double.Parse(abs.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+        Check(absMs is > 150 and < 250, $"a constant 200ms delay is reported as 200ms (got {absMs:F0}ms)");
+
+        // 같은 자료에서 "변동" 은 0 이다 — 변동만 보면 지연이 없어 보인다는 것이 요점이다
+        var vary = System.Text.RegularExpressions.Regex.Match(line6!, @"variation ([\d.]+)ms avg");
+        Check(vary.Success && double.Parse(vary.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) < 1,
+            $"the same data shows no variation — which is why variation alone is not enough: {line6}");
+
+        // 시계를 못 맞췄으면 절대 지연을 내지 않는다 — 추측값을 지어내지 않는다
+        var start7 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s7 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        s7.Add(Ms(1), start7 + Ms(10), TimeSpan.FromSeconds(1.0), 1);
+        var line7 = s7.Add(Ms(1), start7 + Ms(80), TimeSpan.FromSeconds(1.07), 2);
+        Check(line7 is not null && !line7.Contains("capture->deliver"),
+            $"without a clock alignment no absolute latency is claimed: {line7}");
     }
 }

@@ -1,6 +1,7 @@
 using CvInspect.Imaging;
 using GevSharp;
 using GevSharp.GenApi;
+using GevSharp.Gvcp;
 using GevSharp.Pfnc;
 
 namespace CvInspect.Imaging.Gev;
@@ -25,6 +26,13 @@ public sealed class GevCam : ICam
 
     /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
     private long _stoppedAtTicks;
+
+    /// <summary>호스트 시계 − 장치 시계(Stopwatch 틱). 두 시계를 맞춘 값이 있어야 <b>절대 지연</b>을 낸다.
+    /// null 이면 못 맞췄다 — 그때는 최선 대비 변동만 낸다.</summary>
+    private long? _clockOffsetTicks;
+
+    /// <summary>시계 맞추기가 안 되는 장치에서 같은 경고를 되풀이하지 않는다.</summary>
+    private bool _clockAlignWarned;
 
     /// <summary>장치 타임스탬프의 틱 주파수(Hz). 0 이면 장치가 알려 주지 않아 촬영 시각을 못 낸다.</summary>
     private ulong _tickHz;
@@ -435,6 +443,7 @@ public sealed class GevCam : ICam
     private void PumpLoop(GevStream stream, CancellationToken ct)
     {
         var stats = new GevPumpStats(_gev.PumpStatsIntervalMs);
+        if (stats.Enabled) AlignClock(_dev!);
         while (!ct.IsCancellationRequested)
         {
             GevFrame? frame = null;
@@ -461,7 +470,10 @@ public sealed class GevCam : ICam
 
             if (!stats.Enabled) continue;
             var done = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (stats.Add(done - started, done, capture, frameId) is { } line) WriteLog(CvLogLevel.Info, line);
+            if (stats.Add(done - started, done, capture, frameId, _clockOffsetTicks) is not { } line) continue;
+            WriteLog(CvLogLevel.Info, line);
+            // 구간마다 다시 맞춘다 — 두 수정 발진의 드리프트가 쌓이면 절대 지연이 조용히 틀어진다.
+            AlignClock(_dev!);
         }
     }
 
@@ -521,6 +533,44 @@ public sealed class GevCam : ICam
         var pixels = frame.Data.Span.Slice(0, frame.ImageSize).ToArray();
         return GevFrameConv.ToCamFrame(pixels, w, h, frame.Stride, layout, significantBits, BayerOf(code),
                                        _gev.BayerToMono, CaptureTimeOf(frame));
+    }
+
+    /// <summary>
+    /// 장치 시계와 호스트 시계를 맞춘다 — 장치에게 "지금 몇 시냐" 를 걸어(래치) 읽고,
+    /// 그 왕복을 호스트 시계로 감싸 중점을 취한다. 오차는 왕복의 절반(랜에서 1ms 미만)이라
+    /// 수십~수백 ms 를 묻는 질문에는 충분하다.
+    ///
+    /// <b>이것이 있어야 "일정하게 깔린 지연" 이 보인다.</b> 최선 대비 변동만 재면 모든 프레임이
+    /// 똑같이 200ms 늦어도 전부 0 으로 나온다 — 증명되는 것은 "변동 없음" 이지 "지연 없음" 이 아니다.
+    ///
+    /// 계측을 켰을 때만 한다. 이 호출은 스트리밍 중 제어 채널을 쓰므로 기본 동작을 바꾸지 않는다.
+    /// </summary>
+    private void AlignClock(GevDevice dev)
+    {
+        if (_tickHz == 0) { _clockOffsetTicks = null; return; }
+        try
+        {
+            var before = System.Diagnostics.Stopwatch.GetTimestamp();
+            Run(ct => dev.WriteRegAsync(GvbsAddr.TimestampControl, 1u, ct), CancellationToken.None);
+            var after = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            var regs = RunResult(ct => dev.ReadRegsAsync(
+                new[] { GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow }, ct), CancellationToken.None);
+            var deviceTicks = ((ulong)regs[0] << 32) | regs[1];
+            if (deviceTicks == 0) { _clockOffsetTicks = null; return; }
+
+            var deviceHostTicks = deviceTicks / (double)_tickHz * System.Diagnostics.Stopwatch.Frequency;
+            _clockOffsetTicks = (long)((before + after) / 2.0 - deviceHostTicks);
+        }
+        catch (Exception ex)
+        {
+            _clockOffsetTicks = null;
+            if (_clockAlignWarned) return;
+            _clockAlignWarned = true;
+            WriteLog(CvLogLevel.Info,
+                "this camera does not support latching its timestamp, so absolute capture-to-delivery latency "
+                + "cannot be measured; the pump line will report variation against the best frame only.", ex);
+        }
     }
 
     /// <summary>
@@ -932,6 +982,10 @@ public sealed class GevCam : ICam
 
     /// <summary>비동기 호출을 동기 경계로 넘긴다. 라이브러리가 컨텍스트를 잡지 않으므로 교착하지 않는다.</summary>
     private static void Run(Func<CancellationToken, Task> body, CancellationToken ct = default)
+        => Task.Run(() => body(ct), ct).GetAwaiter().GetResult();
+
+    /// <summary>값을 돌려주는 비동기 호출의 동기 경계.</summary>
+    private static T RunResult<T>(Func<CancellationToken, Task<T>> body, CancellationToken ct = default)
         => Task.Run(() => body(ct), ct).GetAwaiter().GetResult();
 
     private static async Task SwallowAsync(Func<Task> body)
