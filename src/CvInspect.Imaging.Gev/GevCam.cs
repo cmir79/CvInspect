@@ -26,6 +26,11 @@ public sealed class GevCam : ICam
     /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
     private long _stoppedAtTicks;
 
+    /// <summary>이 카메라가 쓰는 스트림 로컬 포트. 취득 라이브러리 로그는 카메라 이름을 모르고
+    /// <b>포트로만 자기를 밝히므로</b>, 그 줄들을 이 카메라에 붙이려면 우리가 대응을 남겨야 한다.
+    /// 열 때마다 바뀌므로 열린 판을 들고 있다가 닫을 때 같이 남긴다.</summary>
+    private int _streamPort;
+
     private readonly CamOpt _opt;
     private readonly GevCamOpt _gev;
     private readonly object _sync = new();
@@ -138,6 +143,7 @@ public sealed class GevCam : ICam
                 stream.FrameDropped += OnFrameDropped;
                 await stream.StartAsync(ct).ConfigureAwait(false);
                 // 소켓은 여기서 bind 된다 — 그 전에 읽으면 아직 0 이다.
+                _streamPort = stream.LocalPort;
                 LogSocketBuffer(stream, streamOpt.SocketBufferBytes);
                 // 전송 파라미터 잠금은 스트림이 선 뒤, 취득을 걸기 전에 — 순서가 뒤바뀌면 장치가 거부한다.
                 await dev.SetTlParamsLockedAsync(true, ct).ConfigureAwait(false);
@@ -242,7 +248,9 @@ public sealed class GevCam : ICam
         }
         GrabbingChanged?.Invoke(this, false);
         ConnectionChanged?.Invoke(this, new ConnArgs(false));
-        WriteLog(CvLogLevel.Info, "closed");
+        WriteLog(CvLogLevel.Info,
+            _streamPort > 0 ? $"closed (stream was on local port {_streamPort})" : "closed");
+        _streamPort = 0;
     }
 
     /// <summary>정지는 개시의 역순이고 <b>취소 없이</b> 끝까지 간다 — 중간에 그만두면 카메라가 죽은 소켓으로
@@ -805,14 +813,17 @@ public sealed class GevCam : ICam
     private void LogSocketBuffer(GevStream stream, int requested)
     {
         var granted = stream.SocketReceiveBufferBytes;
+        var port = stream.LocalPort;
         if (granted >= requested)
         {
-            WriteLog(CvLogLevel.Info, $"socket receive buffer: {granted} bytes (requested {requested})");
+            WriteLog(CvLogLevel.Info,
+                $"stream on local port {port}: socket receive buffer {granted} bytes (requested {requested})");
             return;
         }
 
         WriteLog(CvLogLevel.Warning,
-            $"socket receive buffer: the OS granted {granted} bytes of the {requested} requested. " +
+            $"stream on local port {port}: the OS granted a socket receive buffer of {granted} bytes "
+            + $"out of the {requested} requested. " +
             "Under load this camera will drop packets before the others do. If several cameras run on this host, " +
             "lower GevCamOpt.SocketBufferBytes for all of them rather than letting the first ones take it all.");
     }
