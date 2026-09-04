@@ -24,7 +24,6 @@ packages/
 *.nupkg
 *.snupkg
 
-# 동봉 패키지는 예외 — 한쪽만 clone 해도 빌드되게 저장소에 싣는다
 .nuget/
 project.lock.json
 project.assets.json
