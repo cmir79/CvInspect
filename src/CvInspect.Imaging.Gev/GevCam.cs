@@ -26,6 +26,9 @@ public sealed class GevCam : ICam
     /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
     private long _stoppedAtTicks;
 
+    /// <summary>마지막으로 발행한 프레임의 장치 번호. 단발 그랩이 <b>이보다 새 프레임만</b> 받아들이는 기준이다.</summary>
+    private ulong _lastEmittedFrameId;
+
     /// <summary>장치 타임스탬프의 틱 주파수(Hz). 0 이면 장치가 알려 주지 않아 촬영 시각을 못 낸다.</summary>
     private ulong _tickHz;
 
@@ -349,6 +352,11 @@ public sealed class GevCam : ICam
     private async Task GrabOnceAsync(GevStream stream, CancellationToken ct)
     {
         var nodes = _nodes!;
+
+        // 새로 찍기 전에 남은 것을 버린다 — 안 버리면 이 그랩이 옛 프레임을 가져간다.
+        if (DrainStream(stream) is var dropped and > 0)
+            WriteLog(CvLogLevel.Debug, $"discarded {dropped} queued frame(s) before grabbing a fresh one");
+
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
         await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
 
@@ -361,6 +369,15 @@ public sealed class GevCam : ICam
         try
         {
             frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+
+            // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 번호로 걸러 낸다.
+            // 장치 번호는 스트림 안에서 단조 증가하므로 이 비교가 곧 "이 호출 뒤에 온 것" 이다.
+            while (frame.FrameId != 0 && frame.FrameId <= _lastEmittedFrameId)
+            {
+                frame.Dispose();
+                frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+            }
+
             Emit(frame);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -411,6 +428,10 @@ public sealed class GevCam : ICam
                 Interlocked.Exchange(ref _stoppedAtTicks, DateTime.UtcNow.Ticks);
             if (stopped && _nodes != null)
                 Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
+
+            // 멈춘 뒤에 대기열을 비운다 — 남겨 두면 다음 단발 그랩이 그것을 가져간다.
+            if (stopped && _stream != null && DrainStream(_stream) is var left and > 0)
+                WriteLog(CvLogLevel.Debug, $"discarded {left} frame(s) left in the queue when acquisition stopped");
         }
         if (stopped)
         {
@@ -486,6 +507,10 @@ public sealed class GevCam : ICam
     /// 반납되므로 반드시 이 안에서 복사를 마친다.</summary>
     private void Emit(GevFrame frame)
     {
+        // 무엇을 내보냈는지 여기 한 자리에서 기억한다 — 단발 그랩의 "새 프레임" 판정 기준이다.
+        // 변환에 실패해 발행하지 못한 것도 이미 지나간 프레임이므로 기준에 넣는다.
+        if (frame.FrameId > _lastEmittedFrameId) _lastEmittedFrameId = frame.FrameId;
+
         var cam = Convert(frame);
         if (cam is null) return;
         FrameAcquired?.Invoke(this, cam);
@@ -526,6 +551,24 @@ public sealed class GevCam : ICam
         var pixels = frame.Data.Span.Slice(0, frame.ImageSize).ToArray();
         return GevFrameConv.ToCamFrame(pixels, w, h, frame.Stride, layout, significantBits, BayerOf(code),
                                        _gev.BayerToMono, CaptureTimeOf(frame));
+    }
+
+    /// <summary>
+    /// 대기열에 남아 있는 완성 프레임을 버린다. 버린 장수를 돌려준다.
+    ///
+    /// <b>연속 취득을 멈춰도 이미 받아 둔 프레임은 대기열에 남는다.</b> 그대로 두면 다음 단발 그랩이
+    /// 새로 찍은 것이 아니라 그 옛것을 가져간다 — 화면이라면 한 장 늦은 그림이지만
+    /// <b>검사라면 이전 대상을 판정한다.</b> 예외도 경고도 없이 조용히 틀린다.
+    /// </summary>
+    private static int DrainStream(GevStream stream)
+    {
+        var dropped = 0;
+        while (stream.TryReceive(out var stale) && stale != null)
+        {
+            stale.Dispose();
+            dropped++;
+        }
+        return dropped;
     }
 
     /// <summary>
