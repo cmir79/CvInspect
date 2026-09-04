@@ -770,8 +770,9 @@ public class SmokeTests
     }
 
     /// <summary>
-    /// 펌프 계측 — 밀림의 원인을 가르는 두 숫자가 실제로 그 값을 내는지.
-    /// 이 절이 있는 이유: 확인하지 않은 진단 줄을 넣었다가 정상 시스템에서 항상 경고가 뜨게 만든 적이 있다.
+    /// 펌프 계측 — 밀림의 원인을 가르는 숫자들이 실제로 그 값을 내는지.
+    /// 이 절이 있는 이유: 확인하지 않은 진단을 넣었다가 정상 시스템에서 항상 경고가 뜨게 만든 적이 있고,
+    /// 그 뒤에는 몇 시간짜리 "지연" 을 태연히 찍는 판까지 냈다.
     /// </summary>
     [Fact]
     public void PumpStats()
@@ -784,31 +785,40 @@ public class SmokeTests
         var start = System.Diagnostics.Stopwatch.GetTimestamp();
         var s = new CvInspect.Imaging.Gev.GevPumpStats(100);
         Check(s.Enabled, "a positive interval turns it on");
-
-        // 구간이 차기 전에는 아무것도 남기지 않는다
-        Check(s.Add(Ms(1), start + Ms(10), TimeSpan.FromSeconds(1.00)) is null,
+        Check(s.Add(Ms(1), Ms(60), start + Ms(10), TimeSpan.FromSeconds(1.00)) is null,
             "nothing is emitted before the window fills");
 
-        // 촬영 1.10s -> 발행 start+300ms. 앞 프레임의 기준 대비 200ms 늦게 앉아 있었다.
-        var line = s.Add(Ms(1), start + Ms(300), TimeSpan.FromSeconds(1.10));
+        var line = s.Add(Ms(1), Ms(60), start + Ms(300), TimeSpan.FromSeconds(1.10));
         Check(line is not null, "the window fires once the interval has elapsed");
-
         var excess = System.Text.RegularExpressions.Regex.Match(line!, @"([\d.]+)ms max above the best seen");
         Check(excess.Success, $"the line reports queueing above the best offset: {line}");
         var ms = double.Parse(excess.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
         Check(ms is > 150 and < 250, $"a frame that sat 200ms longer than the best is reported as such (got {ms:F0}ms)");
 
+        // 수신 대기 — 대기열이 서 있는지를 가르는 숫자
+        var wait = System.Text.RegularExpressions.Regex.Match(line!, @"receive wait ([\d.]+)ms avg");
+        Check(wait.Success && double.Parse(wait.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) > 50,
+            $"time spent waiting for the next frame is reported: {line}");
+
+        var start1b = System.Diagnostics.Stopwatch.GetTimestamp();
+        var sQ = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        sQ.Add(Ms(1), 0, start1b + Ms(10), null);              // 기다림 없이 곧바로 받았다 = 줄이 서 있다
+        var lineQ = sQ.Add(Ms(1), 0, start1b + Ms(80), null);
+        var waitMin = System.Text.RegularExpressions.Regex.Match(lineQ!, @"([\d.]+)ms min");
+        Check(waitMin.Success && double.Parse(waitMin.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) < 1,
+            $"a receive that never waits means completed frames were already queued: {lineQ}");
+
         // 장치가 시각을 안 주면 잴 수 없다고 말한다 — 0 을 대신 쓰지 않는다
         var start2 = System.Diagnostics.Stopwatch.GetTimestamp();
         var s2 = new CvInspect.Imaging.Gev.GevPumpStats(50);
-        var line2 = s2.Add(Ms(1), start2 + Ms(80), null);
+        var line2 = s2.Add(Ms(1), Ms(60), start2 + Ms(80), null);
         Check(line2 is not null && line2.Contains("no timestamp"),
-            $"without a device timestamp it says queueing cannot be measured: {line2}");
+            $"without a device timestamp it says latency cannot be measured: {line2}");
 
-        // 핸들러가 펌프 시간을 다 먹으면 그 비율이 드러난다 — 취득 속도를 정하는 것이 호스트라는 신호
+        // 핸들러가 펌프 시간을 다 먹으면 그 비율이 드러난다
         var start3 = System.Diagnostics.Stopwatch.GetTimestamp();
         var s3 = new CvInspect.Imaging.Gev.GevPumpStats(50);
-        var line3 = s3.Add(Ms(95), start3 + Ms(100), null);
+        var line3 = s3.Add(Ms(95), 0, start3 + Ms(100), null);
         var duty = System.Text.RegularExpressions.Regex.Match(line3!, @"(\d+)% of the pump's time");
         Check(duty.Success && int.Parse(duty.Groups[1].Value) > 80,
             $"handlers eating the pump's time show up as a high share: {line3}");
@@ -816,47 +826,30 @@ public class SmokeTests
         // 결번 — "늦게 온다" 와 "아예 안 온다" 를 가른다
         var start4 = System.Diagnostics.Stopwatch.GetTimestamp();
         var s4 = new CvInspect.Imaging.Gev.GevPumpStats(50);
-        s4.Add(Ms(1), start4 + Ms(10), null, 100);
-        s4.Add(Ms(1), start4 + Ms(20), null, 101);   // 연속 — 결번 아님
-        s4.Add(Ms(1), start4 + Ms(30), null, 105);   // 102·103·104 가 안 왔다
-        var line4 = s4.Add(Ms(1), start4 + Ms(80), null, 106);
+        s4.Add(Ms(1), 0, start4 + Ms(10), null, 100);
+        s4.Add(Ms(1), 0, start4 + Ms(20), null, 101);
+        s4.Add(Ms(1), 0, start4 + Ms(30), null, 105);   // 102·103·104 가 안 왔다
+        var line4 = s4.Add(Ms(1), 0, start4 + Ms(80), null, 106);
         Check(line4 is not null && line4.Contains("3 frame(s) never arrived in 1 gap(s)"),
             $"a jump in the device frame number is reported as frames that never arrived: {line4}");
 
-        // 번호가 이어지면 아무 말도 하지 않는다 — 정상에 잡음을 내지 않는다
         var start5 = System.Diagnostics.Stopwatch.GetTimestamp();
         var s5 = new CvInspect.Imaging.Gev.GevPumpStats(50);
-        s5.Add(Ms(1), start5 + Ms(10), null, 7);
-        var line5 = s5.Add(Ms(1), start5 + Ms(80), null, 8);
+        s5.Add(Ms(1), 0, start5 + Ms(10), null, 7);
+        var line5 = s5.Add(Ms(1), 0, start5 + Ms(80), null, 8);
         Check(line5 is not null && !line5.Contains("never arrived"),
             $"a contiguous sequence says nothing about losses: {line5}");
 
-        // 절대 지연 — 최소값을 빼는 지표의 사각을 메운다.
-        // 모든 프레임이 똑같이 200ms 늦으면 "변동" 은 0 이지만 실제로는 200ms 늦은 것이다.
-        var start6 = System.Diagnostics.Stopwatch.GetTimestamp();
-        var s6 = new CvInspect.Imaging.Gev.GevPumpStats(50);
-        // 시계가 정확히 맞았다고 둔다(offset 0) → 장치 시각은 호스트 틱과 같은 자로 읽힌다.
-        var capSec = start6 / (double)freq;
-        s6.Add(Ms(1), start6 + Ms(200), TimeSpan.FromSeconds(capSec), 1, 0);
-        var line6 = s6.Add(Ms(1), start6 + Ms(300), TimeSpan.FromSeconds(capSec + 0.1), 2, 0);
-        Check(line6 is not null, "the window fires");
-
-        var abs = System.Text.RegularExpressions.Regex.Match(line6!, @"capture->deliver ([\d.]+)ms avg");
-        Check(abs.Success, $"an aligned clock yields absolute latency: {line6}");
-        var absMs = double.Parse(abs.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-        Check(absMs is > 150 and < 250, $"a constant 200ms delay is reported as 200ms (got {absMs:F0}ms)");
-
-        // 같은 자료에서 "변동" 은 0 이다 — 변동만 보면 지연이 없어 보인다는 것이 요점이다
-        var vary = System.Text.RegularExpressions.Regex.Match(line6!, @"variation ([\d.]+)ms avg");
-        Check(vary.Success && double.Parse(vary.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) < 1,
-            $"the same data shows no variation — which is why variation alone is not enough: {line6}");
-
-        // 시계를 못 맞췄으면 절대 지연을 내지 않는다 — 추측값을 지어내지 않는다
-        var start7 = System.Diagnostics.Stopwatch.GetTimestamp();
-        var s7 = new CvInspect.Imaging.Gev.GevPumpStats(50);
-        s7.Add(Ms(1), start7 + Ms(10), TimeSpan.FromSeconds(1.0), 1);
-        var line7 = s7.Add(Ms(1), start7 + Ms(80), TimeSpan.FromSeconds(1.07), 2);
-        Check(line7 is not null && !line7.Contains("capture->deliver"),
-            $"without a clock alignment no absolute latency is claimed: {line7}");
+        // ⚠ 장치 시계가 되감기면 몇 시간짜리 "지연" 이 찍힌다 — 실기에서 실제로 그렇게 나왔다.
+        // 기준을 다시 잡고 튀었다고 말해야 한다. 틀린 숫자는 없는 것보다 나쁘다.
+        var start8 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s8 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        s8.Add(Ms(1), 0, start8 + Ms(10), TimeSpan.FromHours(4));          // 가동 4시간째
+        var line8 = s8.Add(Ms(1), 0, start8 + Ms(80), TimeSpan.FromSeconds(0.01));  // 시계가 0 으로 되감겼다
+        Check(line8 is not null && line8.Contains("the device clock jumped"),
+            $"a device clock that winds back is called out, not reported as latency: {line8}");
+        var bad = System.Text.RegularExpressions.Regex.Match(line8!, @"([\d.]+)ms max above the best seen");
+        Check(bad.Success && double.Parse(bad.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) < 1000,
+            $"and the latency numbers stay sane instead of showing hours: {line8}");
     }
 }

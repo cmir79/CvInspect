@@ -18,6 +18,9 @@ namespace CvInspect.Imaging.Gev;
 /// </summary>
 internal sealed class GevPumpStats
 {
+    /// <summary>이보다 큰 "초과" 는 대기가 아니라 장치 시계가 튄 것이다 — 한 프레임이 10분을 기다릴 수는 없다.</summary>
+    private static readonly long ClockJumpGuardTicks = (long)(600.0 * System.Diagnostics.Stopwatch.Frequency);
+
     private readonly long _intervalTicks;
     private long _windowStart;
 
@@ -34,9 +37,9 @@ internal sealed class GevPumpStats
     private long _excessMaxTicks;
     private int _timedFrames;
 
-    private long _absTicks;
-    private long _absMaxTicks;
-    private int _alignedFrames;
+    private long _waitTicks;
+    private long _waitMinTicks = long.MaxValue;
+    private int _clockJumps;
 
     /// <param name="intervalMs">0 이하면 끈다.</param>
     public GevPumpStats(int intervalMs)
@@ -58,10 +61,9 @@ internal sealed class GevPumpStats
     /// <param name="deliveredAt">발행 시각(<see cref="Now"/> 기준).</param>
     /// <param name="capture">장치가 찍은 촬영 시각. 없으면 초과 지연은 세지 않는다.</param>
     /// <param name="frameId">장치가 매긴 프레임 번호. 0 이면 세지 않는다.</param>
-    /// <param name="clockOffsetTicks">호스트 시계 − 장치 시계. 두 시계를 맞춘 값이 있으면
-    /// <b>절대 지연</b>(촬영에서 발행까지 실제로 걸린 시간)을 낸다. null 이면 못 낸다.</param>
-    public string? Add(long handlerTicks, long deliveredAt, TimeSpan? capture, ulong frameId = 0,
-                       long? clockOffsetTicks = null)
+    /// <param name="waitTicks">수신에서 기다린 시간. <b>대기열이 있는지를 이것이 가른다</b> —
+    /// 0 에 가까우면 완성 프레임이 이미 줄 서 있다는 뜻이고, 프레임 주기만큼이면 줄이 비어 있다는 뜻이다.</param>
+    public string? Add(long handlerTicks, long waitTicks, long deliveredAt, TimeSpan? capture, ulong frameId = 0)
     {
         _frames++;
 
@@ -78,6 +80,8 @@ internal sealed class GevPumpStats
         }
         _handlerTicks += handlerTicks;
         if (handlerTicks > _handlerMaxTicks) _handlerMaxTicks = handlerTicks;
+        _waitTicks += waitTicks;
+        if (waitTicks < _waitMinTicks) _waitMinTicks = waitTicks;
 
         if (capture is { } c)
         {
@@ -85,19 +89,19 @@ internal sealed class GevPumpStats
             var offset = deliveredAt - (long)(c.TotalSeconds * Freq);
             if (offset < _bestOffsetTicks) _bestOffsetTicks = offset;
             var excess = offset - _bestOffsetTicks;
+
+            // 장치 시계가 튀면(재설정·되감김) 기준이 무의미해진다. 그대로 두면 몇 시간짜리 "지연" 을
+            // 태연히 찍는데, 틀린 숫자는 없는 것보다 나쁘다 — 기준을 다시 잡고 튀었다고 말한다.
+            if (excess > ClockJumpGuardTicks)
+            {
+                _bestOffsetTicks = offset;
+                _clockJumps++;
+                excess = 0;
+            }
+
             _excessTicks += excess;
             if (excess > _excessMaxTicks) _excessMaxTicks = excess;
             _timedFrames++;
-
-            // 두 시계를 맞춰 뒀으면 초과가 아니라 실제로 걸린 시간을 낸다.
-            if (clockOffsetTicks is { } off)
-            {
-                var abs = offset - off;
-                if (abs < 0) abs = 0;              // 맞춤 오차가 음수를 만들 수 있다
-                _absTicks += abs;
-                if (abs > _absMaxTicks) _absMaxTicks = abs;
-                _alignedFrames++;
-            }
         }
 
         var elapsed = deliveredAt - _windowStart;
@@ -116,12 +120,12 @@ internal sealed class GevPumpStats
         if (_gaps > 0)
             line += $" | {_missed} frame(s) never arrived in {_gaps} gap(s)";
 
-        if (_alignedFrames > 0)
-        {
-            // 절대 지연 — 최소값을 빼지 않으므로 "일정하게 깔린 지연" 도 보인다.
-            line += $" | capture->deliver {(_absTicks / (double)_alignedFrames / Freq * 1000.0):F1}ms avg, "
-                  + $"{(_absMaxTicks / Freq * 1000.0):F1}ms max";
-        }
+        // 수신 대기 — 대기열이 서 있는지를 가르는 숫자다.
+        line += $" | receive wait {(_waitTicks / (double)_frames / Freq * 1000.0):F1}ms avg, "
+              + $"{(_waitMinTicks == long.MaxValue ? 0 : _waitMinTicks / Freq * 1000.0):F1}ms min";
+
+        if (_clockJumps > 0)
+            line += $" | the device clock jumped {_clockJumps} time(s), so the numbers below restart from there";
 
         line += _timedFrames > 0
             ? $" | variation {(_excessTicks / (double)_timedFrames / Freq * 1000.0):F1}ms avg, "
@@ -137,9 +141,9 @@ internal sealed class GevPumpStats
         _excessTicks = 0;
         _excessMaxTicks = 0;
         _timedFrames = 0;
-        _absTicks = 0;
-        _absMaxTicks = 0;
-        _alignedFrames = 0;
+        _waitTicks = 0;
+        _waitMinTicks = long.MaxValue;
+        _clockJumps = 0;
         return line;
     }
 }
