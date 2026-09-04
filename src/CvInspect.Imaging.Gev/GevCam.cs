@@ -126,6 +126,7 @@ public sealed class GevCam : ICam
             if (_gev.PacketTimeoutMs is { } packetTimeout) streamOpt.PacketTimeoutMs = packetTimeout;
 
             var stream = await dev.OpenStreamAsync(streamOpt, ct).ConfigureAwait(false);
+            LogSocketBuffer(stream, streamOpt.SocketBufferBytes);
 
             try
             {
@@ -766,6 +767,29 @@ public sealed class GevCam : ICam
         "OFF" or "FALSE" or "DISABLED" or "0" => false,
         _ => null,
     };
+
+    /// <summary>
+    /// OS 가 실제로 준 수신 버퍼 크기를 남긴다 — <b>요청한 크기가 아니라 받은 크기다.</b>
+    ///
+    /// 커널은 이 버퍼를 페이지 아웃되지 않는 영역에서 떼어 준다. 그래서 여러 대를 한 호스트에서
+    /// 열면 <b>나중에 여는 쪽부터 덜 받기 쉽고</b>, 그 결과는 부하가 걸릴 때 유실로만 나타나
+    /// 원인이 어디에도 보이지 않는다. 여덟 대를 열었으면 이 줄 여덟 개를 나란히 놓고
+    /// 뒤쪽만 작은지 본다 — 그렇다면 요청을 낮추는 편이 앞쪽만 살찌우는 것보다 낫다.
+    /// </summary>
+    private void LogSocketBuffer(GevStream stream, int requested)
+    {
+        var granted = stream.SocketReceiveBufferBytes;
+        if (granted >= requested)
+        {
+            WriteLog(CvLogLevel.Info, $"socket receive buffer: {granted} bytes (requested {requested})");
+            return;
+        }
+
+        WriteLog(CvLogLevel.Warning,
+            $"socket receive buffer: the OS granted {granted} bytes of the {requested} requested. " +
+            "Under load this camera will drop packets before the others do. If several cameras run on this host, " +
+            "lower GevCamOpt.SocketBufferBytes for all of them rather than letting the first ones take it all.");
+    }
 
     /// <summary>
     /// SCPD 를 장치 틱으로 정한다 — 못 박은 값이 있으면 그것, 없으면 시간에서 환산한다.
