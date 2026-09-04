@@ -16,6 +16,10 @@ namespace CvInspect.Imaging.Gev;
 /// 결국 도착하면 요청만 남고 실제 누락은 0 이다(실측: 8시간에 6,392건 요청, 누락 0). 시한을 늘려도
 /// 줄지 않는다. 판정은 <see cref="MissingPackets"/> 와 <see cref="IncompleteFrames"/> 로 한다.
 /// </summary>
+/// <param name="Name">이 스냅샷이 어느 카메라 것인가 — 호스트가 붙인 이름. <b>스냅샷은 혼자 돌아다닌다</b>
+/// (로그에 실리고, 목록에 담기고, 상위로 올라간다). 부른 쪽이 안다고 빼 두면 그 순간 식별이 사라진다.</param>
+/// <param name="DeviceAddress">장치 주소. 취득 라이브러리가 자기 로그에 다는 것과 같은 값이라,
+/// 그쪽 줄과 이 스냅샷을 한 카메라로 이어 준다. 모르면 빈 문자열.</param>
 /// <param name="StreamStartedUtc">이 계수들이 시작된 시점. <b>달라졌으면 계수가 리셋된 것</b>이라
 /// 이전 스냅샷과 빼면 안 된다.</param>
 /// <param name="CompletedFrames">완성된 프레임 수.</param>
@@ -30,6 +34,8 @@ namespace CvInspect.Imaging.Gev;
 /// <param name="NeverArrivedFrames">발행한 프레임 사이에서 장치 번호가 건너뛴 장수 —
 /// <b>여기까지 오지 못한 프레임</b>이다. 단발 그랩이 대기열을 비우며 일부러 버린 것은 세지 않는다.</param>
 public readonly record struct GevCamHealth(
+    string Name,
+    string DeviceAddress,
     DateTime StreamStartedUtc,
     long CompletedFrames,
     long IncompleteFrames,

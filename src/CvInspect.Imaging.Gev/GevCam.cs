@@ -580,6 +580,8 @@ public sealed class GevCam : ICam
             if (_disposed || _stream is null) return null;
             var s = _stream.Stats.Snapshot();
             return new GevCamHealth(
+                Name: Name,
+                DeviceAddress: _dev?.Address?.ToString() ?? string.Empty,
                 StreamStartedUtc: _streamStartedUtc,
                 CompletedFrames: s.FramesCompleted,
                 IncompleteFrames: s.FramesIncomplete,

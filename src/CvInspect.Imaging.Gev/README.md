@@ -74,6 +74,10 @@ incomplete frames, frames dropped for want of a buffer, missing packets, resend 
 whose device sequence number never arrived. Reading the fields separately would mix moments and
 manufacture events that never happened, so they come together or not at all.
 
+The snapshot names its own camera and device address. Snapshots travel — into a log line, a list, a
+message to something upstream — and a number that cannot say which of eight cameras it describes
+answers nothing when one of them goes bad.
+
 The counters are cumulative since the stream started; subtract two snapshots to get your own window
 rather than one this package picked for you. **Compare `StreamStartedUtc` before subtracting** — a
 reconnect restarts the counters, and a consumer computing deltas across that boundary sees negative
