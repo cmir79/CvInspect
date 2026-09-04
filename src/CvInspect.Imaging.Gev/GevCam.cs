@@ -26,6 +26,12 @@ public sealed class GevCam : ICam
     /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
     private long _stoppedAtTicks;
 
+    /// <summary>이 스트림의 계수가 시작된 시점 — 소비자가 "리셋됐다" 를 구분하는 표식이다.</summary>
+    private DateTime _streamStartedUtc;
+
+    /// <summary>발행 사이에서 장치 번호가 건너뛴 누적 장수. 일부러 버린 것은 세지 않는다.</summary>
+    private long _neverArrivedFrames;
+
     /// <summary>마지막으로 발행한 프레임의 장치 번호. 단발 그랩이 <b>이보다 새 프레임만</b> 받아들이는 기준이다.</summary>
     private ulong _lastEmittedFrameId;
 
@@ -150,6 +156,9 @@ public sealed class GevCam : ICam
                 await stream.StartAsync(ct).ConfigureAwait(false);
                 // 소켓은 여기서 bind 된다 — 그 전에 읽으면 아직 0 이다.
                 _streamPort = stream.LocalPort;
+                _streamStartedUtc = DateTime.UtcNow;
+                _neverArrivedFrames = 0;
+                _lastEmittedFrameId = 0;
                 _tickHz = dev.TimestampTickFrequency;
                 LogSocketBuffer(stream, streamOpt.SocketBufferBytes);
                 // 전송 파라미터 잠금은 스트림이 선 뒤, 취득을 걸기 전에 — 순서가 뒤바뀌면 장치가 거부한다.
@@ -509,7 +518,13 @@ public sealed class GevCam : ICam
     {
         // 무엇을 내보냈는지 여기 한 자리에서 기억한다 — 단발 그랩의 "새 프레임" 판정 기준이다.
         // 변환에 실패해 발행하지 못한 것도 이미 지나간 프레임이므로 기준에 넣는다.
-        if (frame.FrameId > _lastEmittedFrameId) _lastEmittedFrameId = frame.FrameId;
+        if (frame.FrameId > _lastEmittedFrameId)
+        {
+            // 번호가 건너뛰었으면 카메라가 보낸 것이 여기까지 오지 못한 것이다.
+            if (_lastEmittedFrameId != 0 && frame.FrameId > _lastEmittedFrameId + 1)
+                _neverArrivedFrames += (long)(frame.FrameId - _lastEmittedFrameId - 1);
+            _lastEmittedFrameId = frame.FrameId;
+        }
 
         var cam = Convert(frame);
         if (cam is null) return;
@@ -554,17 +569,44 @@ public sealed class GevCam : ICam
     }
 
     /// <summary>
+    /// 이 카메라의 취득 건강을 <b>한 번에</b> 뜬다 — 항목을 따로 읽어 서로 다른 시점 값이 섞이지 않게.
+    /// 열려 있지 않으면 계수가 없으므로 null.
+    /// 쓰는 법과 경보 기준은 <see cref="GevCamHealth"/> 에 적어 두었다.
+    /// </summary>
+    public GevCamHealth? GetHealth()
+    {
+        lock (_sync)
+        {
+            if (_disposed || _stream is null) return null;
+            var s = _stream.Stats.Snapshot();
+            return new GevCamHealth(
+                StreamStartedUtc: _streamStartedUtc,
+                CompletedFrames: s.FramesCompleted,
+                IncompleteFrames: s.FramesIncomplete,
+                DroppedNoBuffer: s.FramesDroppedNoBuffer,
+                DroppedError: s.FramesDroppedError,
+                DroppedUnsupported: s.FramesDroppedUnsupported,
+                MissingPackets: s.PacketsMissing,
+                ResendRequests: s.ResendRequests,
+                ResendRecovered: s.ResendRecovered,
+                NeverArrivedFrames: Interlocked.Read(ref _neverArrivedFrames));
+        }
+    }
+
+    /// <summary>
     /// 대기열에 남아 있는 완성 프레임을 버린다. 버린 장수를 돌려준다.
     ///
     /// <b>연속 취득을 멈춰도 이미 받아 둔 프레임은 대기열에 남는다.</b> 그대로 두면 다음 단발 그랩이
     /// 새로 찍은 것이 아니라 그 옛것을 가져간다 — 화면이라면 한 장 늦은 그림이지만
     /// <b>검사라면 이전 대상을 판정한다.</b> 예외도 경고도 없이 조용히 틀린다.
     /// </summary>
-    private static int DrainStream(GevStream stream)
+    private int DrainStream(GevStream stream)
     {
         var dropped = 0;
         while (stream.TryReceive(out var stale) && stale != null)
         {
+            // 버린 것도 지나간 프레임이다 — 기준을 올려 두지 않으면 다음 프레임이 "건너뛴 것" 으로 잡힌다.
+            if (stale.FrameId > _lastEmittedFrameId) _lastEmittedFrameId = stale.FrameId;
             stale.Dispose();
             dropped++;
         }

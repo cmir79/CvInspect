@@ -67,6 +67,23 @@ different pattern it logs both so the mismatch is visible. If colours are wrong,
 new GevCamOpt { BayerPatternOverride = CvBayerPattern.GR }
 ```
 
+## Health
+
+`GevCam.GetHealth()` returns one atomic snapshot of the acquisition counters — completed and
+incomplete frames, frames dropped for want of a buffer, missing packets, resend activity, and frames
+whose device sequence number never arrived. Reading the fields separately would mix moments and
+manufacture events that never happened, so they come together or not at all.
+
+The counters are cumulative since the stream started; subtract two snapshots to get your own window
+rather than one this package picked for you. **Compare `StreamStartedUtc` before subtracting** — a
+reconnect restarts the counters, and a consumer computing deltas across that boundary sees negative
+numbers.
+
+Alarm on `MissingPackets` and `IncompleteFrames`, never on `ResendRequests`. Packets that arrive out
+of order but still in time leave a resend request behind with nothing actually lost — a measured run
+logged 6,392 requests against zero missing packets over eight hours, and raising the timeouts does
+not reduce it.
+
 ## Diagnostics
 
 Attach `CvLog.Sink` before opening — discovery results, feature fallbacks, dropped frames and
