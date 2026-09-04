@@ -12,8 +12,10 @@ namespace CvInspect.Imaging;
 /// </summary>
 public sealed class CamFrame
 {
-    public CamFrame(byte[] pixels, int width, int height, int stride, CamPixelFormat format)
+    public CamFrame(byte[] pixels, int width, int height, int stride, CamPixelFormat format,
+                    TimeSpan? deviceTimestamp = null)
     {
+        DeviceTimestamp = deviceTimestamp;
         Pixels = pixels ?? throw new ArgumentNullException(nameof(pixels));
         Width = width;
         Height = height;
@@ -34,12 +36,25 @@ public sealed class CamFrame
     public int Stride { get; }
     public CamPixelFormat Format { get; }
 
-    /// <summary>취득 시각 (UTC) — 생성 시점에 찍힌다.</summary>
+    /// <summary>이 객체가 만들어진 시각(UTC) — 즉 <b>호스트에 도착한 시각</b>이지 촬영 시각이 아니다.
+    /// 전송과 대기열에 걸린 시간이 이미 지난 뒤의 값이다. 촬영 시각은 <see cref="DeviceTimestamp"/> 를 본다.</summary>
     public DateTime TimestampUtc { get; }
+
+    /// <summary>
+    /// 장치가 찍은 촬영 시각. 장치가 제공하지 않으면 null.
+    ///
+    /// <b>절대 시각이 아니다</b> — 기준점은 장치가 정하며(대개 전원 인가 시점) 호스트 시계와 무관하다.
+    /// 그래서 두 가지로만 쓴다: 프레임 사이의 <b>간격</b>, 그리고 <see cref="TimestampUtc"/> 와의 <b>차이</b>.
+    ///
+    /// 차이는 그 자체로는 의미가 없고(시계 기준점이 다르다) <b>차이의 변화</b>가 대기 시간이다 —
+    /// 한 구간에서 관측한 최소 차이를 0 으로 놓으면, 각 프레임이 그보다 초과한 만큼이
+    /// 전송 뒤 어딘가에서 앉아 있던 시간이다. 화면이 밀리는데 처리량은 정상일 때 이 값이 원인을 가른다.
+    /// </summary>
+    public TimeSpan? DeviceTimestamp { get; }
 
     /// <summary>Mat → CamFrame 실체화(픽셀 복사) — 소스 구현이 발행 직전에 쓴다.
     /// 8UC1/8UC3/8UC4 만 지원(그 외는 예외). 타이트 패킹(stride = 폭×채널)으로 담는다.</summary>
-    public static CamFrame FromMat(Mat mat)
+    public static CamFrame FromMat(Mat mat, TimeSpan? deviceTimestamp = null)
     {
         if (mat is null || mat.Empty())
             throw new ArgumentException("mat is null or empty.", nameof(mat));
@@ -62,6 +77,6 @@ public sealed class CamFrame
             using var cont = mat.Clone();   // 서브뷰(ROI)라 행 사이 패딩이 있는 경우 — Clone 은 항상 연속
             Marshal.Copy(cont.Data, buf, 0, buf.Length);
         }
-        return new CamFrame(buf, mat.Width, mat.Height, stride, fmt);
+        return new CamFrame(buf, mat.Width, mat.Height, stride, fmt, deviceTimestamp);
     }
 }

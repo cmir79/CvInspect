@@ -26,6 +26,9 @@ public sealed class GevCam : ICam
     /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
     private long _stoppedAtTicks;
 
+    /// <summary>장치 타임스탬프의 틱 주파수(Hz). 0 이면 장치가 알려 주지 않아 촬영 시각을 못 낸다.</summary>
+    private ulong _tickHz;
+
     /// <summary>이 카메라가 쓰는 스트림 로컬 포트. 취득 라이브러리 로그는 카메라 이름을 모르고
     /// <b>포트로만 자기를 밝히므로</b>, 그 줄들을 이 카메라에 붙이려면 우리가 대응을 남겨야 한다.
     /// 열 때마다 바뀌므로 열린 판을 들고 있다가 닫을 때 같이 남긴다.</summary>
@@ -144,6 +147,7 @@ public sealed class GevCam : ICam
                 await stream.StartAsync(ct).ConfigureAwait(false);
                 // 소켓은 여기서 bind 된다 — 그 전에 읽으면 아직 0 이다.
                 _streamPort = stream.LocalPort;
+                _tickHz = dev.TimestampTickFrequency;
                 LogSocketBuffer(stream, streamOpt.SocketBufferBytes);
                 // 전송 파라미터 잠금은 스트림이 선 뒤, 취득을 걸기 전에 — 순서가 뒤바뀌면 장치가 거부한다.
                 await dev.SetTlParamsLockedAsync(true, ct).ConfigureAwait(false);
@@ -430,6 +434,7 @@ public sealed class GevCam : ICam
 
     private void PumpLoop(GevStream stream, CancellationToken ct)
     {
+        var stats = new GevPumpStats(_gev.PumpStatsIntervalMs);
         while (!ct.IsCancellationRequested)
         {
             GevFrame? frame = null;
@@ -446,9 +451,16 @@ public sealed class GevCam : ICam
                 break;
             }
 
+            // 촬영 시각은 프레임을 놓기 전에 꺼낸다 — Dispose 뒤에는 못 읽는다.
+            var capture = stats.Enabled ? CaptureTimeOf(frame) : null;
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
             try { Emit(frame); }
             catch (Exception ex) { WriteLog(CvLogLevel.Warning, "frame conversion failed", ex); }
             finally { frame.Dispose(); }
+
+            if (!stats.Enabled) continue;
+            var done = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (stats.Add(done - started, done, capture) is { } line) WriteLog(CvLogLevel.Info, line);
         }
     }
 
@@ -494,7 +506,8 @@ public sealed class GevCam : ICam
                 ? PixelUnpack.FoldToMono8(code, src, frame.Stride, w, h)
                 : PixelUnpack.FoldToMono8(code, src, frame.ImageSize, w * h, 1);
             var layoutPacked = PixelFormatInfo.IsBayer(code) ? GevPixelLayout.Bayer : GevPixelLayout.Mono;
-            return GevFrameConv.ToCamFrame(folded, w, h, w, layoutPacked, 8, BayerOf(code), _gev.BayerToMono);
+            return GevFrameConv.ToCamFrame(folded, w, h, w, layoutPacked, 8, BayerOf(code), _gev.BayerToMono,
+                                           CaptureTimeOf(frame));
         }
 
         if (!TryDescribe(code, out var layout, out var significantBits))
@@ -505,7 +518,18 @@ public sealed class GevCam : ICam
 
         // 화소를 우리 것으로 실체화한다 — 원본 버퍼는 이 호출이 끝나면 풀로 돌아간다.
         var pixels = frame.Data.Span.Slice(0, frame.ImageSize).ToArray();
-        return GevFrameConv.ToCamFrame(pixels, w, h, frame.Stride, layout, significantBits, BayerOf(code), _gev.BayerToMono);
+        return GevFrameConv.ToCamFrame(pixels, w, h, frame.Stride, layout, significantBits, BayerOf(code),
+                                       _gev.BayerToMono, CaptureTimeOf(frame));
+    }
+
+    /// <summary>
+    /// 장치가 프레임에 찍은 촬영 시각. 틱 주파수를 모르면 null —
+    /// <b>0 을 대신 넣지 않는다</b>. 0 은 "전원 인가 직후에 찍혔다" 로 읽혀 지연이 거대해 보인다.
+    /// </summary>
+    private TimeSpan? CaptureTimeOf(GevFrame frame)
+    {
+        if (_tickHz == 0 || frame.Timestamp == 0) return null;
+        return TimeSpan.FromSeconds(frame.Timestamp / (double)_tickHz);
     }
 
     /// <summary>PFNC 코드를 변환기 입력으로 푼다. 유효 비트(깊이)를 쓴다 — 코드가 차지하는 비트가 아니다.</summary>

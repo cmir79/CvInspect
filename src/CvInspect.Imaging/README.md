@@ -6,8 +6,12 @@ Camera acquisition contract and tame frame sources for the
 
 - **`ICam`** — the acquisition contract: open/close, single grab, continuous grab,
   connection/grabbing events, best-effort exposure control. Frames are GC-owned
-  **`CamFrame`** buffers (`byte[]` + width/height/stride/format/timestamp) with **no
+  **`CamFrame`** buffers (`byte[]` + width/height/stride/format/timestamps) with **no
   lifetime contract** — `frame.AsMat()` gives a zero-copy `Mat` view for inspection.
+  A frame carries two clocks: `TimestampUtc` is when it **arrived**, and `DeviceTimestamp`
+  is when the camera **captured** it (null if the device does not report one). The device
+  clock has its own epoch, so compare frames to each other rather than reading it as wall
+  time — the change in the gap between the two is time the frame spent waiting.
 - **`VirtualCam`** — no-hardware source: a shifting-gradient test pattern, or name-ordered
   cyclic replay of an image folder (`CamOpt.VirtualImageDir`), re-enumerated on folder change.
   Ideal for development, demos and CI regression runs. Note: color→gray decoding follows

@@ -768,4 +768,49 @@ public class SmokeTests
             "a midpoint rounds away from zero, not down into a darker frame");
     }
     }
+
+    /// <summary>
+    /// 펌프 계측 — 밀림의 원인을 가르는 두 숫자가 실제로 그 값을 내는지.
+    /// 이 절이 있는 이유: 확인하지 않은 진단 줄을 넣었다가 정상 시스템에서 항상 경고가 뜨게 만든 적이 있다.
+    /// </summary>
+    [Fact]
+    public void PumpStats()
+    {
+        var freq = System.Diagnostics.Stopwatch.Frequency;
+        long Ms(double ms) => (long)(ms / 1000.0 * freq);
+
+        Check(!new CvInspect.Imaging.Gev.GevPumpStats(0).Enabled, "interval 0 turns the diagnostic off");
+
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s = new CvInspect.Imaging.Gev.GevPumpStats(100);
+        Check(s.Enabled, "a positive interval turns it on");
+
+        // 구간이 차기 전에는 아무것도 남기지 않는다
+        Check(s.Add(Ms(1), start + Ms(10), TimeSpan.FromSeconds(1.00)) is null,
+            "nothing is emitted before the window fills");
+
+        // 촬영 1.10s -> 발행 start+300ms. 앞 프레임의 기준 대비 200ms 늦게 앉아 있었다.
+        var line = s.Add(Ms(1), start + Ms(300), TimeSpan.FromSeconds(1.10));
+        Check(line is not null, "the window fires once the interval has elapsed");
+
+        var excess = System.Text.RegularExpressions.Regex.Match(line!, @"([\d.]+)ms max above the best seen");
+        Check(excess.Success, $"the line reports queueing above the best offset: {line}");
+        var ms = double.Parse(excess.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+        Check(ms is > 150 and < 250, $"a frame that sat 200ms longer than the best is reported as such (got {ms:F0}ms)");
+
+        // 장치가 시각을 안 주면 잴 수 없다고 말한다 — 0 을 대신 쓰지 않는다
+        var start2 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s2 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        var line2 = s2.Add(Ms(1), start2 + Ms(80), null);
+        Check(line2 is not null && line2.Contains("no timestamp"),
+            $"without a device timestamp it says queueing cannot be measured: {line2}");
+
+        // 핸들러가 펌프 시간을 다 먹으면 그 비율이 드러난다 — 취득 속도를 정하는 것이 호스트라는 신호
+        var start3 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s3 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        var line3 = s3.Add(Ms(95), start3 + Ms(100), null);
+        var duty = System.Text.RegularExpressions.Regex.Match(line3!, @"(\d+)% of the pump's time");
+        Check(duty.Success && int.Parse(duty.Groups[1].Value) > 80,
+            $"handlers eating the pump's time show up as a high share: {line3}");
+    }
 }

@@ -22,6 +22,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 진단 계측기는 공개 표면이 아니지만 회귀로 고정한다 — 확인 못 한 진단을 넣지 않기 위해서다. -->
+    <InternalsVisibleTo Include="CvInspect.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CvInspect.Imaging\CvInspect.Imaging.csproj" />
     <!-- GigE 취득 백엔드 - 공개 피드에서 받는다(nuget.org).
          OpenCV 무의존이라 이 참조가 네이티브를 끌어오지 않는다. -->

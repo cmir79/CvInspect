@@ -62,6 +62,12 @@ public sealed class GevCamOpt
     /// 실제 누락이 0 이면 소음이므로 그대로 둔다.</summary>
     public int? PacketTimeoutMs { get; set; }
 
+    /// <summary>취득 펌프가 어디에 시간을 쓰는지 이 주기(ms)마다 한 줄로 남긴다. 0 이면 끈다(기본).
+    /// 프레임 이벤트는 <b>펌프 스레드에서 동기로</b> 발화하므로 느린 구독자가 취득을 그대로 막는데,
+    /// 호스트가 자기 핸들러 안에서만 재면 그 구간이 안 보인다 — "받은 뒤로는 1ms" 와 "화면이 밀린다" 가
+    /// 동시에 성립한다. 밀림을 조사할 때 켠다. 카메라마다 한 줄씩 나오므로 상시로 두지 않는다.</summary>
+    public int PumpStatsIntervalMs { get; set; }
+
     /// <summary>단발 그랩이 프레임을 기다리는 상한(ms).</summary>
     public int GrabTimeoutMs { get; set; } = 5000;
 

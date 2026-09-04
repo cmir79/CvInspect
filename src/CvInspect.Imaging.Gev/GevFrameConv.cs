@@ -28,10 +28,12 @@ public static class GevFrameConv
     /// 상위 8비트만 남기고, 컬러 배치에서는 채널당 비트 수(8)를 넘긴다.</param>
     /// <param name="bayer">Bayer 배치일 때의 패턴 — <b>전송 영상의 실효 패턴</b>이다(<see cref="CvBayerPhase"/> 참조).</param>
     /// <param name="toMono">Bayer 를 컬러로 펴지 않고 흑백으로 바로 접는다(검사만 하고 화면에 색이 필요 없을 때).</param>
+    /// <param name="deviceTimestamp">장치가 찍은 촬영 시각(있으면). 기준점은 장치가 정하므로
+    /// 절대 시각이 아니고, 프레임 간격이나 도착 시각과의 차이로만 쓴다.</param>
     public static CamFrame ToCamFrame(
         byte[] pixels, int width, int height, int stride,
         GevPixelLayout layout, int significantBits,
-        CvBayerPattern? bayer = null, bool toMono = false)
+        CvBayerPattern? bayer = null, bool toMono = false, TimeSpan? deviceTimestamp = null)
     {
         if (pixels is null) throw new ArgumentNullException(nameof(pixels));
         if (width <= 0 || height <= 0)
@@ -57,9 +59,9 @@ public static class GevFrameConv
             case GevPixelLayout.Mono:
             {
                 if (significantBits <= 8)
-                    return new CamFrame(pixels, width, height, stride, CamPixelFormat.Mono8);
+                    return new CamFrame(pixels, width, height, stride, CamPixelFormat.Mono8, deviceTimestamp);
                 using var mono8 = DownShift(pixels, width, height, stride, significantBits);
-                return CamFrame.FromMat(mono8);
+                return CamFrame.FromMat(mono8, deviceTimestamp);
             }
 
             case GevPixelLayout.Bayer:
@@ -71,21 +73,21 @@ public static class GevFrameConv
                     : DownShift(pixels, width, height, stride, significantBits);
                 using var dst = new Mat();
                 Cv2.CvtColor(src, dst, DemosaicCode(pattern, toMono));
-                return CamFrame.FromMat(dst);
+                return CamFrame.FromMat(dst, deviceTimestamp);
             }
 
             case GevPixelLayout.Bgr:
-                return new CamFrame(pixels, width, height, stride, CamPixelFormat.Bgr24);
+                return new CamFrame(pixels, width, height, stride, CamPixelFormat.Bgr24, deviceTimestamp);
 
             case GevPixelLayout.Bgra:
-                return new CamFrame(pixels, width, height, stride, CamPixelFormat.Bgra32);
+                return new CamFrame(pixels, width, height, stride, CamPixelFormat.Bgra32, deviceTimestamp);
 
             case GevPixelLayout.Rgb:
             {
                 using var src = Mat.FromPixelData(height, width, MatType.CV_8UC3, pixels, stride);
                 using var dst = new Mat();
                 Cv2.CvtColor(src, dst, ColorConversionCodes.RGB2BGR);
-                return CamFrame.FromMat(dst);
+                return CamFrame.FromMat(dst, deviceTimestamp);
             }
 
             case GevPixelLayout.Rgba:
@@ -93,7 +95,7 @@ public static class GevFrameConv
                 using var src = Mat.FromPixelData(height, width, MatType.CV_8UC4, pixels, stride);
                 using var dst = new Mat();
                 Cv2.CvtColor(src, dst, ColorConversionCodes.RGBA2BGRA);
-                return CamFrame.FromMat(dst);
+                return CamFrame.FromMat(dst, deviceTimestamp);
             }
 
             default:
