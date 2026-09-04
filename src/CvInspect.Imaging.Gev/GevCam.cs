@@ -38,11 +38,6 @@ public sealed class GevCam : ICam
     /// <summary>장치 타임스탬프의 틱 주파수(Hz). 0 이면 장치가 알려 주지 않아 촬영 시각을 못 낸다.</summary>
     private ulong _tickHz;
 
-    /// <summary>이 카메라가 쓰는 스트림 로컬 포트. 취득 라이브러리 로그는 카메라 이름을 모르고
-    /// <b>포트로만 자기를 밝히므로</b>, 그 줄들을 이 카메라에 붙이려면 우리가 대응을 남겨야 한다.
-    /// 열 때마다 바뀌므로 열린 판을 들고 있다가 닫을 때 같이 남긴다.</summary>
-    private int _streamPort;
-
     private readonly CamOpt _opt;
     private readonly GevCamOpt _gev;
     private readonly object _sync = new();
@@ -90,7 +85,9 @@ public sealed class GevCam : ICam
             IsConnected = true;
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
-        WriteLog(CvLogLevel.Info, $"opened (SN={_opt.SerialNumber})");
+        // 이름과 장치 주소를 한 번 이어 둔다 — 취득 라이브러리는 자기 줄에 주소를 달고 우리 이름은
+        // 모르므로, 이 한 줄이 있어야 그쪽 줄들이 이 카메라 것으로 읽힌다. 주소는 세션 내내 안 바뀐다.
+        WriteLog(CvLogLevel.Info, $"opened (SN={_opt.SerialNumber} at {_dev?.Address})");
     }
 
     private async Task OpenCoreAsync(CancellationToken ct)
@@ -155,7 +152,6 @@ public sealed class GevCam : ICam
                 stream.FrameDropped += OnFrameDropped;
                 await stream.StartAsync(ct).ConfigureAwait(false);
                 // 소켓은 여기서 bind 된다 — 그 전에 읽으면 아직 0 이다.
-                _streamPort = stream.LocalPort;
                 _streamStartedUtc = DateTime.UtcNow;
                 _neverArrivedFrames = 0;
                 _lastEmittedFrameId = 0;
@@ -264,9 +260,7 @@ public sealed class GevCam : ICam
         }
         GrabbingChanged?.Invoke(this, false);
         ConnectionChanged?.Invoke(this, new ConnArgs(false));
-        WriteLog(CvLogLevel.Info,
-            _streamPort > 0 ? $"closed (stream was on local port {_streamPort})" : "closed");
-        _streamPort = 0;
+        WriteLog(CvLogLevel.Info, "closed");
     }
 
     /// <summary>정지는 개시의 역순이고 <b>취소 없이</b> 끝까지 간다 — 중간에 그만두면 카메라가 죽은 소켓으로
@@ -602,6 +596,10 @@ public sealed class GevCam : ICam
     /// 새로 찍은 것이 아니라 그 옛것을 가져간다 — 화면이라면 한 장 늦은 그림이지만
     /// <b>검사라면 이전 대상을 판정한다.</b> 예외도 경고도 없이 조용히 틀린다.
     /// </summary>
+    /// <remarks>취득 라이브러리에 같은 일을 하는 <c>DiscardQueuedFrames()</c> 가 있지만 쓰지 않는다 —
+    /// 그쪽은 몇 장 버렸는지만 알려 주고 <b>무엇을 버렸는지는 알려 주지 않는다.</b> 우리가 일부러 버린
+    /// 프레임의 번호를 기준에 반영하지 않으면, 다음 프레임이 "카메라가 보냈는데 안 온 것" 으로 잡혀
+    /// 우리가 만든 배수가 스스로 거짓 경보를 낸다.</remarks>
     private int DrainStream(GevStream stream)
     {
         var dropped = 0;
@@ -930,17 +928,14 @@ public sealed class GevCam : ICam
     private void LogSocketBuffer(GevStream stream, int requested)
     {
         var granted = stream.SocketReceiveBufferBytes;
-        var port = stream.LocalPort;
         if (granted >= requested)
         {
-            WriteLog(CvLogLevel.Info,
-                $"stream on local port {port}: socket receive buffer {granted} bytes (requested {requested})");
+            WriteLog(CvLogLevel.Info, $"socket receive buffer {granted} bytes (requested {requested})");
             return;
         }
 
         WriteLog(CvLogLevel.Warning,
-            $"stream on local port {port}: the OS granted a socket receive buffer of {granted} bytes "
-            + $"out of the {requested} requested. " +
+            $"the OS granted a socket receive buffer of {granted} bytes out of the {requested} requested. " +
             "Under load this camera will drop packets before the others do. If several cameras run on this host, " +
             "lower GevCamOpt.SocketBufferBytes for all of them rather than letting the first ones take it all.");
     }
