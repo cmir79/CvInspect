@@ -90,6 +90,17 @@ identifier strings — saved recipes survive enum evolution, and old integer-val
 still deserialize. If you persist them with another serializer (e.g. Json.NET in Unity),
 configure it to skip delegate-typed members.
 
+## Tests
+
+```
+dotnet test
+```
+
+The suite is a regression harness rather than an exhaustive unit-test corpus: each case pins a
+defect that was actually observed — Bayer phase parity, packed-format bit depth, buffer length
+bounds, reconnect invariants, exposure-grid snapping — so a failure message states why that case
+exists. It needs no camera and no network.
+
 ## License
 
 Apache-2.0. Not affiliated with OpenCV or OpenCvSharp.
