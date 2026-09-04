@@ -461,7 +461,7 @@ public sealed class GevCam : ICam
             GevFrame? frame = null;
             // 수신에서 얼마나 기다렸나 — 이것이 대기열 유무를 가른다. 곧바로 돌아오면
             // 완성 프레임이 이미 줄 서 있다는 뜻이고, 프레임 주기만큼 기다리면 줄이 비어 있다는 뜻이다.
-            var waitFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            var waitFrom = stats.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             try
             {
                 frame = stream.ReceiveAsync(ct).AsTask().GetAwaiter().GetResult();
@@ -476,10 +476,10 @@ public sealed class GevCam : ICam
             }
 
             // 촬영 시각은 프레임을 놓기 전에 꺼낸다 — Dispose 뒤에는 못 읽는다.
-            var waitTicks = System.Diagnostics.Stopwatch.GetTimestamp() - waitFrom;
+            var waitTicks = stats.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() - waitFrom : 0;
             var capture = stats.Enabled ? CaptureTimeOf(frame) : null;
-            var frameId = frame.FrameId;
-            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var frameId = stats.Enabled ? frame.FrameId : 0;
+            var started = stats.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             try { Emit(frame); }
             catch (Exception ex) { WriteLog(CvLogLevel.Warning, "frame conversion failed", ex); }
             finally { frame.Dispose(); }
