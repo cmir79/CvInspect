@@ -4,8 +4,9 @@ GigE camera acquisition for the [CvInspect](https://github.com/cmir79/CvInspect)
 toolkit — an `ICam` backend that speaks the protocol directly, so **no vendor SDK and no
 proprietary DLLs** are needed.
 
-> **Field validation is in progress.** The wiring is complete and unit-checked, but it has not yet
-> run against a production camera. Treat this package as experimental until that is done.
+> **Status.** Verified against real hardware: a Basler acA2500-14gm and a Crevis MG-A500M-22 are
+> discovered, opened, streamed and stopped with no vendor SDK and no vendor filter driver installed.
+> Production run time has not accumulated yet, so treat models outside that pair as unproven.
 
 ## Use
 

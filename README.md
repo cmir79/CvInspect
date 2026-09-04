@@ -20,8 +20,10 @@ the same input always produces the same result, so tools can be replayed and ver
   (segments, labels, rects, polylines) that any display layer can draw
 
 Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display /
-shape-editing controls) and **CvInspect.Imaging** (camera acquisition contract with
-virtual / VideoCapture sources; vendor GigE adapters plug in via factory registration).
+shape-editing controls), **CvInspect.Imaging** (camera acquisition contract with virtual /
+VideoCapture sources, and a factory that vendor adapters register into) and
+**CvInspect.Imaging.Gev** (GigE Vision cameras spoken to directly — no vendor SDK, no
+proprietary DLLs).
 
 ## Install
 
