@@ -812,5 +812,23 @@ public class SmokeTests
         var duty = System.Text.RegularExpressions.Regex.Match(line3!, @"(\d+)% of the pump's time");
         Check(duty.Success && int.Parse(duty.Groups[1].Value) > 80,
             $"handlers eating the pump's time show up as a high share: {line3}");
+
+        // 결번 — "늦게 온다" 와 "아예 안 온다" 를 가른다
+        var start4 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s4 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        s4.Add(Ms(1), start4 + Ms(10), null, 100);
+        s4.Add(Ms(1), start4 + Ms(20), null, 101);   // 연속 — 결번 아님
+        s4.Add(Ms(1), start4 + Ms(30), null, 105);   // 102·103·104 가 안 왔다
+        var line4 = s4.Add(Ms(1), start4 + Ms(80), null, 106);
+        Check(line4 is not null && line4.Contains("3 frame(s) never arrived in 1 gap(s)"),
+            $"a jump in the device frame number is reported as frames that never arrived: {line4}");
+
+        // 번호가 이어지면 아무 말도 하지 않는다 — 정상에 잡음을 내지 않는다
+        var start5 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var s5 = new CvInspect.Imaging.Gev.GevPumpStats(50);
+        s5.Add(Ms(1), start5 + Ms(10), null, 7);
+        var line5 = s5.Add(Ms(1), start5 + Ms(80), null, 8);
+        Check(line5 is not null && !line5.Contains("never arrived"),
+            $"a contiguous sequence says nothing about losses: {line5}");
     }
 }

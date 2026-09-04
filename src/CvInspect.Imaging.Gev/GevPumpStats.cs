@@ -25,6 +25,10 @@ internal sealed class GevPumpStats
     private long _handlerTicks;
     private long _handlerMaxTicks;
 
+    private ulong _lastFrameId;
+    private int _gaps;
+    private long _missed;
+
     private long _bestOffsetTicks = long.MaxValue;   // 구간 전체에서 관측한 최선(= 지연 0 의 추정)
     private long _excessTicks;
     private long _excessMaxTicks;
@@ -49,9 +53,22 @@ internal sealed class GevPumpStats
     /// <param name="handlerTicks">이 프레임의 이벤트 발화에 걸린 시간.</param>
     /// <param name="deliveredAt">발행 시각(<see cref="Now"/> 기준).</param>
     /// <param name="capture">장치가 찍은 촬영 시각. 없으면 초과 지연은 세지 않는다.</param>
-    public string? Add(long handlerTicks, long deliveredAt, TimeSpan? capture)
+    /// <param name="frameId">장치가 매긴 프레임 번호. 0 이면 세지 않는다.</param>
+    public string? Add(long handlerTicks, long deliveredAt, TimeSpan? capture, ulong frameId = 0)
     {
         _frames++;
+
+        // 번호가 건너뛰면 카메라가 보낸 것이 여기까지 오지 못한 것이다 —
+        // "늦게 온다" 와 "아예 안 온다" 는 대응이 다르므로 갈라 센다.
+        if (frameId != 0)
+        {
+            if (_lastFrameId != 0 && frameId > _lastFrameId + 1)
+            {
+                _gaps++;
+                _missed += (long)(frameId - _lastFrameId - 1);
+            }
+            _lastFrameId = frameId;
+        }
         _handlerTicks += handlerTicks;
         if (handlerTicks > _handlerMaxTicks) _handlerMaxTicks = handlerTicks;
 
@@ -79,6 +96,9 @@ internal sealed class GevPumpStats
         var line = $"pump: {fps:F1} fps over {seconds:F1}s | host handlers {handlerAvgMs:F1}ms avg, "
                  + $"{handlerMaxMs:F1}ms max, {duty:F0}% of the pump's time";
 
+        if (_gaps > 0)
+            line += $" | {_missed} frame(s) never arrived in {_gaps} gap(s)";
+
         line += _timedFrames > 0
             ? $" | capture->deliver {(_excessTicks / (double)_timedFrames / Freq * 1000.0):F1}ms avg, "
               + $"{(_excessMaxTicks / Freq * 1000.0):F1}ms max above the best seen"
@@ -86,6 +106,8 @@ internal sealed class GevPumpStats
 
         _windowStart = deliveredAt;
         _frames = 0;
+        _gaps = 0;
+        _missed = 0;
         _handlerTicks = 0;
         _handlerMaxTicks = 0;
         _excessTicks = 0;

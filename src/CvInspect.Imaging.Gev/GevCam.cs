@@ -453,6 +453,7 @@ public sealed class GevCam : ICam
 
             // 촬영 시각은 프레임을 놓기 전에 꺼낸다 — Dispose 뒤에는 못 읽는다.
             var capture = stats.Enabled ? CaptureTimeOf(frame) : null;
+            var frameId = frame.FrameId;
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             try { Emit(frame); }
             catch (Exception ex) { WriteLog(CvLogLevel.Warning, "frame conversion failed", ex); }
@@ -460,7 +461,7 @@ public sealed class GevCam : ICam
 
             if (!stats.Enabled) continue;
             var done = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (stats.Add(done - started, done, capture) is { } line) WriteLog(CvLogLevel.Info, line);
+            if (stats.Add(done - started, done, capture, frameId) is { } line) WriteLog(CvLogLevel.Info, line);
         }
     }
 
