@@ -20,6 +20,12 @@ public sealed class GevCam : ICam
 {
     private const string LogSource = nameof(GevCam);
 
+    /// <summary>정지 직후 이만큼 안에 온 드롭은 정지 경계로 본다 — 마지막 프레임 하나가 잘릴 뿐이다.</summary>
+    private static readonly long StopBoundaryTicks = TimeSpan.FromSeconds(2).Ticks;
+
+    /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
+    private long _stoppedAtTicks;
+
     private readonly CamOpt _opt;
     private readonly GevCamOpt _gev;
     private readonly object _sync = new();
@@ -126,12 +132,13 @@ public sealed class GevCam : ICam
             if (_gev.PacketTimeoutMs is { } packetTimeout) streamOpt.PacketTimeoutMs = packetTimeout;
 
             var stream = await dev.OpenStreamAsync(streamOpt, ct).ConfigureAwait(false);
-            LogSocketBuffer(stream, streamOpt.SocketBufferBytes);
 
             try
             {
                 stream.FrameDropped += OnFrameDropped;
                 await stream.StartAsync(ct).ConfigureAwait(false);
+                // 소켓은 여기서 bind 된다 — 그 전에 읽으면 아직 0 이다.
+                LogSocketBuffer(stream, streamOpt.SocketBufferBytes);
                 // 전송 파라미터 잠금은 스트림이 선 뒤, 취득을 걸기 전에 — 순서가 뒤바뀌면 장치가 거부한다.
                 await dev.SetTlParamsLockedAsync(true, ct).ConfigureAwait(false);
             }
@@ -293,9 +300,26 @@ public sealed class GevCam : ICam
 
     /// <summary>버려진 프레임 진단. 수신 스레드에서 오므로 세는 것 말고는 하지 않는다 —
     /// 여기서 무거운 일을 하면 취득이 밀린다.</summary>
+    /// <summary>
+    /// 버려진 프레임을 남긴다. 다만 <b>우리가 멈춰서 잘린 프레임은 고장이 아니다</b> —
+    /// 취득을 멈추면 카메라가 보내던 프레임 가운데서 송신을 그친다. 빠진 패킷은 잃은 것이 아니라
+    /// <b>애초에 오지 않은 것</b>이라 재전송으로 메워지지도 않는다. 정지할 때마다 경고를 내면
+    /// 진짜 유실이 났을 때 아무도 그 줄을 보지 않게 된다.
+    /// </summary>
     private void OnFrameDropped(GevFrameDiag diag)
-        => WriteLog(CvLogLevel.Warning,
-            $"frame {diag.FrameId} dropped: {diag.Reason} (missing {diag.MissingPackets}/{diag.ExpectedPackets}, code 0x{diag.Code:X4})");
+    {
+        var body = $"frame {diag.FrameId} dropped: {diag.Reason} " +
+                   $"(missing {diag.MissingPackets}/{diag.ExpectedPackets}, code 0x{diag.Code:X4})";
+
+        var stoppedAt = Interlocked.Read(ref _stoppedAtTicks);
+        if (stoppedAt != 0 && DateTime.UtcNow.Ticks - stoppedAt < StopBoundaryTicks)
+        {
+            WriteLog(CvLogLevel.Info, $"{body} — this frame was in flight when acquisition stopped, not a loss");
+            return;
+        }
+
+        WriteLog(CvLogLevel.Warning, body);
+    }
 
     // === 조작 ===
 
@@ -371,6 +395,8 @@ public sealed class GevCam : ICam
         {
             if (_disposed) return;
             stopped = StopPumpCore();
+            if (stopped)
+                Interlocked.Exchange(ref _stoppedAtTicks, DateTime.UtcNow.Ticks);
             if (stopped && _nodes != null)
                 Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
         }
