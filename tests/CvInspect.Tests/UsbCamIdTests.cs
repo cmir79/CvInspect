@@ -100,7 +100,7 @@ public class UsbCamIdTests
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             var list = UsbCamId.Enumerate();
-            Check(list is not null, "enumeration does not throw on a supported OS");
+            Assert.NotNull(list);   // 던지지 않고 목록(빈 목록 포함)을 돌려주는 것이 계약이다
             Console.WriteLine($"UsbCamId.Enumerate(): {list.Count} device(s)" + (list.Count > 0 ? "\n  " + string.Join("\n  ", list) : ""));
         }
         else

@@ -175,6 +175,9 @@ configure it to skip delegate-typed members.
   ([screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png)).
 - `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and
   dumps what the adapter sees (transport statistics, frame geometry, saved frames).
+- `samples/CvInspect.UsbCamProbe` — a console tool for verifying USB webcam identity on a
+  multi-camera PC: enumerates devices, snaps one frame per index and backend, then reopens each
+  camera by VID/PID through `CamOpt.SerialNumber` so the two pictures can be compared.
 
 ## Tests
 
