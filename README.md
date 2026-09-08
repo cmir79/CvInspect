@@ -176,8 +176,9 @@ configure it to skip delegate-typed members.
 ## Samples
 
 - `samples/CvInspect.Demo` — a WPF window that wires everything together: `VirtualCam` playing a
-  synthetic part, `CvDispCtrl` showing the `CamFrame` directly, draggable search shapes, the
-  `CvPropEditCtrl` parameter editor, and a line, circle and blob inspection drawn as an overlay
+  synthetic part that shifts and rotates, `CvDispCtrl` showing the `CamFrame` directly, draggable
+  search shapes, the `CvPropEditCtrl` parameter editor, and a pattern fixture (`CvPose`) that moves the
+  line, circle and blob tools onto the found part before they run, drawn as an overlay
   ([screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png)).
 - `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and
   dumps what the adapter sees (transport statistics, frame geometry, saved frames).
