@@ -1,5 +1,7 @@
 # CvInspect.Imaging.Gev
 
+[![ci](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml) [![NuGet CvInspect.Imaging.Gev](https://img.shields.io/nuget/v/CvInspect.Imaging.Gev?logo=nuget&label=CvInspect.Imaging.Gev)](https://www.nuget.org/packages/CvInspect.Imaging.Gev) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/cmir79/CvInspect/blob/main/LICENSE)
+
 GigE camera acquisition for the [CvInspect](https://github.com/cmir79/CvInspect) machine-vision
 toolkit — an `ICam` backend that speaks the protocol directly, so **no vendor SDK and no
 proprietary DLLs** are needed.

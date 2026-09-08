@@ -1,5 +1,7 @@
 # CvInspect.Wpf
 
+[![ci](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml) [![NuGet CvInspect.Wpf](https://img.shields.io/nuget/v/CvInspect.Wpf?logo=nuget&label=CvInspect.Wpf)](https://www.nuget.org/packages/CvInspect.Wpf) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/cmir79/CvInspect/blob/main/LICENSE)
+
 WPF display and shape-editing controls for the [CvInspect](https://www.nuget.org/packages/CvInspect)
 machine-vision toolkit, based on [OpenCvSharp](https://github.com/shimat/opencvsharp).
 

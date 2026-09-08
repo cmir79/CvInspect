@@ -1,5 +1,7 @@
 # CvInspect.Imaging
 
+[![ci](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml) [![NuGet CvInspect.Imaging](https://img.shields.io/nuget/v/CvInspect.Imaging?logo=nuget&label=CvInspect.Imaging)](https://www.nuget.org/packages/CvInspect.Imaging) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/cmir79/CvInspect/blob/main/LICENSE)
+
 Camera acquisition contract and tame frame sources for the
 [CvInspect](https://github.com/cmir79/CvInspect) machine-vision toolkit, based on
 [OpenCvSharp](https://github.com/shimat/opencvsharp).

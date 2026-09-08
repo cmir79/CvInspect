@@ -1,5 +1,12 @@
 # CvInspect
 
+[![ci](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/cmir79/CvInspect/blob/main/LICENSE) [![Downloads](https://img.shields.io/nuget/dt/CvInspect?logo=nuget&label=downloads)](https://www.nuget.org/packages/CvInspect)
+
+[![NuGet CvInspect](https://img.shields.io/nuget/v/CvInspect?logo=nuget&label=CvInspect)](https://www.nuget.org/packages/CvInspect)
+[![NuGet CvInspect.Imaging](https://img.shields.io/nuget/v/CvInspect.Imaging?logo=nuget&label=CvInspect.Imaging)](https://www.nuget.org/packages/CvInspect.Imaging)
+[![NuGet CvInspect.Imaging.Gev](https://img.shields.io/nuget/v/CvInspect.Imaging.Gev?logo=nuget&label=CvInspect.Imaging.Gev)](https://www.nuget.org/packages/CvInspect.Imaging.Gev)
+[![NuGet CvInspect.Wpf](https://img.shields.io/nuget/v/CvInspect.Wpf?logo=nuget&label=CvInspect.Wpf)](https://www.nuget.org/packages/CvInspect.Wpf)
+
 Machine-vision inspection toolkit for .NET, based on [OpenCvSharp](https://github.com/shimat/opencvsharp).
 
 All algorithms operate on plain `OpenCvSharp.Mat` images and are pure and deterministic —
