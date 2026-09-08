@@ -1,0 +1,34 @@
+<Window x:Class="CvInspect.Demo.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:cv="clr-namespace:CvInspect.Controls;assembly=CvInspect.Wpf"
+        Title="CvInspect Demo — line and circle finder on a synthetic part" Width="1100" Height="720">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*" />
+      <ColumnDefinition Width="360" />
+    </Grid.ColumnDefinitions>
+
+    <!-- 표시 컨트롤 — Frame 에는 취득 프레임(CamFrame)이 그대로 들어간다(복사 없음). 툴바의 📸/⏯️ 는 VM 커맨드로,
+         우클릭 불러오기는 LoadFrameCommand 로 이어진다. Shapes 는 선택한 툴의 탐색 도형 — 드래그하면 Opt 에 되쓰인다. -->
+    <cv:CvDispCtrl Frame="{Binding Frame}"
+                   Overlay="{Binding Overlay}"
+                   Shapes="{Binding Shapes}"
+                   GrabCommand="{Binding GrabCommand}"
+                   ContinuousCommand="{Binding LiveCommand}"
+                   StopCommand="{Binding StopCommand}"
+                   LoadFrameCommand="{Binding LoadFrameCommand}"
+                   IsRunning="{Binding IsLive}" />
+
+    <DockPanel Grid.Column="1" Margin="8">
+      <StackPanel DockPanel.Dock="Top">
+        <TextBlock Text="Tool" FontWeight="Bold" />
+        <ComboBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" Margin="0,2,0,8" />
+        <Button Content="Run on the current frame" Command="{Binding RunCommand}" Padding="8,4" Margin="0,0,0,8" />
+      </StackPanel>
+      <TextBlock DockPanel.Dock="Bottom" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,8,0,0" />
+      <!-- 파라미터 편집기 — 선택한 툴의 Opt POCO 를 그대로 넣는다. 커밋마다 VM 이 다시 검사한다. -->
+      <cv:CvPropEditCtrl Source="{Binding ToolOpt}" Committed="OnOptCommitted" ActionExecuted="OnOptActionExecuted" />
+    </DockPanel>
+  </Grid>
+</Window>

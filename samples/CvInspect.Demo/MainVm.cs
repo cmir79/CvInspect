@@ -1,0 +1,115 @@
+using System.IO;
+using System.Windows;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using CvInspect.Controls;
+using CvInspect.Imaging;
+using CvInspect.Vision.Overlay;
+using OpenCvSharp;
+
+namespace CvInspect.Demo;
+
+public enum DemoTool { Line, Circle }
+
+/// <summary>
+/// 화면 VM — 취득(VirtualCam 이 합성 이미지 폴더를 재생) → 표시(CamFrame 을 Frame 에 그대로) → 검사(AsMat 무복사 래핑으로
+/// 툴에 전달) → 오버레이. 프레임은 CamFrame 으로만 들고 다닌다: 수명 계약이 없어 카메라 스레드에서 받아 UI 로 넘겨도,
+/// 편집 뒤 다시 검사하려고 붙잡아 둬도 신경 쓸 것이 없다. Mat 은 쓰는 순간에만 잠깐 만든다.
+/// </summary>
+public sealed partial class MainVm : ObservableObject, IDisposable
+{
+    public IReadOnlyList<DemoTool> Tools { get; } = [DemoTool.Line, DemoTool.Circle];
+
+    [ObservableProperty] private object? _frame;
+    [ObservableProperty] private ViOverlay? _overlay;
+    [ObservableProperty] private IReadOnlyList<CvEditShape>? _shapes;
+    [ObservableProperty] private object? _toolOpt;
+    [ObservableProperty] private bool _isLive;
+    [ObservableProperty] private string _status = "";
+    [ObservableProperty] private DemoTool _selectedTool;
+
+    private readonly DemoInspector _insp = new();
+    private readonly IReadOnlyList<CvEditShape> _lineShapes;
+    private readonly IReadOnlyList<CvEditShape> _circleShapes;
+    private readonly ICam _cam;
+    private CamFrame? _last;
+
+    public MainVm()
+    {
+        // 탐색 도형은 툴마다 한 번 만든다 — 드래그가 Opt 에 되쓰이고, 되쓰일 때마다 다시 검사한다.
+        _lineShapes = CvShapeBinder.For(_insp.Line, Rerun) ?? [];
+        _circleShapes = CvShapeBinder.For(_insp.Circle, Rerun) ?? [];
+
+        // 합성 부품 이미지를 파일로 두고 VirtualCam 이 그 폴더를 재생한다 — 실제 카메라와 같은 ICam 경로를 탄다.
+        var dir = Path.Combine(Path.GetTempPath(), "CvInspect.Demo");
+        Directory.CreateDirectory(dir);
+        using (var img = DemoImage.Create())
+        {
+            Cv2.ImEncode(".png", img, out var png);   // 경로 기반 ImWrite 는 비ASCII 경로에서 조용히 실패한다 — 바이트로 쓴다
+            File.WriteAllBytes(Path.Combine(dir, "part.png"), png);
+        }
+        _cam = CamFactory.Create(new CamOpt { Name = "demo", ComType = "Virtual", VirtualImageDir = dir, IsColor = false, FrameRate = 10 });
+        _cam.FrameAcquired += (_, f) => Application.Current.Dispatcher.BeginInvoke(() => Show(f));
+        _cam.GrabbingChanged += (_, g) => Application.Current.Dispatcher.BeginInvoke(() => IsLive = g);
+        _cam.Open();
+
+        // 기본값(Line)은 enum 의 0 이라 대입해도 변경 통지가 나지 않는다 — 초기 배선은 직접 건다.
+        ApplyTool(SelectedTool);
+        _cam.GrabOne();
+    }
+
+    partial void OnSelectedToolChanged(DemoTool value) => ApplyTool(value);
+
+    private void ApplyTool(DemoTool tool)
+    {
+        ToolOpt = tool == DemoTool.Line ? _insp.Line : _insp.Circle;
+        Shapes = tool == DemoTool.Line ? _lineShapes : _circleShapes;
+    }
+
+    [RelayCommand] private void Grab() => _cam.GrabOne();
+    [RelayCommand] private void Live() => _cam.StartContinuous();
+    [RelayCommand] private void Stop() => _cam.StopContinuous();
+    [RelayCommand] private void Run() => Rerun();
+
+    /// <summary>우클릭 불러오기 — 받은 Mat 은 수신자 소유. CamFrame 으로 실체화한 뒤 바로 놓는다.</summary>
+    [RelayCommand]
+    private void LoadFrame(Mat mat)
+    {
+        try
+        {
+            Show(CamFrame.FromMat(mat));
+        }
+        catch (NotSupportedException ex)
+        {
+            Status = "cannot load: " + ex.Message;   // 16비트 TIFF 등 — 표시 계층이 받는 8비트 1/3/4채널이 아니다
+        }
+        finally
+        {
+            mat.Dispose();
+        }
+    }
+
+    private void Show(CamFrame frame)
+    {
+        _last = frame;
+        Frame = frame;   // 복사 없음 — 표시 컨트롤이 배열을 참조로 붙잡는다(발행 뒤 불변 계약)
+        Rerun();
+    }
+
+    private void Rerun()
+    {
+        if (_last is null) return;
+        using var mat = _last.AsMat();   // 무복사 래핑 — dispose 는 핀 해제일 뿐
+        var r = _insp.Run(mat);
+        Overlay = r.Overlay;
+        Status = (r.IsOk ? "OK" : "NG")
+            + (r.Line is { } l ? $"  |  line {l.AngleDeg:F2}° rms {l.RmsPx:F2}" : "  |  line: not found")
+            + (r.Circle is { } c ? $"  |  circle r {c.Radius:F1} @ ({c.CenterX:F1}, {c.CenterY:F1})" : "  |  circle: not found");
+    }
+
+    public void Dispose()
+    {
+        _cam.StopContinuous();
+        _cam.Dispose();
+    }
+}

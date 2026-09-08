@@ -132,6 +132,15 @@ identifier strings — saved recipes survive enum evolution, and old integer-val
 still deserialize. If you persist them with another serializer (e.g. Json.NET in Unity),
 configure it to skip delegate-typed members.
 
+## Samples
+
+- `samples/CvInspect.Demo` — a WPF window that wires everything together: `VirtualCam` playing a
+  synthetic part, `CvDispCtrl` showing the `CamFrame` directly, draggable search shapes, the
+  `CvPropEditCtrl` parameter editor, and a line + circle inspection drawn as an overlay
+  ([screenshot](samples/CvInspect.Demo/screenshot.png)).
+- `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and
+  dumps what the adapter sees (transport statistics, frame geometry, saved frames).
+
 ## Tests
 
 ```

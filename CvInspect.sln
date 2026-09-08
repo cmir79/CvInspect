@@ -12,6 +12,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Imaging.Gev", "sr
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.GevProbe", "samples\CvInspect.GevProbe\CvInspect.GevProbe.csproj", "{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Demo", "samples\CvInspect.Demo\CvInspect.Demo.csproj", "{3894C5DA-786B-4C1B-B91D-76D10C47B14D}"
+EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Tests", "tests\CvInspect.Tests\CvInspect.Tests.csproj", "{E3B5C0A7-9D14-4A62-B8F3-6C2D1E7A9B04}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CvInspect.Wpf.Tests", "tests\CvInspect.Wpf.Tests\CvInspect.Wpf.Tests.csproj", "{B3FF57A4-AE8B-4A14-A64A-2CB8DF72F58A}"
@@ -53,6 +55,10 @@ Global
 		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A0D9A4B1-73DF-4028-AC79-4CD54EC88734}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3894C5DA-786B-4C1B-B91D-76D10C47B14D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3894C5DA-786B-4C1B-B91D-76D10C47B14D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3894C5DA-786B-4C1B-B91D-76D10C47B14D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3894C5DA-786B-4C1B-B91D-76D10C47B14D}.Release|Any CPU.Build.0 = Release|Any CPU
 		{E3B5C0A7-9D14-4A62-B8F3-6C2D1E7A9B04}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{E3B5C0A7-9D14-4A62-B8F3-6C2D1E7A9B04}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E3B5C0A7-9D14-4A62-B8F3-6C2D1E7A9B04}.Release|Any CPU.ActiveCfg = Release|Any CPU

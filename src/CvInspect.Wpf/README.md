@@ -51,6 +51,32 @@ dotnet add package OpenCvSharp4.runtime.win
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (top/bottom/left/right). |
 
+## Property editor
+
+`CvPropEditCtrl` unfolds any option POCO into category groups and rows — checkbox for `bool`,
+text for numbers and strings, combo for enums, a button for `Action` — using only the standard
+`System.ComponentModel` attributes, which the core's `[CvCategory]` / `[CvName]` / `[CvDesc]` derive
+from. So a core `Cv*Opt` needs nothing extra:
+
+```xml
+<cv:CvPropEditCtrl Source="{Binding ToolOpt}" Committed="OnCommitted" />
+```
+
+| Member | Meaning |
+|---|---|
+| `Source` | The POCO to edit; replacing it rebuilds the rows. `null` shows nothing. |
+| `ShowDesc` | Show each row's description as a caption under it (the label tooltip always has it). |
+| `ExecuteText` | Button text for `Action` rows; defaults to the `cv:Execute` translation. |
+| `Committed` | A row wrote a value into the POCO — the host's only dirty-marking signal, since most POCOs do not implement `INotifyPropertyChanged`. |
+| `ActionExecuting` / `ActionExecuted` / `ActionFailed` | Around an `Action` row's button. Failures are logged through `CvLog` and never escape to the dispatcher. |
+
+Rules the rows follow: `[Browsable(false)]` hides, `[ReadOnly(true)]` or a getter-only property
+disables, group order comes from `ICvOrderedCategory` (or a `"N. "` prefix on plain
+`[Category]` strings), and numeric text commits on Enter or focus loss — an unparsable entry is
+rejected and the row snaps back to the stored value, so what you see is always what is stored.
+The control references no UI library; it adopts the host theme's `SecondaryTextBrush` and
+`PrimaryBrush` when those keys exist and falls back to fixed colors otherwise.
+
 ## Frame lifetime
 
 `Frame` accepts two kinds of value, with different lifetime rules:

@@ -19,6 +19,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CvInspect.Wpf\CvInspect.Wpf.csproj" />
     <ProjectReference Include="..\..\src\CvInspect.Imaging\CvInspect.Imaging.csproj" />
+    <!-- 예제의 검사기(DemoInspector)는 순수 계산이라 여기서 수치로 검증한다 — README 가 약속한 값이 실제인지. -->
+    <ProjectReference Include="..\..\samples\CvInspect.Demo\CvInspect.Demo.csproj" />
     <!-- 네이티브 런타임은 소비자가 고른다는 계약의 실증 — 테스트도 소비자다 (Mat 경로 비교에 필요) -->
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
   </ItemGroup>

@@ -1,0 +1,143 @@
+<UserControl x:Class="CvInspect.Controls.CvPropEditCtrl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:CvInspect.Controls">
+  <UserControl.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+    <!-- 두 브러시는 기본값이다. 컨트롤이 시각 트리에 붙을 때 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가
+         있으면 코드비하인드가 이 항목을 그 브러시로 바꿔 끼운다 — 화면 전체 팔레트를 따르되 테마가 없어도 그려진다. -->
+    <SolidColorBrush x:Key="CvPropDescBrush" Color="#FF808080" />
+    <SolidColorBrush x:Key="CvPropHeaderBrush" Color="#FF1565C0" />
+
+    <!-- 라벨 툴팁 — 설명(없으면 라벨 원문). x:Shared=False: ToolTip 은 시각 요소라 행마다 새 인스턴스 필요 -->
+    <ToolTip x:Key="RowTip" x:Shared="False" MaxWidth="400">
+      <TextBlock Text="{Binding Tip}" TextWrapping="Wrap" />
+    </ToolTip>
+
+    <!-- 행 라벨 — SharedSizeGroup(PropLabel)으로 그룹 전체 폭 자동 정렬, 과대 라벨만 말줄임.
+         툴팁이 설명을 상시 전달하므로 캡션(ShowDesc)을 꺼도 설명 접근이 끊기지 않는다 -->
+    <Style x:Key="PropRowLabel" TargetType="TextBlock">
+      <Setter Property="MaxWidth" Value="170" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+      <Setter Property="Margin" Value="0,0,6,0" />
+      <Setter Property="ToolTip" Value="{StaticResource RowTip}" />
+    </Style>
+
+    <!-- 행 설명 캡션 — InlineDesc(ShowDesc=False 면 빔). 행 수가 적은 패널에서만 켜 두는 용도 -->
+    <Style x:Key="PropRowDesc" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource CvPropDescBrush}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Margin" Value="0,1,0,3" />
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding InlineDesc}" Value="">
+          <Setter Property="Visibility" Value="Collapsed" />
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
+    <DataTemplate DataType="{x:Type local:CvPropBoolRowVm}">
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition MinHeight="26" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource PropRowLabel}" />
+        <CheckBox Grid.Column="1" IsChecked="{Binding Value}" IsEnabled="{Binding IsEditable}"
+                  HorizontalAlignment="Left" VerticalAlignment="Center" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type local:CvPropNumRowVm}">
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition MinHeight="26" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource PropRowLabel}" />
+        <!-- 커밋은 LostFocus + Enter(코드비하인드) — 입력 중 커밋은 소수점 입력을 깨고 편집 처리가 끼어든다 -->
+        <TextBox Grid.Column="1" Text="{Binding Text, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding IsEditable}"
+                 KeyDown="OnEditTextKeyDown" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type local:CvPropStrRowVm}">
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition MinHeight="26" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource PropRowLabel}" />
+        <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding IsEditable}"
+                 KeyDown="OnEditTextKeyDown" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type local:CvPropEnumRowVm}">
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition MinHeight="26" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource PropRowLabel}" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding Values}" SelectedItem="{Binding Value}"
+                  IsEnabled="{Binding IsEditable}" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type local:CvPropActionRowVm}">
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition MinHeight="26" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource PropRowLabel}" />
+        <Button Grid.Column="1" Content="{Binding ButtonText}" Command="{Binding ExecuteCommand}"
+                IsEnabled="{Binding IsEditable}" MinWidth="60" Padding="10,2" HorizontalAlignment="Left" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+      </Grid>
+    </DataTemplate>
+  </UserControl.Resources>
+
+  <!-- 우측 패딩 — 세로 스크롤바가 편집기에 바로 붙지 않게 -->
+  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+    <ItemsControl x:Name="GroupsHost" Grid.IsSharedSizeScope="True">
+      <ItemsControl.ItemTemplate>
+        <DataTemplate DataType="{x:Type local:CvPropGroupVm}">
+          <StackPanel>
+            <TextBlock Text="{Binding Header}" FontWeight="Bold" FontSize="12"
+                       Foreground="{DynamicResource CvPropHeaderBrush}" Margin="0,6,0,2"
+                       Visibility="{Binding HasHeader, Converter={StaticResource BoolToVis}}" />
+            <ItemsControl ItemsSource="{Binding Rows}" />
+          </StackPanel>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </ScrollViewer>
+</UserControl>
