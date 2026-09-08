@@ -24,6 +24,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 매칭 규칙과 Linux sysfs 해석은 순수 논리라 회귀가 직접 부른다. -->
+    <InternalsVisibleTo Include="CvInspect.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 

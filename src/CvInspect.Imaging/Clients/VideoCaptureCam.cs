@@ -24,6 +24,7 @@ public sealed class VideoCaptureCam : ICam
     private readonly Mat _conv = new();   // IsColor 채널 변환 버퍼
 
     private VideoCapture? _cap;
+    private string _openedAs = string.Empty;   // 로그용 — 어떤 식별로 무엇을 열었는지
     private bool _isFileSource;
     private Thread? _liveThread;
     private CancellationTokenSource? _liveCts;
@@ -51,21 +52,36 @@ public sealed class VideoCaptureCam : ICam
             ThrowIfDisposed();
             if (IsConnected) return;
 
-            var src = (_opt.VideoSource ?? "0").Trim();
-            var isIndex = int.TryParse(src, out var index);
-            var cap = isIndex ? new VideoCapture(index) : new VideoCapture(src);
+            var api = ParseBackend(_opt.UserSettings);
+            VideoCapture cap;
+            string src;
+            if (!string.IsNullOrWhiteSpace(_opt.SerialNumber))
+            {
+                // 고정 식별 — 장치 인덱스는 OS 가 그때그때 매기는 순서라 믿을 수 없다. 못 찾으면 예외에 현재 목록이 실린다.
+                var dev = UsbCamId.Resolve(_opt.SerialNumber);
+                src = $"SerialNumber='{_opt.SerialNumber.Trim()}' -> {dev}";
+                cap = dev.DevicePath is not null ? new VideoCapture(dev.DevicePath, api) : new VideoCapture(dev.Index, api);
+                _isFileSource = false;
+            }
+            else
+            {
+                src = (_opt.VideoSource ?? "0").Trim();
+                var isIndex = int.TryParse(src, out var index);
+                cap = isIndex ? new VideoCapture(index, api) : new VideoCapture(src, api);
+                _isFileSource = !isIndex && File.Exists(src);
+            }
             if (!cap.IsOpened())
             {
                 cap.Dispose();
-                throw new InvalidOperationException($"Failed to open video source '{src}'.");
+                throw new InvalidOperationException($"Failed to open video source {src}.");
             }
 
             _cap = cap;
-            _isFileSource = !isIndex && File.Exists(src);
             IsConnected = true;
+            _openedAs = src;
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
-        WriteLog(CvLogLevel.Info, $"video source opened: '{_opt.VideoSource}' (file={_isFileSource})");
+        WriteLog(CvLogLevel.Info, $"video source opened: {_openedAs} (file={_isFileSource})");
     }
 
     public void Close()
@@ -257,6 +273,26 @@ public sealed class VideoCaptureCam : ICam
     {
         if (!IsConnected)
             throw new InvalidOperationException("Camera is not opened.");
+    }
+
+    /// <summary>UserSettings 의 "backend=dshow|msmf|v4l2|any" — 세미콜론으로 구분한 key=value 중 backend 만 본다.
+    /// 지정이 없으면 ANY(OpenCV 가 고른다). Windows 에서 열거 순번과 인덱스가 어긋나 보이면 여기서 백엔드를 바꿔 본다.</summary>
+    internal static VideoCaptureAPIs ParseBackend(string? userSettings)
+    {
+        foreach (var kv in (userSettings ?? string.Empty).Split(';'))
+        {
+            var eq = kv.IndexOf('=');
+            if (eq < 0 || !kv.Substring(0, eq).Trim().Equals("backend", StringComparison.OrdinalIgnoreCase)) continue;
+            switch (kv.Substring(eq + 1).Trim().ToLowerInvariant())
+            {
+                case "dshow": return VideoCaptureAPIs.DSHOW;
+                case "msmf": return VideoCaptureAPIs.MSMF;
+                case "v4l2": return VideoCaptureAPIs.V4L2;
+                case "any": case "": return VideoCaptureAPIs.ANY;
+                default: throw new ArgumentException($"Unknown VideoCapture backend '{kv.Substring(eq + 1).Trim()}' in UserSettings (use dshow, msmf, v4l2 or any).");
+            }
+        }
+        return VideoCaptureAPIs.ANY;
     }
 
     private void ThrowIfDisposed()

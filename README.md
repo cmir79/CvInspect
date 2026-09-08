@@ -206,6 +206,9 @@ Read these before adopting — they are real, and they are not going away soon.
 - **8-bit only through acquisition and display.** `CamFrame` and `CvDispCtrl` carry Mono8/Bgr24/
   Bgra32; 16-bit sensor data is folded to 8 bits at the adapter. Individual core tools may accept
   other depths, but nothing around them does.
+- **USB webcam identity is verified on Windows only by lineage.** `CamOpt.SerialNumber` selects a webcam by
+  VID/PID or instance id; the Windows enumeration is a port of code proven on a two-camera line but this
+  port has not been re-run with hardware, the Linux path has no hardware run at all, and macOS is unsupported.
 - **Display is WPF, so Windows only.** The core and Imaging packages are cross-platform; the WPF
   package and its off-screen test suite build on Windows alone.
 - **GigE has hours, not years, behind it.** Two cameras from two vendors have been streamed

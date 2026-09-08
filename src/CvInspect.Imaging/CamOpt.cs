@@ -32,7 +32,11 @@ public sealed class CamOpt
     /// </summary>
     public string VideoSource { get; set; } = "0";
 
+    /// <summary>장치 고정 식별. GigE: 카메라 시리얼(IP 는 바뀌어도 시리얼은 안 바뀐다). VideoCapture(USB 웹캠): VID/PID 또는
+    /// 인스턴스 식별자 — <see cref="UsbCamId"/> 참조. 비어 있으면 <see cref="VideoSource"/> 의 인덱스로 연다(순서가 바뀌면 다른 카메라가 열린다).</summary>
     public string SerialNumber { get; set; } = string.Empty;
+
+    /// <summary>프로바이더별 자유 설정 — 세미콜론으로 구분한 key=value. VideoCapture: <c>backend=dshow|msmf|v4l2|any</c>.</summary>
     public string UserSettings { get; set; } = string.Empty;
     public bool IsColor { get; set; }
     public double FrameRate { get; set; } = 30;

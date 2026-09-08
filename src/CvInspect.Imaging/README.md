@@ -62,6 +62,29 @@ Two more contract points implementers must honor: **only complete frames are pub
 and **`Stride` may exceed width × bytes-per-pixel** on devices that pad rows — consumers
 must always walk rows by `Stride` (`AsMat()` handles this automatically).
 
+## USB webcams — a stable identity
+
+OpenCV opens webcams by index, and the index is whatever order the OS enumerated the devices in
+this time. Re-plug a hub, reboot, add a capture card, and camera 0 and camera 1 swap without a
+warning. `VideoCaptureCam` therefore accepts an identity in `CamOpt.SerialNumber`:
+
+```csharp
+new CamOpt { ComType = "VideoCapture", SerialNumber = "VID_046D&PID_082D" }
+```
+
+Accepted keys: `VID_046D&PID_082D`, `046D:082D`, a full Windows instance id
+(`USB\VID_046D&PID_082D\5&2C1F7A8&0&0001`) or a Linux `/dev/v4l/by-id` name. When the key is not
+found, the exception lists every enumerated device so you can copy the right one into the
+settings; when two identical models match a VID/PID, it refuses to guess and lists their instance
+ids. `UsbCamId.Enumerate()` gives you the same list programmatically. `UserSettings` may carry
+`backend=dshow|msmf|v4l2|any` to pin the OpenCV backend.
+
+| OS | How | Verified |
+|---|---|---|
+| Windows | SetupAPI enumeration of `KSCATEGORY_VIDEO`; the enumeration position is the OpenCV index | The code this was ported from ran on a two-webcam production PC; **this port has not yet been re-run on a multi-camera PC** |
+| Linux | `/sys/class/video4linux` + `device/modalias` for VID/PID, `/dev/v4l/by-id` for the instance; opens by `/dev/videoN` path, so ordering never matters | **Not run on hardware** — only a synthetic-sysfs regression. `net8.0` asset only (symlink resolution) |
+| macOS | — | **Unsupported**: `Enumerate()` throws; use `VideoSource` with an index |
+
 ## Vendor adapters
 
 Implement `ICam` in your application (or an adapter package) against the vendor SDK —
