@@ -26,6 +26,12 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   out non-overlapping with a suppression radius. The minimum reliable coarse size (`11 px`
   geometric-mean side) was derived from 80-trial-per-cell synthetic sweeps across aspect ratios,
   and the finder *reports* it rather than silently overriding your settings.
+- **A fixture without a coordinate-space tree.** The pattern finder returns a `CvPose` — one
+  similarity transform (rotation, isotropic scale, translation about the taught origin) — and
+  `CvInspGeom.XformByPose` moves every taught tool geometry (caliper segments, circle centres,
+  search regions) onto the found part, so downstream tools follow it. The transform is explicit and
+  algebraic (`Inverse`, `Compose`) rather than an implicit space tree: replays stay deterministic and
+  nothing hides in a hierarchy, at the price that stacking fixtures is the caller's job.
 - **Caliper metrology.** Edges come from 1-D projected profiles with parabolic sub-pixel
   refinement; line and circle finders are caliper arrays with two-pass refit, outlier drop and
   RMS/angle gates, and every fit carries its residual so you can gate on quality, not just on found/not found.
