@@ -47,6 +47,37 @@ runtime ships an `opencv_videoio_ffmpeg` codec that is LGPL-2.1 — the meta-pac
 Choosing the runtime is deliberately left to you; see
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
+**If you do not want that codec in your output**, drop it during the build. Only
+`CvInspect.Imaging`'s `VideoCaptureCam` (video-file playback) needs it, and `videoio` is
+demand-loaded, so everything else keeps working without it. Two targets are required, because
+the publish list and the build output are separate item flows — removing from one leaves the
+file in the other:
+
+```xml
+<!-- Directory.Build.targets, at your solution root -->
+<Project>
+  <!-- Publish list. A single-file bundle is fixed at ComputeResolvedFilesToPublishList, so the
+       removal has to run after that target: removing after ComputeFilesToPublish only stops the
+       loose copy and leaves the codec inside the bundled exe. -->
+  <Target Name="DropVideoCodecFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="$([System.String]::Copy('%(ResolvedFileToPublish.Filename)').StartsWith('opencv_videoio_ffmpeg'))" />
+    </ItemGroup>
+  </Target>
+  <!-- Build output (bin\). -->
+  <Target Name="DropVideoCodecFromBuild" AfterTargets="ResolveLockFileCopyLocalFiles">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+                               Condition="$([System.String]::Copy('%(Filename)').StartsWith('opencv_videoio_ffmpeg'))" />
+    </ItemGroup>
+  </Target>
+</Project>
+```
+
+Measured on this repository's own sample (`samples/CvInspect.GevProbe`): publish output drops
+from 95 MB to 68 MB and `bin\` no longer carries the codec.
+
 ## Targets
 
 `netstandard2.1` and `net8.0`. The `netstandard2.1` asset covers Unity (2021+) and Mono.

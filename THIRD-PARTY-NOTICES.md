@@ -29,7 +29,11 @@ build), and that choice carries licenses this project cannot pick on your behalf
   that Apache-2.0 does not. Checked against `OpenCvSharp4.runtime.win` 4.13.0.20260627.
 
 Only `CvInspect.Imaging`'s `VideoCaptureCam` (video-file playback) reaches for that codec.
-Nothing else here touches `videoio`.
+Nothing else here touches `videoio`, and it is demand-loaded, so a build that drops the codec
+keeps working. If LGPL redistribution is not acceptable to you, the README's **Install** section
+carries the two MSBuild targets that remove it from both the publish list and the build output
+(verified here: publish output 95 MB to 68 MB, nothing named `opencv_videoio_ffmpeg*` left in
+either place).
 
 ## Test-only dependencies
 
