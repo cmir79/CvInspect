@@ -2,15 +2,15 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:cv="clr-namespace:CvInspect.Controls;assembly=CvInspect.Wpf"
-        Title="CvInspect Demo — pattern fixture, line, circle and blob finders on a moving synthetic part" Width="1100" Height="720">
+        Title="CvInspect Demo — recipe: pattern fixture, line, circle and blob on a moving synthetic part" Width="1180" Height="760">
   <Grid>
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="*" />
-      <ColumnDefinition Width="360" />
+      <ColumnDefinition Width="380" />
     </Grid.ColumnDefinitions>
 
-    <!-- 표시 컨트롤 — Frame 에는 취득 프레임(CamFrame)이 그대로 들어간다(복사 없음). 툴바의 📸/⏯️ 는 VM 커맨드로,
-         우클릭 불러오기는 LoadFrameCommand 로 이어진다. Shapes 는 선택한 툴의 탐색 도형 — 드래그하면 Opt 에 되쓰인다. -->
+    <!-- 표시 컨트롤 — Frame 에는 선택한 툴의 단계 이미지(원본이면 취득 프레임 CamFrame 그대로, 복사 없음)가 들어간다.
+         툴바의 📸/⏯️ 는 VM 커맨드로, 우클릭 불러오기는 LoadFrameCommand 로 이어진다. Shapes 는 선택한 툴의 도형 — 드래그하면 Opt 에 되쓰인다. -->
     <cv:CvDispCtrl Frame="{Binding Frame}"
                    Overlay="{Binding Overlay}"
                    Shapes="{Binding Shapes}"
@@ -22,12 +22,22 @@
 
     <DockPanel Grid.Column="1" Margin="8">
       <StackPanel DockPanel.Dock="Top">
-        <TextBlock Text="Tool" FontWeight="Bold" />
-        <ComboBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" Margin="0,2,0,8" />
-        <Button Content="Run on the current frame" Command="{Binding RunCommand}" Padding="8,4" Margin="0,0,0,8" />
+        <TextBlock Text="{Binding RecipeTitle}" FontWeight="Bold" />
+        <WrapPanel Margin="0,4,0,4">
+          <ComboBox x:Name="AddKind" ItemsSource="{Binding Kinds}" SelectedIndex="1" Width="96" Margin="0,0,4,4" />
+          <Button Content="Add" Command="{Binding AddToolCommand}" CommandParameter="{Binding SelectedItem, ElementName=AddKind}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="Remove" Command="{Binding RemoveToolCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="▲" Command="{Binding MoveUpCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="▼" Command="{Binding MoveDownCommand}" Padding="8,2" Margin="0,0,12,4" />
+          <Button Content="Run" Command="{Binding RunCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="Save…" Command="{Binding SaveCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="Load…" Command="{Binding LoadCommand}" Padding="8,2" Margin="0,0,4,4" />
+        </WrapPanel>
+        <!-- 툴 목록 — 위에서 아래로 실행된다. 선택하면 그 툴의 단계 이미지·도형·파라미터가 아래에 온다. -->
+        <ListBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" DisplayMemberPath="Title" Height="118" Margin="0,0,0,8" />
       </StackPanel>
       <TextBlock DockPanel.Dock="Bottom" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,8,0,0" />
-      <!-- 파라미터 편집기 — 선택한 툴의 Opt POCO 를 그대로 넣는다. 커밋마다 VM 이 다시 검사한다. -->
+      <!-- 파라미터 편집기 — 선택한 툴의 Opt POCO 를 그대로 넣는다. 커밋·액션마다 VM 이 다시 검사하고 dirty 를 표시한다. -->
       <cv:CvPropEditCtrl Source="{Binding ToolOpt}" Committed="OnOptCommitted" ActionExecuted="OnOptActionExecuted" ActionFailed="OnOptActionFailed" />
     </DockPanel>
   </Grid>

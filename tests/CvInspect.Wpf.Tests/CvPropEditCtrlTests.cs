@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Runtime.ExceptionServices;
 using CvInspect.Controls;
 using CvInspect.Demo;
+using CvInspect.Vision.Overlay;
 using CvInspect.Vision;
 using CvInspect.Vision.Opts;
 using Xunit;
@@ -90,23 +91,32 @@ public class CvPropEditCtrlTests
     });
 
     [Fact]
-    public void DemoInspectorMeasuresTheSyntheticPart()
+    public void DefaultRecipeMeasuresTheSyntheticPart()
     {
-        // 예제 README 가 약속한 것: 합성 판의 윗변은 수평(0°), 구멍 반경은 상수와 일치.
+        // 예제 README 가 약속한 것: 기준 자세의 합성 판에서(픽스처 미학습이라 티칭 기하 그대로) 윗변은 수평(0°),
+        // 구멍은 그린 자리·반경에, 판 안쪽의 어두운 영역은 구멍 하나뿐.
         using var img = DemoImage.Create();
-        var r = new DemoInspector().Run(img);
-        Check(r.IsOk, "both tools find their feature with default options");
-        Check(r.Line is { } l && Math.Abs(l.AngleDeg) < 0.5 && l.RmsPx < 1.0,
-            $"plate top edge measured horizontal: angle={r.Line?.AngleDeg:F3} rms={r.Line?.RmsPx:F3}");
-        Check(r.Circle is { } c && Math.Abs(c.Radius - DemoImage.HoleRadius) < 1.5
-              && Math.Abs(c.CenterX - DemoImage.HoleCenterX) < 1.0 && Math.Abs(c.CenterY - DemoImage.HoleCenterY) < 1.0,
-            $"hole measured at its drawn geometry: r={r.Circle?.Radius:F2} center=({r.Circle?.CenterX:F2}, {r.Circle?.CenterY:F2})");
+        var recipe = DemoRecipe.Default();
+        using var run = DemoRecipeRunner.Run(recipe, img);
+        DemoToolResult Res(string key) => run.Tools.First(t => t.Tool.Key == key);
+        Check(run.Tools.Where(t => t.Tool.Kind != DemoToolKind.Pattern).All(t => t.Ok), "line, circle and blob find their feature with default options");
+        Check(!Res("fixture").Ok && Res("fixture").Summary.Contains("not trained"), $"the untrained fixture says so: {Res("fixture").Summary}");
 
-        // 블랍: 판 안쪽의 어두운 영역은 구멍 하나뿐이어야 하고, 면적은 그린 원의 면적, 무게중심은 그 중심이다.
+        var seg = Res("top-edge").Graphic.Items.OfType<ViOverlaySeg>().Single(s => s.Color == ViOverlayColor.Green);
+        var angle = Math.Atan2(seg.Y2 - seg.Y1, seg.X2 - seg.X1) * 180 / Math.PI;
+        Check(Math.Abs(angle) < 0.5, $"plate top edge measured horizontal: angle={angle:F3}");
+
+        var circle = Res("hole").Graphic.Items.OfType<ViOverlayPoly>().Single();
+        var cx = circle.Points.Average(p => p.X);
+        var cy = circle.Points.Average(p => p.Y);
+        var radius = circle.Points.Average(p => Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy)));
+        Check(Math.Abs(radius - DemoImage.HoleRadius) < 1.5 && Math.Abs(cx - DemoImage.HoleCenterX) < 1.0 && Math.Abs(cy - DemoImage.HoleCenterY) < 1.0,
+            $"hole measured at its drawn geometry: r={radius:F2} center=({cx:F2}, {cy:F2})");
+
         var expectedArea = Math.PI * DemoImage.HoleRadius * DemoImage.HoleRadius;
-        var hit = r.Blobs.Hits.Count > 0 ? r.Blobs.Hits[0] : default;
-        Check(r.Blobs.Hits.Count == 1 && Math.Abs(hit.Area - expectedArea) / expectedArea < 0.05
-              && Math.Abs(hit.X - DemoImage.HoleCenterX) < 1.0 && Math.Abs(hit.Y - DemoImage.HoleCenterY) < 1.0,
-            $"hole is the single dark blob inside the plate: n={r.Blobs.Hits.Count} area={hit.Area:F0} (expected {expectedArea:F0}) center=({hit.X:F1}, {hit.Y:F1})");
+        var blob = Res("hole-area");
+        var area = double.Parse(System.Text.RegularExpressions.Regex.Match(blob.Graphic.Items.OfType<ViOverlayLabel>().Single().Text, @"[\d.]+").Value);
+        Check(blob.Summary.StartsWith("n 1") && Math.Abs(area - expectedArea) / expectedArea < 0.05,
+            $"hole is the single dark blob inside the plate: {blob.Summary} (expected area {expectedArea:F0})");
     }
 }

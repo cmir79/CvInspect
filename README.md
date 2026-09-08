@@ -175,11 +175,15 @@ configure it to skip delegate-typed members.
 
 ## Samples
 
-- `samples/CvInspect.Demo` — a WPF window that wires everything together: `VirtualCam` playing a
-  synthetic part that shifts and rotates, `CvDispCtrl` showing the `CamFrame` directly, draggable
-  search shapes, the `CvPropEditCtrl` parameter editor, and a pattern fixture (`CvPose`) that moves the
-  line, circle and blob tools onto the found part before they run, drawn as an overlay
-  ([screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png)).
+- `samples/CvInspect.Demo` ([README](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/README.md),
+  [screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png),
+  [download the exe](https://github.com/cmir79/CvInspect/releases/latest)) — a WPF window that wires
+  everything together as a recipe: `VirtualCam` playing a synthetic part that shifts and rotates,
+  `CvDispCtrl` showing the `CamFrame` directly, an ordered tool chain (preprocess, pattern, line,
+  circle, blob) edited through draggable search shapes and the `CvPropEditCtrl` parameter editor, a
+  pattern fixture (`CvPose`) that moves the tools below it onto the found part, preprocess stages whose
+  results map back through `CvSpaceMap`, and recipe save/load as a plain folder of JSON plus the
+  trained template PNG.
 - `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and
   dumps what the adapter sees (transport statistics, frame geometry, saved frames).
 - `samples/CvInspect.UsbCamProbe` — a console tool for verifying USB webcam identity on a
