@@ -211,7 +211,9 @@ exists. It needs no camera and no network.
 `tests/CvInspect.Wpf.Tests` renders `CvDispCtrl` off-screen (no window) and compares pixels: the
 `ICvPixelSource` path against the `Mat` path, row padding, and what happens when the pixel
 contract is violated. It is WPF, so it builds and runs on Windows only — on other platforms run
-the core suite alone with `dotnet test tests/CvInspect.Tests`.
+the core suite alone with `dotnet test tests/CvInspect.Tests`. CI runs that core suite on both
+Windows and Linux (the Linux leg uses `OpenCvSharp4.official.runtime.linux-x64`), and the WPF suite
+on Windows.
 
 ## Limits
 

@@ -13,9 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 솔루션 전체가 서는 곳은 Windows 뿐이다 — CvInspect.Wpf 가 net8.0-windows 이고,
-  # 테스트는 OpenCvSharp4.runtime.win 을 물어 네이티브가 Windows 판이다.
-  # 그래서 "전부 빌드하고 실제로 돌려 보는" 검사는 여기 하나로 모은다.
+  # 솔루션 전체가 서는 곳은 Windows 뿐이다 — CvInspect.Wpf 와 그 오프스크린 렌더 스위트가 net8.0-windows 다.
+  # 그래서 "전부 빌드하고 전부 돌려 보는" 검사는 여기 하나로 모은다.
   windows:
     runs-on: windows-latest
     steps:
@@ -41,9 +40,9 @@ jobs:
           name: nupkg
           path: out/*.nupkg
 
-  # Windows 밖에서도 컴파일된다는 계약의 검사 — 유니티(netstandard2.1)와 Linux 소비자가 받는 자산이다.
-  # 여기서는 빌드까지만 한다: 테스트는 Windows 네이티브 런타임을 물고 있어 여기서 돌지 않는다.
-  # "다른 OS 에서 컴파일이 깨졌다" 와 "다른 OS 에서 실행을 확인하지 못했다" 는 다른 사실이라, 전자만 검사한다.
+  # Windows 밖에서도 컴파일되고 실행된다는 계약의 검사 — 유니티(netstandard2.1)와 Linux 소비자가 받는 자산이다.
+  # 패키지 셋은 모든 TFM 을 빌드하고(테스트 프로젝트 참조만으로는 net8.0 한 벌만 선다), 코어 스위트는
+  # OpenCvSharp4.official.runtime.linux-x64 를 물고 실제로 돈다. WPF 스위트만 Windows 잡에 남는다.
   portable:
     runs-on: ubuntu-latest
     steps:
@@ -51,8 +50,24 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
-      - name: Build (platform-neutral packages)
+      - name: Build (platform-neutral packages, all TFMs)
         run: |
           dotnet build src/CvInspect/CvInspect.csproj -c Release
           dotnet build src/CvInspect.Imaging/CvInspect.Imaging.csproj -c Release
           dotnet build src/CvInspect.Imaging.Gev/CvInspect.Imaging.Gev.csproj -c Release
+      - name: Build the core suite
+        run: dotnet build tests/CvInspect.Tests/CvInspect.Tests.csproj -c Release
+      # 네이티브가 못 뜨면 테스트는 "DllNotFoundException" 한 줄만 남긴다 — 어느 .so 가 빠졌는지는 ldd 가 말해 준다.
+      - name: Native runtime dependencies
+        run: |
+          so=$(find ~/.nuget/packages/opencvsharp4.official.runtime.linux-x64 -name 'libOpenCvSharpExtern.so' | head -1)
+          echo "$so"
+          ldd "$so" | grep -i 'not found' && exit 1 || echo "all native dependencies resolved"
+      - name: Test (core suite)
+        timeout-minutes: 10
+        run: dotnet test tests/CvInspect.Tests/CvInspect.Tests.csproj --no-build -c Release --logger trx --results-directory TestResults
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: test-results-linux
+          path: TestResults/**/*.trx

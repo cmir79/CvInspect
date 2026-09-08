@@ -18,8 +18,10 @@
     <ProjectReference Include="..\..\src\CvInspect\CvInspect.csproj" />
     <ProjectReference Include="..\..\src\CvInspect.Imaging\CvInspect.Imaging.csproj" />
     <ProjectReference Include="..\..\src\CvInspect.Imaging.Gev\CvInspect.Imaging.Gev.csproj" />
-    <!-- 네이티브 런타임은 소비자가 고른다는 계약의 실증 — 테스트도 소비자다 -->
-    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+    <!-- 네이티브 런타임은 소비자가 고른다는 계약의 실증 — 테스트도 소비자다. 빌드하는 OS 의 것만 받는다:
+         둘 다 넣어도 .NET 이 RID 로 골라 쓰지만, 안 쓰는 판까지 받을 이유가 없다. CI 는 Windows 와 Linux 양쪽에서 이 스위트를 돌린다. -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />
   </ItemGroup>
 
 </Project>
