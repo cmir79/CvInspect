@@ -8,6 +8,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using OpenCvSharp;
+using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
 

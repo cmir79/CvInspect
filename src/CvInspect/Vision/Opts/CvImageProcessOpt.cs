@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -7,7 +9,7 @@ namespace CvInspect.Vision.Opts;
 // 표시명/카테고리/설명은 Loc(cv 스코프) — 언어 파일 Assets\lang\cv.{culture}.json.
 
 /// <summary>전처리 — 잘라내기 + 축소(서브샘플) + 미디언 정리. 이후 모든 툴 좌표는 그 출력 공간 기준.</summary>
-public sealed class CvImageProcessOpt
+public sealed class CvImageProcessOpt : ICvShapeSource
 {
     /// <summary>
     /// 볼 자리만 남기고 잘라낼지. 대상이 화면의 일부뿐이면 나머지는 탐색 비용이자 오검출 거리다.
@@ -40,4 +42,21 @@ public sealed class CvImageProcessOpt
     [CvName("cv:MedianKernel")]
     [CvDesc("cv:MedianKernelDesc")]
     public int MedianKernel { get; set; } = 3;
+
+    /// <summary>편집 도형 — 잘라내기 사각(UseCrop 일 때만). 이 도형만 원본 이미지 공간이다: 잘라내기가 축소보다 먼저라 그때는 원본만 있다.</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        if (!UseCrop) return null;
+        var crop = new CvEditRect { Color = ViOverlayColor.Orange, Label = "Crop" };
+        crop.Set(CropX, CropY, CropW, CropH);
+        crop.Changed += (_, _) =>
+        {
+            CropX = crop.X;
+            CropY = crop.Y;
+            CropW = crop.W;
+            CropH = crop.H;
+            onEdited();
+        };
+        return [crop];
+    }
 }

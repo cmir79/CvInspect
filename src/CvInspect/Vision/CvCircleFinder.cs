@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Text.Json.Serialization;
 using OpenCvSharp;
 using CvInspect.Vision.Opts;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision;
 
@@ -10,7 +12,7 @@ namespace CvInspect.Vision;
 /// 프로파일 축 = 반경 바깥(+s) 방향 — 극성 기준 (DarkToLight = 안→밖 어두움→밝음).
 /// 좌표는 대상 이미지 픽셀 공간.
 /// </summary>
-public sealed class CvFindCircleOpt
+public sealed class CvFindCircleOpt : ICvShapeSource
 {
     // 기대 원 — 디스플레이 도형(중심/반경/시작각/스팬 그립) 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
     [Browsable(false)] public double CenterX { get; set; } = 100;
@@ -91,6 +93,25 @@ public sealed class CvFindCircleOpt
     [CvName("cv:MaxRmsPx")]
     [CvDesc("cv:CircleMaxRmsPxDesc")]
     public double MaxRmsPx { get; set; } = 2.0;
+
+    /// <summary>편집 도형 — 기대 원호(중심·반경·시작각·스팬). 코드 경로로 값을 고쳤을 때(스팬 전환 버튼 등)는
+    /// <see cref="EditShapeSync"/> 가 도형을 다시 맞춘다 — Set 이 Changed 를 되쏴 되쓰기와 화면 갱신까지 이어진다.</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        var arc = new CvEditArc { Color = ViOverlayColor.Yellow, Label = "Circle" };
+        arc.Set(CenterX, CenterY, Radius, AngleStartDeg, AngleSpanDeg);
+        arc.Changed += (_, _) =>
+        {
+            CenterX = arc.CenterX;
+            CenterY = arc.CenterY;
+            Radius = arc.Radius;
+            AngleStartDeg = arc.StartDeg;
+            AngleSpanDeg = arc.SpanDeg;
+            onEdited();
+        };
+        EditShapeSync = () => arc.Set(CenterX, CenterY, Radius, AngleStartDeg, AngleSpanDeg);
+        return [arc];
+    }
 }
 
 /// <summary>원 피팅 결과 — 중심/반경(입력 이미지 공간)과 사용 점수.

@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -23,7 +25,7 @@ public enum CvTrainShape
 /// INotifyPropertyChanged 는 PropertyGrid 표시 갱신용 — Trained 처럼 코드 경로(학습 버튼/로드)로
 /// 바뀌는 표시 값만 통지한다 (드래그 편집 좌표는 PG 미노출이라 통지 불요).
 /// </summary>
-public sealed class CvPatternOpt : INotifyPropertyChanged
+public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
 {
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -191,4 +193,63 @@ public sealed class CvPatternOpt : INotifyPropertyChanged
     [Browsable(false)]
     [JsonIgnore]
     public Func<bool>? TrainHook { get; set; }
+
+    /// <summary>편집 도형 — 학습 영역(사각은 회전 그립, 원은 반경 그립) + 탐색 영역(UseSearchRegion 일 때).
+    /// 탐색 영역은 학습 영역의 회전을 따라간다 — 특징과 그 주변은 같은 국소 좌표계에 있어 각도를 따로 둘 이유가 없고,
+    /// 따로 두면 되돌리는 변환이 한 겹 더 는다. 그래서 회전 그립은 학습 영역에만 있고 탐색 영역은 그 각을 물려받는다.
+    /// 원형 학습영역은 각도 개념이 없어 탐색 영역도 축 정렬(0°)이다.</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        var shapes = new List<CvEditShape>();
+        CvEditRect? search = null;
+
+        if (TrainShape == CvTrainShape.Circle)
+        {
+            var circle = new CvEditCircle { Color = ViOverlayColor.Yellow, Label = "Train" };
+            circle.Set(TrainCircleX, TrainCircleY, TrainCircleR);
+            circle.Changed += (_, _) =>
+            {
+                TrainCircleX = circle.CenterX;
+                TrainCircleY = circle.CenterY;
+                TrainCircleR = circle.Radius;
+                onEdited();
+            };
+            shapes.Add(circle);
+        }
+        else
+        {
+            var train = new CvEditRect { Color = ViOverlayColor.Yellow, Label = "Train", IsRotatable = true };
+            train.Set(TrainX, TrainY, TrainW, TrainH);
+            train.AngleDeg = TrainAngleDeg;
+            train.Changed += (_, _) =>
+            {
+                TrainX = train.X;
+                TrainY = train.Y;
+                TrainW = train.W;
+                TrainH = train.H;
+                TrainAngleDeg = train.AngleDeg;
+                if (search is not null) search.AngleDeg = train.AngleDeg;
+                onEdited();
+            };
+            shapes.Add(train);
+        }
+
+        if (UseSearchRegion)
+        {
+            // 티칭 도형은 Teal(어두운 청록) — 검사 결과 측정 기하(순색 Cyan)와 색으로 구분.
+            search = new CvEditRect { Color = ViOverlayColor.Teal, Label = "Search" };
+            search.Set(SearchX, SearchY, SearchW, SearchH);
+            search.AngleDeg = TrainShape == CvTrainShape.Circle ? 0 : TrainAngleDeg;
+            search.Changed += (_, _) =>
+            {
+                SearchX = search.X;
+                SearchY = search.Y;
+                SearchW = search.W;
+                SearchH = search.H;
+                onEdited();
+            };
+            shapes.Add(search);
+        }
+        return shapes;
+    }
 }

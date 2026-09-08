@@ -12,7 +12,7 @@ VirtualCam (folder playback) ──CamFrame──▶ CvDispCtrl.Frame           
                                               ├─ Pattern      CvInspGeom.MatchPattern ──CvPose──▶ fixture for every tool below it
                                               ├─ Line/Circle/Blob   run at XformByPose(taught geometry), in their own stage space
                                               └─ per tool: OK/NG, one-line summary, ViOverlay ──OverlayFor(stage)──▶ CvDispCtrl.Overlay
-CvPropEditCtrl ◀── the selected tool's Cv*Opt ──▶ CvShapeBinder ──▶ draggable shapes on that tool's stage image
+CvPropEditCtrl ◀── the selected tool's Cv*Opt ──ICvShapeSource──▶ draggable shapes on that tool's stage image
 DemoRecipe.Save / Load ◀──▶ a folder: Recipe.json + {key}.json per tool + {key}.Template.png per trained pattern
 ```
 

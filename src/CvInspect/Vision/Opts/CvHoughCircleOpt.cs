@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -8,7 +10,7 @@ namespace CvInspect.Vision.Opts;
 /// 기대 원은 자체 티칭 도형 — 탐색 반경 범위 = 기대 반경 ±허용% (다른 툴 의존 없이 단독 성립).
 /// 좌표는 대상 이미지 픽셀 공간.
 /// </summary>
-public sealed class CvHoughCircleOpt
+public sealed class CvHoughCircleOpt : ICvShapeSource
 {
     // 기대 원 — 디스플레이 도형(중심/반경 그립) 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
     // 검출 자체는 영역 전체 탐색이라 중심은 시각 기준일 뿐, 반경이 탐색 범위(±허용%)의 기준.
@@ -41,4 +43,37 @@ public sealed class CvHoughCircleOpt
     [Browsable(false)] public double SearchY { get; set; }
     [Browsable(false)] public double SearchW { get; set; } = 200;
     [Browsable(false)] public double SearchH { get; set; } = 200;
+
+    /// <summary>편집 도형 — 기대 원(탐색 반경 범위 ±허용% 의 기준; 검출은 영역 전체 탐색이라 중심은 시각 기준일 뿐)
+    /// + 탐색 영역 사각(UseSearchRegion 일 때).</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        var shapes = new List<CvEditShape>();
+        var expect = new CvEditArc { Color = ViOverlayColor.Yellow, Label = "Expect" };
+        expect.Set(CenterX, CenterY, Radius, 0, 360);
+        expect.Changed += (_, _) =>
+        {
+            CenterX = expect.CenterX;
+            CenterY = expect.CenterY;
+            Radius = expect.Radius;
+            onEdited();
+        };
+        shapes.Add(expect);
+
+        if (UseSearchRegion)
+        {
+            var search = new CvEditRect { Color = ViOverlayColor.Teal, Label = "Search" };
+            search.Set(SearchX, SearchY, SearchW, SearchH);
+            search.Changed += (_, _) =>
+            {
+                SearchX = search.X;
+                SearchY = search.Y;
+                SearchW = search.W;
+                SearchH = search.H;
+                onEdited();
+            };
+            shapes.Add(search);
+        }
+        return shapes;
+    }
 }

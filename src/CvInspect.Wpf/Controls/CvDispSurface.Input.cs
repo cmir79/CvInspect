@@ -2,6 +2,7 @@
 // 이동·리사이즈·회전 드래그 처리.
 
 using System.Windows.Input;
+using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
 

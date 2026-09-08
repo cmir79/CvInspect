@@ -1,4 +1,6 @@
 using System.Text.Json.Serialization;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -22,7 +24,7 @@ public enum CvRegionShape
 /// 사각 탐색영역을 이걸로 바꾸려면 티칭 JSON 마이그레이션과 파인더의 마스크 인지가 필요하므로
 /// 신설 툴부터 채택한다.
 /// </summary>
-public sealed class CvRegionOpt
+public sealed class CvRegionOpt : ICvShapeSource
 {
     public CvRegionShape Shape { get; set; } = CvRegionShape.Rect;
 
@@ -38,4 +40,38 @@ public sealed class CvRegionOpt
     public double CenterY { get; set; } = 200;
     public double RMinPx { get; set; } = 80;
     public double RMaxPx { get; set; } = 120;
+
+    /// <summary>편집 도형 — 모양(사각/링) 분기를 한곳에 모은다. 어느 툴이든 이 영역을 품으면 이걸로 도형을 얻는다(모양별로 따로 만들지 않는다).
+    /// 링은 중심 이동을 허용한다 — 밴드 자리를 티칭에서 직접 잡는다(파생 중심을 쓰는 언랩·충전율과 다른 점).</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        if (Shape == CvRegionShape.Ring)
+        {
+            var ring = new CvEditRing { Color = ViOverlayColor.Yellow, Label = "Ring", IsMovable = true };
+            ring.Set(CenterX, CenterY, RMinPx, RMaxPx);
+            ring.Changed += (_, _) =>
+            {
+                CenterX = ring.CenterX;
+                CenterY = ring.CenterY;
+                RMinPx = ring.RMin;
+                RMaxPx = ring.RMax;
+                onEdited();
+            };
+            return [ring];
+        }
+
+        var rect = new CvEditRect { Color = ViOverlayColor.Yellow, Label = "Region", IsRotatable = true };
+        rect.Set(RectX, RectY, RectW, RectH);
+        rect.AngleDeg = RectAngleDeg;
+        rect.Changed += (_, _) =>
+        {
+            RectX = rect.X;
+            RectY = rect.Y;
+            RectW = rect.W;
+            RectH = rect.H;
+            RectAngleDeg = rect.AngleDeg;
+            onEdited();
+        };
+        return [rect];
+    }
 }

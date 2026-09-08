@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -19,7 +21,7 @@ namespace CvInspect.Vision.Opts;
 /// H 는 OpenCV 규약(0~179, 1칸=2°). 무채색(금속·회색) 대상은 H 가 무의미하므로 색 학습이
 /// 채도 상한이 낮으면 HueTol 을 전 범위로 열어 S/V 대역만으로 가른다.
 /// </summary>
-public sealed class CvColorSegmentOpt : INotifyPropertyChanged
+public sealed class CvColorSegmentOpt : INotifyPropertyChanged, ICvShapeSource
 {
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -126,4 +128,7 @@ public sealed class CvColorSegmentOpt : INotifyPropertyChanged
         field = value;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
+
+    /// <summary>편집 도형 — 판정/표본 겸용 영역(<see cref="Region"/>) 그대로. 이 툴만 원본(컬러) 이미지 공간이다 — 컬러는 전처리 축소를 안 거친다.</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited) => Region.CreateShapes(onEdited);
 }

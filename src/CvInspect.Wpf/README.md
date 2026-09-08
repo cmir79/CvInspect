@@ -9,11 +9,12 @@ machine-vision toolkit, based on [OpenCvSharp](https://github.com/shimat/opencvs
   zoom / pan / clear), a status bar (cursor position, pixel value, image size, zoom level), and a
   right-click menu (load / save image file, view operations). Renders `OpenCvSharp.Mat` frames,
   renderer-neutral result overlays (`ViOverlay`), and interactive teaching shapes.
-- **`CvEditShape`** family — draggable shapes (rotated rect, segment, circle, arc, concentric ring)
-  edited directly on the image: move, corner resize, rotation grip, angle/radius grips.
-- **`CvShapeBinder`** — builds edit shapes from CvInspect tool option POCOs (`CvPatternOpt`,
-  `CvFindLineOpt`, `CvFindCircleOpt`, `CvBlobOpt`, …) and writes drag edits straight back into them.
-- **`ICvShapeSource`** — lets host-defined option POCOs supply their own edit shapes.
+- **Teaching shapes** — the draggable shapes (`CvEditShape` family: rotated rect, segment, circle,
+  arc, concentric ring) and the contract by which option POCOs supply them (`ICvShapeSource`,
+  implemented by every CvInspect option that has geometry, and by host-defined options the same way)
+  live in the core package under `CvInspect.Vision.Edit`. This package draws them and turns mouse
+  drags into moves, corner resizes and rotation/angle/radius grips; each drag writes straight back
+  into the POCO through the shape's `Changed` event.
 
 ## Install
 

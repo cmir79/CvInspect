@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -7,7 +9,7 @@ namespace CvInspect.Vision.Opts;
 /// 블랍 검출 파라미터 — 극성 이진화(Otsu/고정 문턱) → 연결요소 최대 면적 블랍.
 /// 위치 선탐지·존재 확인 등 범용 (검사가 용도를 조립). 좌표는 대상 이미지 픽셀 공간.
 /// </summary>
-public sealed class CvBlobOpt
+public sealed class CvBlobOpt : ICvShapeSource
 {
     [CvCategory("cv:CatBlob", 1)]
     [CvName("cv:BlobPolarity")]
@@ -48,6 +50,23 @@ public sealed class CvBlobOpt
     [Browsable(false)] public double SearchY { get; set; }
     [Browsable(false)] public double SearchW { get; set; } = 200;
     [Browsable(false)] public double SearchH { get; set; } = 200;
+
+    /// <summary>편집 도형 — 탐색 영역 사각(UseSearchRegion 일 때만). 티칭 도형은 Teal — 검사 결과 기하(Cyan)와 색으로 구분.</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        if (!UseSearchRegion) return null;
+        var search = new CvEditRect { Color = ViOverlayColor.Teal, Label = "Search" };
+        search.Set(SearchX, SearchY, SearchW, SearchH);
+        search.Changed += (_, _) =>
+        {
+            SearchX = search.X;
+            SearchY = search.Y;
+            SearchW = search.W;
+            SearchH = search.H;
+            onEdited();
+        };
+        return [search];
+    }
 }
 
 /// <summary>블랍 극성 — 블랍이 배경 대비 밝은지(Bright) 어두운지(Dark).</summary>

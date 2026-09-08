@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CvInspect.Vision.Overlay;
 using OpenCvSharp;
+using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
 

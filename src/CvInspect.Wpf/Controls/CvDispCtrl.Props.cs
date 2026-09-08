@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using CvInspect.Vision.Overlay;
 using OpenCvSharp;
+using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
 

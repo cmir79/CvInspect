@@ -1,10 +1,11 @@
 using CvInspect.Vision.Overlay;
 
-namespace CvInspect.Controls;
+namespace CvInspect.Vision.Edit;
 
 /// <summary>
-/// CvDispCtrl 의 편집 가능 도형 — 좌표는 표시 중인 이미지의 픽셀 공간 (툴 파라미터 공간과 동일 전제).
-/// 값 변경 시 Changed 발화 — 바인더가 툴 파라미터(POCO)로 즉시 되write.
+/// 편집 도형 — 표시 컨트롤이 그리고 드래그하는 티칭 기하의 모델. UI 프레임워크와 무관하다(값·이벤트뿐).
+/// 좌표는 그 툴의 입력(단계) 이미지 픽셀 공간 — 툴 파라미터와 같은 공간이다.
+/// 값이 바뀌면 Changed 가 난다 — 파라미터가 자기 도형을 만들 때(<see cref="ICvShapeSource"/>) 걸어 둔 핸들러가 즉시 되쓴다.
 /// </summary>
 public abstract class CvEditShape
 {
@@ -38,7 +39,7 @@ public sealed class CvEditRect : CvEditShape
     public bool IsRotatable { get; init; }
 
     /// <summary>크기 편집 지원 여부 — false 면 모서리·회전 그립 없이 이동만
-    /// (크기가 다른 값과 한 쌍으로 고정된 영역 — AI 크롭 사각처럼 학습 구도와 짝인 경우).</summary>
+    /// (크기가 다른 값과 한 쌍으로 고정된 영역 — 학습 구도와 짝인 크롭 사각 같은 경우).</summary>
     public bool IsResizable { get; init; } = true;
 
     public void Set(double x, double y, double w, double h)

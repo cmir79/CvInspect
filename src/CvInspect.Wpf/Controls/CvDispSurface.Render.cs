@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using CvInspect.Vision.Overlay;
+using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
 

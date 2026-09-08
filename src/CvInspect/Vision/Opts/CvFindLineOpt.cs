@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
@@ -6,7 +8,7 @@ namespace CvInspect.Vision.Opts;
 /// 라인 검출 — 탐색 세그먼트를 따라 캘리퍼(법선 프로파일 에지점) 배열 + 라인 피팅.
 /// 세그먼트 방향(Start→End)이 라인 각도의 부호 기준 (피팅 방향을 세그먼트 방향으로 정렬).
 /// </summary>
-public sealed class CvFindLineOpt
+public sealed class CvFindLineOpt : ICvShapeSource
 {
     // 탐색 세그먼트 — 디스플레이 도형(끝점 핸들) 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
     [Browsable(false)] public double StartX { get; set; } = 100;
@@ -73,4 +75,20 @@ public sealed class CvFindLineOpt
     [CvName("cv:NumToIgnore")]
     [CvDesc("cv:NumToIgnoreDesc")]
     public int NumToIgnore { get; set; }
+
+    /// <summary>편집 도형 — 탐색 선분(이동 + 양 끝점).</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        var seg = new CvEditSeg { Color = ViOverlayColor.Yellow, Label = "Line" };
+        seg.Set(StartX, StartY, EndX, EndY);
+        seg.Changed += (_, _) =>
+        {
+            StartX = seg.X1;
+            StartY = seg.Y1;
+            EndX = seg.X2;
+            EndY = seg.Y2;
+            onEdited();
+        };
+        return [seg];
+    }
 }

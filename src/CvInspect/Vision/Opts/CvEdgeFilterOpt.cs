@@ -1,9 +1,11 @@
 using System.ComponentModel;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 
 namespace CvInspect.Vision.Opts;
 
 /// <summary>에지 필터 — 이진화 + 연결요소 분석으로 유효 에지 블랍만 남긴다 (값은 에지 크기 유지).</summary>
-public sealed class CvEdgeFilterOpt
+public sealed class CvEdgeFilterOpt : ICvShapeSource
 {
     [CvCategory("cv:CatThreshold", 1)]
     [CvName("cv:Threshold")]
@@ -37,4 +39,23 @@ public sealed class CvEdgeFilterOpt
     [Browsable(false)] public double RegionW { get; set; } = 100;
     [Browsable(false)] public double RegionH { get; set; } = 100;
     [Browsable(false)] public double RegionAngleDeg { get; set; }
+
+    /// <summary>편집 도형 — 회전 가능한 영역 사각(UseRegion 일 때만).</summary>
+    public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
+    {
+        if (!UseRegion) return null;
+        var rect = new CvEditRect { Color = ViOverlayColor.Yellow, Label = "Region", IsRotatable = true };
+        rect.Set(RegionX, RegionY, RegionW, RegionH);
+        rect.AngleDeg = RegionAngleDeg;
+        rect.Changed += (_, _) =>
+        {
+            RegionX = rect.X;
+            RegionY = rect.Y;
+            RegionW = rect.W;
+            RegionH = rect.H;
+            RegionAngleDeg = rect.AngleDeg;
+            onEdited();
+        };
+        return [rect];
+    }
 }

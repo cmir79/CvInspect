@@ -43,9 +43,10 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   RMS/angle gates, and every fit carries its residual so you can gate on quality, not just on found/not found.
 - **Pure and deterministic.** Tools are static functions over `Mat`: same input, same output.
   Recipes can be replayed offline and the test suite pins real defects that were observed.
-- **Teaching UI without boilerplate.** Option POCOs carry attributes; from those alone the WPF
-  package builds the property editor, the draggable search shapes and the localized labels, and
-  `System.Text.Json` persists them with string enums.
+- **Teaching UI without boilerplate.** Option POCOs carry attributes and supply their own teaching
+  shapes (`ICvShapeSource`, in the core); from those alone the WPF package builds the property
+  editor, draws the draggable search shapes and shows the localized labels, and `System.Text.Json`
+  persists them with string enums.
 - **Acquisition without vendor SDKs.** `CamFrame` is a GC-owned buffer with no lifetime contract,
   GigE cameras are driven by a managed protocol implementation (no drivers, no vendor DLLs), and
   virtual/video sources make offline work identical to live work.
@@ -66,8 +67,8 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
 - **Overlay primitives** (`ViOverlay`, `ViDraw`, `ViHud`) — renderer-neutral result graphics
   (segments, labels, rects, polylines) that any display layer can draw
 
-Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display /
-shape-editing controls), **CvInspect.Imaging** (camera acquisition contract with virtual /
+Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display control,
+shape dragging, property editor), **CvInspect.Imaging** (camera acquisition contract with virtual /
 VideoCapture sources, and a factory that vendor adapters register into) and
 **CvInspect.Imaging.Gev** (GigE Vision cameras spoken to directly — no vendor SDK, no
 proprietary DLLs).

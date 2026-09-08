@@ -9,6 +9,7 @@ using CvInspect.Vision.Opts;
 using CvInspect.Vision.Overlay;
 using Microsoft.Win32;
 using OpenCvSharp;
+using CvInspect.Vision.Edit;
 
 namespace CvInspect.Demo;
 
