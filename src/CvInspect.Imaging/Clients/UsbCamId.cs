@@ -26,7 +26,10 @@ public sealed record UsbCamInfo(int Index, string Name, string VendorId, string 
 ///
 /// <b>검증 상태.</b> Windows: 서로 다른 모델 두 대(내장 + 외장)를 꽂은 Windows 11 PC 에서 이 이식본으로 실측 — SetupAPI 열거
 /// 순번이 ANY·DSHOW·MSMF 세 백엔드 모두에서 OpenCV 인덱스와 일치했고 VID/PID 로 연 것이 그 카메라였다(원형도 웹캠 두 대짜리
-/// 설비에서 실증됐고, WMI 의 순서는 맞지 않았다). 같은 모델 두 대(인스턴스 ID 경로)와 핫 재연결은 아직 안 쟀다.
+/// 설비에서 실증됐고, WMI 의 순서는 맞지 않았다). 다른 Windows 11 PC(외장 한 대)에서는 ANY 가 MSMF 로 붙어 식별 열기가
+/// 정상이었지만 <b>DSHOW 는 인덱스로 열리지 않았다</b>("backend is generally available but can't be used to capture by
+/// index") — 백엔드 가용성은 PC 마다 다르니 <c>backend=</c> 는 실측 없이 고정하지 말고 기본(any)을 둔다. 그 PC 에서 MSMF 는
+/// 첫 열기 ~1 s, 방금 닫은 장치 재열기 ~5 s 였다. 같은 모델 두 대(인스턴스 ID 경로)와 핫 재연결은 아직 안 쟀다.
 /// Linux: 하드웨어에서 돌려 보지 않았다 — 합성 sysfs 트리 회귀만 있다. macOS: 미지원(예외).
 /// </summary>
 public static class UsbCamId

@@ -184,8 +184,8 @@ configure it to skip delegate-typed members.
 - `samples/CvInspect.Demo` ([README](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/README.md),
   [screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png),
   [download the exe](https://github.com/cmir79/CvInspect/releases/latest)) — a WPF window that wires
-  everything together as a recipe: `VirtualCam` playing a synthetic part that shifts and rotates,
-  `CvDispCtrl` showing the `CamFrame` directly, an ordered tool chain (preprocess, pattern, line,
+  everything together as a recipe: `VirtualCam` playing a synthetic part that shifts and rotates, or any
+  USB webcam on the PC opened by VID/PID through `CamOpt.SerialNumber`, `CvDispCtrl` showing the `CamFrame` directly, an ordered tool chain (preprocess, pattern, line,
   circle, blob) edited through draggable search shapes and the `CvPropEditCtrl` parameter editor, a
   pattern fixture (`CvPose`) that moves the tools below it onto the found part, preprocess stages whose
   results map back through `CvSpaceMap`, and recipe save/load as a plain folder of JSON plus the
@@ -227,8 +227,10 @@ Read these before adopting — they are real, and they are not going away soon.
   Bgra32; 16-bit sensor data is folded to 8 bits at the adapter. Individual core tools may accept
   other depths, but nothing around them does.
 - **USB webcam identity is verified on Windows only.** `CamOpt.SerialNumber` selects a webcam by VID/PID or
-  instance id; the Windows path was checked on one two-camera PC (different models, three backends), the
-  Linux path has no hardware run at all, and macOS is unsupported.
+  instance id; the Windows path was checked on a two-camera PC (different models, three backends) and a
+  one-camera PC, the Linux path has no hardware run at all, and macOS is unsupported. Backend availability
+  differs per PC: on the one-camera PC the DirectShow backend could not open the camera by index at all
+  while Media Foundation (what `any` picks) could — leave `backend=` at its default unless you have measured.
 - **Display is WPF, so Windows only.** The core and Imaging packages are cross-platform; the WPF
   package and its off-screen test suite build on Windows alone.
 - **GigE has hours, not years, behind it.** Two cameras from two vendors have been streamed

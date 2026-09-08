@@ -36,6 +36,13 @@ what the tool actually sees. Each tool's result is mapped back through `CvSpaceM
 of every tool lands on whichever stage is displayed — and a fixture found in one stage still moves
 tools in another.
 
+**Live webcam.** The *Source* box lists every USB camera on the PC by name and VID/PID (`UsbCamId`) next to
+the synthetic part, and opens the one you pick through `CamOpt.SerialNumber` — so it is the same camera
+no matter which OpenCV index it got today. Frames arrive in colour at 30 fps; the tools see them grey, and
+when the UI falls behind only the newest frame is processed. Nothing is trained automatically on a live
+camera: drag the yellow train box onto a feature of your object, press **Train**, then move the object —
+the fixture follows it, and the cyan geometry with it.
+
 **The recipe folder.** *Save…* writes a folder: `Recipe.json` (order, keys, kinds), one `{key}.json`
 per tool (the option POCO as-is, enums as strings) and `{key}.Template.png` for each trained
 pattern — readable and diffable, no binary blob. *Load…* brings it back including the trained
@@ -58,6 +65,9 @@ template, and the loaded recipe produces the identical run. An unsaved change pu
 - **Edit a parameter** in the right pane (calipers, search length, polarity, gates) — every
   commit re-runs the recipe. Hover a label for its description.
 - **Right-click → Load image** to inspect a file of your own; 8-bit 1/3/4-channel formats only.
+- **Source → your webcam**, then teach the fixture on something in view and move it. Press **↻** after
+  plugging a camera in. `CvInspect.Demo.exe --webcam` starts straight into the first camera,
+  `--webcam VID_046D&PID_0825` (or an instance id) into that one.
 - On the pattern tool, drag the train box somewhere featureless and press Train to see the
   refusal. The blob tool reports every blob above `MinArea` — count, area, centroid and contour —
   not just the largest.
@@ -72,7 +82,8 @@ attached to every [GitHub release](https://github.com/cmir79/CvInspect/releases/
 dotnet run --project samples/CvInspect.Demo
 ```
 
-Windows only (WPF). The recipe runner (`DemoRecipeRunner`) is pure and deterministic — the WPF test
+Windows only (WPF). A USB webcam is optional — without one the source list holds only the synthetic
+part. The recipe runner (`DemoRecipeRunner`) is pure and deterministic — the WPF test
 suite trains the default recipe on the reference part, runs it on a shifted-and-rotated one and checks
 that the pose angle, the followed line, circle and blob all land within a pixel of where the geometry
 went; saves and reloads a recipe and checks the run is identical; and runs a half-resolution stage to

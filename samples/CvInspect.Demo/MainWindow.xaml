@@ -22,6 +22,12 @@
 
     <DockPanel Grid.Column="1" Margin="8">
       <StackPanel DockPanel.Dock="Top">
+        <!-- 소스 — 합성 부품(VirtualCam) 또는 이 PC 의 USB 웹캠(VID/PID 로 연다). ↻ 는 꽂거나 뺀 뒤 다시 열거. -->
+        <DockPanel Margin="0,0,0,6">
+          <TextBlock Text="Source" VerticalAlignment="Center" Margin="0,0,6,0" />
+          <Button DockPanel.Dock="Right" Content="↻" Command="{Binding RefreshSourcesCommand}" ToolTip="Re-enumerate USB cameras" Padding="6,2" />
+          <ComboBox ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSource}" DisplayMemberPath="Title" Margin="0,0,4,0" />
+        </DockPanel>
         <TextBlock Text="{Binding RecipeTitle}" FontWeight="Bold" />
         <WrapPanel Margin="0,4,0,4">
           <ComboBox x:Name="AddKind" ItemsSource="{Binding Kinds}" SelectedIndex="1" Width="96" Margin="0,0,4,4" />
