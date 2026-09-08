@@ -12,6 +12,12 @@ Machine-vision inspection toolkit for .NET, based on [OpenCvSharp](https://githu
 All algorithms operate on plain `OpenCvSharp.Mat` images and are pure and deterministic —
 the same input always produces the same result, so tools can be replayed and verified offline.
 
+**See it before installing anything:** every release ships a self-contained
+[`CvInspect.Demo.exe`](https://github.com/cmir79/CvInspect/releases/latest) (Windows x64, no .NET
+install needed) — a synthetic part that moves while a pattern fixture drags the line, circle and blob
+tools along with it; build the tool chain, drag the shapes, save the recipe. Details in the
+[demo README](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/README.md).
+
 ## Why CvInspect
 
 This is the algorithm layer of a production inspection stack, extracted and published as-is — the

@@ -7,6 +7,11 @@
     <Version>0.19.0</Version>
 
     <Authors>kintaein</Authors>
+
+    <!-- 디버그 정보를 어셈블리 안에 넣는다. 따로 두면 배포에서 떨어져 나가 스택 추적에 줄 번호가 사라지고,
+         파일 하나로 배포하는 데모 exe 에는 아예 딸려 갈 자리가 없다. 크기 대가는 작고, 재현 못 하는 현장 예외
+         하나를 읽을 수 있게 하는 값이다. 소스는 넣지 않는다 — 저장소가 공개라 디버거가 커밋으로 찾아간다. -->
+    <DebugType>embedded</DebugType>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
     <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
