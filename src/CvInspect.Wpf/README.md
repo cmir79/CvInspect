@@ -60,8 +60,10 @@ dotnet add package OpenCvSharp4.runtime.win
   disposed underneath the control.
 - **`ICvPixelSource`** (the core contract, implemented by `CamFrame` in CvInspect.Imaging) — the
   control **holds the pixel array by reference** and copies it only once, into the WPF back
-  buffer. This relies on the contract that `Pixels` is immutable once published; a source that
-  recycles its buffer must not implement it.
+  buffer. The reference is kept for the status-bar pixel probe and for file save, not for
+  rendering — so a buffer that changes after publishing does not tear the picture, it makes
+  those two disagree with what is on screen. This relies on the contract that `Pixels` is
+  immutable once published; a source that recycles its buffer must not implement it.
 
 Supported formats either way: 8-bit with 1 (Gray8), 3 (Bgr24) or 4 (Bgra32) channels; anything
 else shows the no-image placeholder. A value of any other type also shows the placeholder and

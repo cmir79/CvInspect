@@ -210,7 +210,8 @@ public class SmokeTests
                       && view.At<byte>(3, 5) == held.Pixels[3 * 640 + 5], "AsMat zero-copy view matches pixels");
 
             // 표시 계약 — CamFrame 은 ICvPixelSource 이고 채널 수·스트라이드·길이가 그 계약을 만족한다.
-            // 표시 계층은 이 배열을 복사 없이 참조로 붙잡으므로(발행 뒤 불변), 계약이 깨지면 화면이 찢어진다.
+            // 표시 계층은 이 배열을 복사 없이 참조로 붙잡는다(발행 뒤 불변). 화면은 대입 시점에 백버퍼로 옮겨져 안전하지만,
+            // 계약이 깨지면 그 배열을 읽는 픽셀 조회·저장이 화면과 어긋난다.
             ICvPixelSource ps = held;
             Check(ps.Channels == 1 && ps.Stride >= ps.Width * ps.Channels && ps.Pixels.Length >= ps.Stride * ps.Height,
                 $"ICvPixelSource contract: ch={ps.Channels} stride={ps.Stride} len={ps.Pixels.Length}");
