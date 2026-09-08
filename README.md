@@ -41,8 +41,11 @@ dotnet add package OpenCvSharp4.runtime.win
 dotnet add package OpenCvSharp4.runtime.ubuntu.20.04-x64
 ```
 
-The Windows `OpenCvSharp4.Windows` meta-package also works, but note that its bundled
-`opencv_videoio_ffmpeg` codec is LGPL-2.1 — choosing the runtime is deliberately left to you.
+The Windows `OpenCvSharp4.Windows` meta-package also works. Either way, the Windows native
+runtime ships an `opencv_videoio_ffmpeg` codec that is LGPL-2.1 — the meta-package pulls in
+`OpenCvSharp4.runtime.win`, so picking the runtime package directly carries the same codec.
+Choosing the runtime is deliberately left to you; see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Targets
 
@@ -104,3 +107,4 @@ exists. It needs no camera and no network.
 ## License
 
 Apache-2.0. Not affiliated with OpenCV or OpenCvSharp.
+Dependency licences and trademark notes: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

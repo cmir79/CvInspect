@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # 손으로 다시 돌릴 수 있게 — 결과만 보고 싶을 때 빈 커밋을 만들지 않으려고.
+  workflow_dispatch:
+
+# 연달아 밀어 넣으면 마지막 것만 돌린다. 브랜치별로 묶으므로 main 과 PR 은 서로 취소하지 않는다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 솔루션 전체가 서는 곳은 Windows 뿐이다 — CvInspect.Wpf 가 net8.0-windows 이고,
+  # 테스트는 OpenCvSharp4.runtime.win 을 물어 네이티브가 Windows 판이다.
+  # 그래서 "전부 빌드하고 실제로 돌려 보는" 검사는 여기 하나로 모은다.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Build (all projects, all TFMs)
+        run: dotnet build -c Release
+      - name: Test
+        timeout-minutes: 10
+        run: dotnet test --no-build -c Release --logger trx --results-directory TestResults
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: test-results
+          path: TestResults/**/*.trx
+      # 패키지가 실제로 만들어지는 것까지 본다. 게시는 하지 않는다 — 산출물만 남긴다.
+      - name: Pack
+        run: dotnet pack --no-build -c Release -o out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nupkg
+          path: out/*.nupkg
+
+  # Windows 밖에서도 컴파일된다는 계약의 검사 — 유니티(netstandard2.1)와 Linux 소비자가 받는 자산이다.
+  # 여기서는 빌드까지만 한다: 테스트는 Windows 네이티브 런타임을 물고 있어 여기서 돌지 않는다.
+  # "다른 OS 에서 컴파일이 깨졌다" 와 "다른 OS 에서 실행을 확인하지 못했다" 는 다른 사실이라, 전자만 검사한다.
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Build (platform-neutral packages)
+        run: |
+          dotnet build src/CvInspect/CvInspect.csproj -c Release
+          dotnet build src/CvInspect.Imaging/CvInspect.Imaging.csproj -c Release
+          dotnet build src/CvInspect.Imaging.Gev/CvInspect.Imaging.Gev.csproj -c Release
