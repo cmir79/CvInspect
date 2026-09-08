@@ -227,7 +227,8 @@ Read these before adopting — they are real, and they are not going away soon.
   pixel-to-millimetre calibration beyond scalar resolution fields; no lens distortion correction;
   no OCR, deep learning or 3D.
 - **0.x API.** Breaking changes have happened (the `CvDispCtrl.Frame` type changed in 0.16.0) and
-  will happen again before 1.0 — pin versions.
+  will happen again before 1.0 — pin versions. Releases are cut from `v*` tags only; `main` carries
+  the *next* version number while changes accumulate, so a version bump is not one change but one release.
 - **Tests are a regression harness, not coverage.** Each case pins a defect that was actually
   seen; accuracy figures quoted above come from synthetic scenes.
 - **Comments are Korean.** READMEs are English; XML documentation (what IntelliSense shows) is
