@@ -1,6 +1,6 @@
 # CvInspect
 
-[![ci](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/cmir79/CvInspect/blob/main/LICENSE) [![Downloads](https://img.shields.io/nuget/dt/CvInspect?logo=nuget&label=downloads)](https://www.nuget.org/packages/CvInspect)
+[![ci](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/CvInspect/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/cmir79/CvInspect/blob/main/LICENSE)
 
 [![NuGet CvInspect](https://img.shields.io/nuget/v/CvInspect?logo=nuget&label=CvInspect)](https://www.nuget.org/packages/CvInspect)
 [![NuGet CvInspect.Imaging](https://img.shields.io/nuget/v/CvInspect.Imaging?logo=nuget&label=CvInspect.Imaging)](https://www.nuget.org/packages/CvInspect.Imaging)
