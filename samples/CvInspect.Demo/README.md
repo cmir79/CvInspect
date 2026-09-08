@@ -6,8 +6,8 @@ One window that wires the whole toolkit together:
 
 ```
 VirtualCam (folder playback) ──CamFrame──▶ CvDispCtrl.Frame        (held by reference, no copy)
-                               └──AsMat()──▶ CvLineFinder / CvCircleFinder ──▶ ViOverlay ──▶ CvDispCtrl.Overlay
-CvPropEditCtrl ◀── CvFindLineOpt / CvFindCircleOpt ──▶ CvShapeBinder ──▶ draggable search shapes
+                               └──AsMat()──▶ CvLineFinder / CvCircleFinder / CvBlobFinder ──▶ ViOverlay ──▶ CvDispCtrl.Overlay
+CvPropEditCtrl ◀── CvFindLineOpt / CvFindCircleOpt / CvBlobOpt ──▶ CvShapeBinder ──▶ draggable search shapes
 ```
 
 The part is synthetic (`DemoImage`): a bright plate on a dark background with a dark hole in the
@@ -17,12 +17,15 @@ frames arrive through the same `ICam` path a real camera would use.
 ## Try
 
 - **📸 / ⏯️** on the toolbar grab one frame or stream at 10 fps.
-- **Drag the yellow shape** (the line's search segment, the circle's expected arc) — the tool
-  re-runs as you drag, because the shape writes straight back into the option POCO.
+- **Drag the search shape** (the line's segment, the circle's expected arc, the blob's search
+  rectangle) — the tool re-runs as you drag, because the shape writes straight back into the
+  option POCO. Widen the blob rectangle past the plate and watch the dark background become the
+  biggest blob: the search region is what keeps the hole the only hit.
 - **Edit a parameter** in the right pane (calipers, search length, polarity, gates) — every
   commit re-runs the inspection. Hover a label for its description.
 - **Right-click → Load image** to inspect a file of your own; 8-bit 1/3/4-channel formats only.
-- Switch **Tool** to edit the other tool; both results stay on the overlay.
+- Switch **Tool** to edit another tool; all three results stay on the overlay. The blob tool
+  reports every blob above `MinArea` — count, area, centroid and contour — not just the largest.
 
 ## Run
 

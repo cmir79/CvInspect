@@ -101,5 +101,12 @@ public class CvPropEditCtrlTests
         Check(r.Circle is { } c && Math.Abs(c.Radius - DemoImage.HoleRadius) < 1.5
               && Math.Abs(c.CenterX - DemoImage.HoleCenterX) < 1.0 && Math.Abs(c.CenterY - DemoImage.HoleCenterY) < 1.0,
             $"hole measured at its drawn geometry: r={r.Circle?.Radius:F2} center=({r.Circle?.CenterX:F2}, {r.Circle?.CenterY:F2})");
+
+        // 블랍: 판 안쪽의 어두운 영역은 구멍 하나뿐이어야 하고, 면적은 그린 원의 면적, 무게중심은 그 중심이다.
+        var expectedArea = Math.PI * DemoImage.HoleRadius * DemoImage.HoleRadius;
+        var hit = r.Blobs.Hits.Count > 0 ? r.Blobs.Hits[0] : default;
+        Check(r.Blobs.Hits.Count == 1 && Math.Abs(hit.Area - expectedArea) / expectedArea < 0.05
+              && Math.Abs(hit.X - DemoImage.HoleCenterX) < 1.0 && Math.Abs(hit.Y - DemoImage.HoleCenterY) < 1.0,
+            $"hole is the single dark blob inside the plate: n={r.Blobs.Hits.Count} area={hit.Area:F0} (expected {expectedArea:F0}) center=({hit.X:F1}, {hit.Y:F1})");
     }
 }

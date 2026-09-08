@@ -9,7 +9,7 @@ using OpenCvSharp;
 
 namespace CvInspect.Demo;
 
-public enum DemoTool { Line, Circle }
+public enum DemoTool { Line, Circle, Blob }
 
 /// <summary>
 /// 화면 VM — 취득(VirtualCam 이 합성 이미지 폴더를 재생) → 표시(CamFrame 을 Frame 에 그대로) → 검사(AsMat 무복사 래핑으로
@@ -18,7 +18,7 @@ public enum DemoTool { Line, Circle }
 /// </summary>
 public sealed partial class MainVm : ObservableObject, IDisposable
 {
-    public IReadOnlyList<DemoTool> Tools { get; } = [DemoTool.Line, DemoTool.Circle];
+    public IReadOnlyList<DemoTool> Tools { get; } = [DemoTool.Line, DemoTool.Circle, DemoTool.Blob];
 
     [ObservableProperty] private object? _frame;
     [ObservableProperty] private ViOverlay? _overlay;
@@ -31,6 +31,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     private readonly DemoInspector _insp = new();
     private readonly IReadOnlyList<CvEditShape> _lineShapes;
     private readonly IReadOnlyList<CvEditShape> _circleShapes;
+    private readonly IReadOnlyList<CvEditShape> _blobShapes;
     private readonly ICam _cam;
     private CamFrame? _last;
 
@@ -39,6 +40,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         // 탐색 도형은 툴마다 한 번 만든다 — 드래그가 Opt 에 되쓰이고, 되쓰일 때마다 다시 검사한다.
         _lineShapes = CvShapeBinder.For(_insp.Line, Rerun) ?? [];
         _circleShapes = CvShapeBinder.For(_insp.Circle, Rerun) ?? [];
+        _blobShapes = CvShapeBinder.For(_insp.Blob, Rerun) ?? [];
 
         // 합성 부품 이미지를 파일로 두고 VirtualCam 이 그 폴더를 재생한다 — 실제 카메라와 같은 ICam 경로를 탄다.
         var dir = Path.Combine(Path.GetTempPath(), "CvInspect.Demo");
@@ -62,8 +64,12 @@ public sealed partial class MainVm : ObservableObject, IDisposable
 
     private void ApplyTool(DemoTool tool)
     {
-        ToolOpt = tool == DemoTool.Line ? _insp.Line : _insp.Circle;
-        Shapes = tool == DemoTool.Line ? _lineShapes : _circleShapes;
+        (ToolOpt, Shapes) = tool switch
+        {
+            DemoTool.Line => ((object)_insp.Line, _lineShapes),
+            DemoTool.Circle => (_insp.Circle, _circleShapes),
+            _ => (_insp.Blob, _blobShapes),
+        };
     }
 
     [RelayCommand] private void Grab() => _cam.GrabOne();
@@ -104,7 +110,8 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         Overlay = r.Overlay;
         Status = (r.IsOk ? "OK" : "NG")
             + (r.Line is { } l ? $"  |  line {l.AngleDeg:F2}° rms {l.RmsPx:F2}" : "  |  line: not found")
-            + (r.Circle is { } c ? $"  |  circle r {c.Radius:F1} @ ({c.CenterX:F1}, {c.CenterY:F1})" : "  |  circle: not found");
+            + (r.Circle is { } c ? $"  |  circle r {c.Radius:F1} @ ({c.CenterX:F1}, {c.CenterY:F1})" : "  |  circle: not found")
+            + $"  |  blob n {r.Blobs.Hits.Count} area {r.Blobs.TotalArea:F0}";
     }
 
     public void Dispose()
