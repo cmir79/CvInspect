@@ -5,6 +5,34 @@ Machine-vision inspection toolkit for .NET, based on [OpenCvSharp](https://githu
 All algorithms operate on plain `OpenCvSharp.Mat` images and are pure and deterministic —
 the same input always produces the same result, so tools can be replayed and verified offline.
 
+## Why CvInspect
+
+This is the algorithm layer of a production inspection stack, extracted and published as-is — the
+same code runs on factory lines today. What it does differently from "OpenCV plus a display":
+
+- **A pattern finder built around measurements, not defaults.** Rotation (and optional scale) is a
+  coarse-to-fine stepped search with parabolic angle interpolation and a parallel angle sweep.
+  Rectangular templates rotate the *scene* rather than the template, because masked matching
+  measured 6× slower; circular templates keep the mask since it does real work there. A search
+  region is the *allowed centre region*, so a target half outside the box is still found. Empty
+  scenes finish at the coarse stage and return early (measured 3.7 s → 0.05 s). Multiple hits come
+  out non-overlapping with a suppression radius. The minimum reliable coarse size (`11 px`
+  geometric-mean side) was derived from 80-trial-per-cell synthetic sweeps across aspect ratios,
+  and the finder *reports* it rather than silently overriding your settings.
+- **Caliper metrology.** Edges come from 1-D projected profiles with parabolic sub-pixel
+  refinement; line and circle finders are caliper arrays with two-pass refit, outlier drop and
+  RMS/angle gates, and every fit carries its residual so you can gate on quality, not just on found/not found.
+- **Pure and deterministic.** Tools are static functions over `Mat`: same input, same output.
+  Recipes can be replayed offline and the test suite pins real defects that were observed.
+- **Teaching UI without boilerplate.** Option POCOs carry attributes; from those alone the WPF
+  package builds the property editor, the draggable search shapes and the localized labels, and
+  `System.Text.Json` persists them with string enums.
+- **Acquisition without vendor SDKs.** `CamFrame` is a GC-owned buffer with no lifetime contract,
+  GigE cameras are driven by a managed protocol implementation (no drivers, no vendor DLLs), and
+  virtual/video sources make offline work identical to live work.
+- **Small surface.** The core depends on the managed `OpenCvSharp4` assembly only, targets
+  `netstandard2.1` for Unity and Mono, and never uses reflection-based serialization.
+
 ## Tools
 
 - **Caliper** (`CvCaliper`) — projected edge detection along a search axis with polarity / contrast / selection rules
@@ -136,7 +164,7 @@ configure it to skip delegate-typed members.
 
 - `samples/CvInspect.Demo` — a WPF window that wires everything together: `VirtualCam` playing a
   synthetic part, `CvDispCtrl` showing the `CamFrame` directly, draggable search shapes, the
-  `CvPropEditCtrl` parameter editor, and a line + circle inspection drawn as an overlay
+  `CvPropEditCtrl` parameter editor, and a line, circle and blob inspection drawn as an overlay
   ([screenshot](samples/CvInspect.Demo/screenshot.png)).
 - `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and
   dumps what the adapter sees (transport statistics, frame geometry, saved frames).
@@ -156,6 +184,37 @@ exists. It needs no camera and no network.
 `ICvPixelSource` path against the `Mat` path, row padding, and what happens when the pixel
 contract is violated. It is WPF, so it builds and runs on Windows only — on other platforms run
 the core suite alone with `dotnet test tests/CvInspect.Tests`.
+
+## Limits
+
+Read these before adopting — they are real, and they are not going away soon.
+
+- **Template matching is intensity correlation, not geometric matching.** Scores degrade under
+  occlusion and strong non-linear lighting; rotation and scale are stepped searches (angle
+  refined to sub-step, scale on a grid); circular (masked) templates cost about 6× rectangular
+  ones; everything runs on the CPU (`Parallel.For`), there is no GPU path.
+- **Calipers need a starting pose.** Line and circle finders search only within the caliper
+  length around the taught geometry — a pattern finder or fixture has to bring them close first.
+  The Hough circle finder is the only global search.
+- **8-bit only through acquisition and display.** `CamFrame` and `CvDispCtrl` carry Mono8/Bgr24/
+  Bgra32; 16-bit sensor data is folded to 8 bits at the adapter. Individual core tools may accept
+  other depths, but nothing around them does.
+- **Display is WPF, so Windows only.** The core and Imaging packages are cross-platform; the WPF
+  package and its off-screen test suite build on Windows alone.
+- **GigE has hours, not years, behind it.** Two cameras from two vendors have been streamed
+  end-to-end; production run time has not accumulated. Bayer is demosaiced to Bgr24, packed
+  10/12-bit is folded to 8, vendor-specific features are not exposed.
+- **It is a toolkit, not a framework.** No tool chain, recipe persistence or run history; no
+  pixel-to-millimetre calibration beyond scalar resolution fields; no lens distortion correction;
+  no OCR, deep learning or 3D.
+- **0.x API.** Breaking changes have happened (the `CvDispCtrl.Frame` type changed in 0.16.0) and
+  will happen again before 1.0 — pin versions.
+- **Tests are a regression harness, not coverage.** Each case pins a defect that was actually
+  seen; accuracy figures quoted above come from synthetic scenes.
+- **Comments are Korean.** READMEs are English; XML documentation (what IntelliSense shows) is
+  Korean. Contributions in either language are fine.
+- **The native OpenCV runtime is your choice** and the Windows runtime bundles an LGPL ffmpeg
+  codec — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## License
 
