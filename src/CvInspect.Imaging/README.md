@@ -7,7 +7,9 @@ Camera acquisition contract and tame frame sources for the
 - **`ICam`** — the acquisition contract: open/close, single grab, continuous grab,
   connection/grabbing events, best-effort exposure control. Frames are GC-owned
   **`CamFrame`** buffers (`byte[]` + width/height/stride/format/timestamps) with **no
-  lifetime contract** — `frame.AsMat()` gives a zero-copy `Mat` view for inspection.
+  lifetime contract** — `frame.AsMat()` gives a zero-copy `Mat` view for inspection, and the
+  type implements the core `ICvPixelSource` contract, so `CvDispCtrl` (CvInspect.Wpf) displays
+  it by reference without copying.
   A frame carries two clocks: `TimestampUtc` is when it **arrived**, and `DeviceTimestamp`
   is when the camera **captured** it (null if the device does not report one). The device
   clock has its own epoch, so compare frames to each other rather than reading it as wall

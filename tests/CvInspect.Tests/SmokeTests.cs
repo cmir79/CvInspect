@@ -209,6 +209,15 @@ public class SmokeTests
                 Check(view.Width == 640 && view.Height == 480 && view.Type() == MatType.CV_8UC1
                       && view.At<byte>(3, 5) == held.Pixels[3 * 640 + 5], "AsMat zero-copy view matches pixels");
 
+            // 표시 계약 — CamFrame 은 ICvPixelSource 이고 채널 수·스트라이드·길이가 그 계약을 만족한다.
+            // 표시 계층은 이 배열을 복사 없이 참조로 붙잡으므로(발행 뒤 불변), 계약이 깨지면 화면이 찢어진다.
+            ICvPixelSource ps = held;
+            Check(ps.Channels == 1 && ps.Stride >= ps.Width * ps.Channels && ps.Pixels.Length >= ps.Stride * ps.Height,
+                $"ICvPixelSource contract: ch={ps.Channels} stride={ps.Stride} len={ps.Pixels.Length}");
+            Check(ReferenceEquals(ps.Pixels, held.Pixels), "ICvPixelSource.Pixels is the frame's own array (reference-holdable, no copy)");
+            foreach (var (fmt, ch) in new[] { (CvInspect.Imaging.CamPixelFormat.Mono8, 1), (CvInspect.Imaging.CamPixelFormat.Bgr24, 3), (CvInspect.Imaging.CamPixelFormat.Bgra32, 4) })
+                Check(new CvInspect.Imaging.CamFrame(new byte[2 * 2 * ch], 2, 2, 2 * ch, fmt).Channels == ch, $"Channels({fmt}) == {ch}");
+
             // 9-2) 연속 그랩 — 프레임 수집 + GrabbingChanged 쌍
             var grabEvents = new List<bool>();
             var frames = 0;

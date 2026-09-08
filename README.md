@@ -107,6 +107,14 @@ first read (a BCL limitation), and `TypeDescriptor`-based grids reuse those inst
 the process lifetime. A grid that must follow a live language switch should re-translate
 via `CvCategoryAttribute.ScopedKey` + `CvLoc.T` rather than the cached `Category` string.
 
+## Pixel source contract
+
+`ICvPixelSource` is the core's small interop contract for 8-bit pixel buffers (`Pixels`, `Width`,
+`Height`, `Stride`, `Channels`). The core itself never consumes it; it exists so sibling packages
+can meet without referencing each other — `CvInspect.Imaging`'s `CamFrame` implements it and
+`CvInspect.Wpf`'s `CvDispCtrl` accepts it, holding the array by reference instead of copying.
+Implementations must treat `Pixels` as immutable once published.
+
 ## Logging
 
 The library never writes logs itself. Attach a sink once at startup:

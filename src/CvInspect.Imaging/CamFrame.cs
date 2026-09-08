@@ -6,11 +6,12 @@ namespace CvInspect.Imaging;
 /// <summary>
 /// 카메라가 발행하는 프레임 한 장 — GC 소유 byte[] 경계 타입.
 /// 수명 계약이 없다: 이벤트 밖으로 들고 나가든 다른 스레드(UI 디스패처 등)로 넘기든 안전하다.
-/// 검사·표시(Mat 세계)로는 <see cref="CamFrameMatExt.AsMat"/> 로 무복사 래핑해 넘긴다.
+/// 검사(Mat 세계)로는 <see cref="CamFrameMatExt.AsMat"/> 로 무복사 래핑해 넘기고, 표시로는 <see cref="ICvPixelSource"/> 로
+/// 그대로 건넨다 — 소비자가 배열을 참조로 붙잡으므로 <b>발행한 배열은 다시 쓰지 않는다</b>(어댑터 책임).
 /// 벤더 어댑터는 SDK 버퍼를 byte[] 로 실체화해 이 타입으로 발행한다 — Mat 경유가 편하면
 /// <see cref="FromMat"/> 을 쓴다.
 /// </summary>
-public sealed class CamFrame
+public sealed class CamFrame : ICvPixelSource
 {
     public CamFrame(byte[] pixels, int width, int height, int stride, CamPixelFormat format,
                     TimeSpan? deviceTimestamp = null)
@@ -35,6 +36,16 @@ public sealed class CamFrame
     /// 여기까지 흘려보내지 말고 빈틈없는 값으로 접어 넣는다.</summary>
     public int Stride { get; }
     public CamPixelFormat Format { get; }
+
+    /// <summary>1=Mono8, 3=Bgr24, 4=Bgra32 — <see cref="ICvPixelSource"/> 계약. 열거형에 새 포맷이 들어오면 여기서 던진다:
+    /// 조용히 4 로 접으면 표시가 엉뚱한 채널 수로 픽셀을 읽는다.</summary>
+    public int Channels => Format switch
+    {
+        CamPixelFormat.Mono8 => 1,
+        CamPixelFormat.Bgr24 => 3,
+        CamPixelFormat.Bgra32 => 4,
+        _ => throw new NotSupportedException($"CamPixelFormat.{Format} has no channel mapping."),
+    };
 
     /// <summary>이 객체가 만들어진 시각(UTC) — 즉 <b>호스트에 도착한 시각</b>이지 촬영 시각이 아니다.
     /// 전송과 대기열에 걸린 시간이 이미 지난 뒤의 값이다. 촬영 시각은 <see cref="DeviceTimestamp"/> 를 본다.</summary>

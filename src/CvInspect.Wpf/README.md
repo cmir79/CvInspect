@@ -43,7 +43,7 @@ dotnet add package OpenCvSharp4.runtime.win
 
 | Property | Type | Meaning |
 |---|---|---|
-| `Frame` | `Mat` | Frame to display; `null` shows a placeholder. Auto-fits when dimensions change. |
+| `Frame` | `Mat` or `ICvPixelSource` | Frame to display — a `Mat` is copied on assignment, an `ICvPixelSource` (e.g. `CamFrame` from CvInspect.Imaging) is held by reference. `null` shows a placeholder. Auto-fits when dimensions change. |
 | `Overlay` | `ViOverlay` | Result graphics (segments, labels, rects, polylines); replace the reference to refresh. |
 | `Shapes` | `IReadOnlyList<CvEditShape>` | Editable teaching shapes; drag edits raise `Changed` immediately. |
 | `GrabCommand` / `ContinuousCommand` / `StopCommand` | `ICommand` | Camera actions behind the 📸 / ⏯️ toolbar buttons. |
@@ -53,9 +53,19 @@ dotnet add package OpenCvSharp4.runtime.win
 
 ## Frame lifetime
 
-`CvDispCtrl` **copies the pixels** of an assigned `Frame` into its own buffer, so the host may
-`Dispose()` the `Mat` right after setting the property. Supported formats: `CV_8UC1` (Gray8),
-`CV_8UC3` (Bgr24), `CV_8UC4` (Bgra32); other formats show the no-image placeholder.
+`Frame` accepts two kinds of value, with different lifetime rules:
+
+- **`Mat`** — `CvDispCtrl` **copies the pixels** into its own buffer, so the host may `Dispose()`
+  the `Mat` right after setting the property. That copy is the price of a type that can be
+  disposed underneath the control.
+- **`ICvPixelSource`** (the core contract, implemented by `CamFrame` in CvInspect.Imaging) — the
+  control **holds the pixel array by reference** and copies it only once, into the WPF back
+  buffer. This relies on the contract that `Pixels` is immutable once published; a source that
+  recycles its buffer must not implement it.
+
+Supported formats either way: 8-bit with 1 (Gray8), 3 (Bgr24) or 4 (Bgra32) channels; anything
+else shows the no-image placeholder. A value of any other type also shows the placeholder and
+logs a warning through `CvLog`.
 
 The `Mat` passed to `LoadFrameCommand` is **owned by the receiver** — the view-model disposes it
 when done (typically after assigning it back to `Frame`).

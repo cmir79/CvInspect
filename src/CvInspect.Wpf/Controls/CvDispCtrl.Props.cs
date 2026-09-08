@@ -12,16 +12,39 @@ namespace CvInspect.Controls;
 public sealed partial class CvDispCtrl
 {
     public static readonly DependencyProperty FrameProperty = DependencyProperty.Register(
-        nameof(Frame), typeof(Mat), typeof(CvDispCtrl),
-        new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d)._surface.SetFrame((Mat?)e.NewValue)));
+        nameof(Frame), typeof(object), typeof(CvDispCtrl),
+        new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d).OnFrameChanged(e.NewValue)));
 
-    /// <summary>표시할 프레임 — null 이면 빈 화면. 치수 변경 시 자동 Fit.
-    /// 할당 시점에 픽셀이 서피스 자체 버퍼로 복사되므로 이후 호스트가 Mat 을 dispose 해도 안전하다
-    /// (dispose 된 Mat 을 새로 할당하는 것은 불가). 지원 포맷: CV_8UC1/CV_8UC3/CV_8UC4 — 그 외는 빈 화면.</summary>
-    public Mat? Frame
+    /// <summary>표시할 프레임 — <see cref="Mat"/> 또는 <see cref="ICvPixelSource"/>(취득 프레임 등). null 이면 빈 화면. 치수 변경 시 자동 Fit.
+    /// Mat 은 할당 시점에 픽셀이 서피스 자체 버퍼로 복사되므로 이후 호스트가 dispose 해도 안전하다(dispose 된 Mat 을 새로 할당하는 것은 불가).
+    /// ICvPixelSource 는 복사하지 않고 배열 참조를 붙잡는다 — 그 계약("발행 뒤 불변")이 이를 보장하며, 프레임당 복사는 WPF 백버퍼로
+    /// 가는 한 번뿐이다. 지원 포맷: 8비트 1/3/4채널(CV_8UC1/CV_8UC3/CV_8UC4) — 그 외는 빈 화면. 두 타입이 아닌 값도 빈 화면(경고 로그).
+    /// <see cref="Overlay"/>·<see cref="Shapes"/> 처럼 object 로 받는 이유: 바인딩 소스가 표시 계층의 구체 타입에 묶이지 않게 한다.</summary>
+    public object? Frame
     {
-        get => (Mat?)GetValue(FrameProperty);
+        get => GetValue(FrameProperty);
         set => SetValue(FrameProperty, value);
+    }
+
+    private void OnFrameChanged(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                _surface.SetFrame((Mat?)null);
+                break;
+            case Mat mat:
+                _surface.SetFrame(mat);
+                break;
+            case ICvPixelSource src:
+                _surface.SetFrame(src);
+                break;
+            default:
+                CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
+                    $"Frame ignored: expected Mat or ICvPixelSource, got {value.GetType().FullName}.");
+                _surface.SetFrame((Mat?)null);
+                break;
+        }
     }
 
     public static readonly DependencyProperty OverlayProperty = DependencyProperty.Register(
