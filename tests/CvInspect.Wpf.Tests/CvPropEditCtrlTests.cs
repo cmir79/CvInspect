@@ -91,6 +91,19 @@ public class CvPropEditCtrlTests
     });
 
     [Fact]
+    public void TipLeadsWithTheLabelThenTheDescription() => RunSta(() =>
+    {
+        // 라벨은 좁은 판에서 말줄임으로 잘리는 쪽이다 — 툴팁은 라벨 전문으로 시작하고, 설명이 있으면 그 아래 붙는다.
+        CvLoc.Culture = "en";
+        var ctrl = new CvPropEditCtrl { Source = new CvPatternOpt() };
+        var rows = ctrl.Groups.SelectMany(g => g.Rows).ToList();
+        Check(rows.Count > 0 && rows.All(r => r.Tip.StartsWith(r.Label + (r.Desc.Length > 0 ? "\n" : ""), StringComparison.Ordinal)), "every tip starts with the full label");
+        Check(rows.Where(r => r.Desc.Length > 0).All(r => r.Tip.EndsWith("\n" + r.Desc, StringComparison.Ordinal)), "a description follows the label on its own line");
+        Check(rows.Where(r => r.Desc.Length == 0).All(r => r.Tip == r.Label), "no description — the tip is just the label");
+        Check(rows.Any(r => r.Desc.Length > 0), "the sample option has described rows, so the description branch was exercised");
+    });
+
+    [Fact]
     public void DefaultRecipeMeasuresTheSyntheticPart()
     {
         // 예제 README 가 약속한 것: 기준 자세의 합성 판에서(픽스처 미학습이라 티칭 기하 그대로) 윗변은 수평(0°),

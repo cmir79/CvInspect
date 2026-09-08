@@ -10,13 +10,27 @@
     <SolidColorBrush x:Key="CvPropDescBrush" Color="#FF808080" />
     <SolidColorBrush x:Key="CvPropHeaderBrush" Color="#FF1565C0" />
 
-    <!-- 라벨 툴팁 — 설명(없으면 라벨 원문). x:Shared=False: ToolTip 은 시각 요소라 행마다 새 인스턴스 필요 -->
+    <!-- 라벨 툴팁 — 라벨 전문(굵게)을 첫 줄로, 설명이 있으면 그 아래. 라벨은 좁은 판에서 잘리는 쪽이라 툴팁에 꼭 실어야 한다.
+         x:Shared=False: ToolTip 은 시각 요소라 행마다 새 인스턴스 필요 -->
     <ToolTip x:Key="RowTip" x:Shared="False" MaxWidth="400">
-      <TextBlock Text="{Binding Tip}" TextWrapping="Wrap" />
+      <StackPanel>
+        <TextBlock Text="{Binding Label}" FontWeight="SemiBold" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding Desc}" TextWrapping="Wrap" Margin="0,3,0,0">
+          <TextBlock.Style>
+            <Style TargetType="TextBlock">
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Desc}" Value="">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </TextBlock.Style>
+        </TextBlock>
+      </StackPanel>
     </ToolTip>
 
     <!-- 행 라벨 — SharedSizeGroup(PropLabel)으로 그룹 전체 폭 자동 정렬, 과대 라벨만 말줄임.
-         툴팁이 설명을 상시 전달하므로 캡션(ShowDesc)을 꺼도 설명 접근이 끊기지 않는다 -->
+         툴팁이 라벨 전문과 설명을 상시 전달하므로 잘린 라벨도, 캡션(ShowDesc)을 꺼도 접근이 끊기지 않는다 -->
     <Style x:Key="PropRowLabel" TargetType="TextBlock">
       <Setter Property="MaxWidth" Value="170" />
       <Setter Property="VerticalAlignment" Value="Center" />

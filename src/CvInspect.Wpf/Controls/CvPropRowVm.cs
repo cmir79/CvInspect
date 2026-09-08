@@ -49,8 +49,10 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
     /// <summary>행 아래 상시 캡션에 보일 설명 — ShowDesc 가 꺼지면 비어 있다.</summary>
     public string InlineDesc { get; internal set; } = string.Empty;
 
-    /// <summary>라벨 툴팁 — 설명이 있으면 설명(값 범위·단위의 유일한 저장소), 없으면 잘린 라벨 대비 원문.</summary>
-    public string Tip => Desc.Length > 0 ? Desc : Label;
+    /// <summary>라벨 툴팁 원문 — 라벨이 첫 줄, 설명이 있으면 그 아래. 라벨은 좁은 판에서 말줄임으로 잘리는 쪽이라
+    /// 사용자가 툴팁을 띄우는 이유의 절반은 라벨 전문이고(설명은 캡션으로 이미 보이는 경우가 많다), 캡션을 끈 호스트에서는
+    /// 설명의 유일한 통로다. XAML 은 두 줄을 따로 꾸미고, 이 문자열은 텍스트로 쓰는 호스트 몫이다.</summary>
+    public string Tip => Desc.Length > 0 ? Label + "\n" + Desc : Label;
 
     public bool IsReadOnly { get; internal set; }
     public bool IsEditable => !IsReadOnly;
