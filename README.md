@@ -73,7 +73,7 @@ The Windows `OpenCvSharp4.Windows` meta-package also works. Either way, the Wind
 runtime ships an `opencv_videoio_ffmpeg` codec that is LGPL-2.1 — the meta-package pulls in
 `OpenCvSharp4.runtime.win`, so picking the runtime package directly carries the same codec.
 Choosing the runtime is deliberately left to you; see
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[THIRD-PARTY-NOTICES.md](https://github.com/cmir79/CvInspect/blob/main/THIRD-PARTY-NOTICES.md).
 
 **If you do not want that codec in your output**, drop it during the build. Only
 `CvInspect.Imaging`'s `VideoCaptureCam` (video-file playback) needs it, and `videoio` is
@@ -165,7 +165,7 @@ configure it to skip delegate-typed members.
 - `samples/CvInspect.Demo` — a WPF window that wires everything together: `VirtualCam` playing a
   synthetic part, `CvDispCtrl` showing the `CamFrame` directly, draggable search shapes, the
   `CvPropEditCtrl` parameter editor, and a line, circle and blob inspection drawn as an overlay
-  ([screenshot](samples/CvInspect.Demo/screenshot.png)).
+  ([screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png)).
 - `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and
   dumps what the adapter sees (transport statistics, frame geometry, saved frames).
 
@@ -214,9 +214,9 @@ Read these before adopting — they are real, and they are not going away soon.
 - **Comments are Korean.** READMEs are English; XML documentation (what IntelliSense shows) is
   Korean. Contributions in either language are fine.
 - **The native OpenCV runtime is your choice** and the Windows runtime bundles an LGPL ffmpeg
-  codec — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+  codec — see [THIRD-PARTY-NOTICES.md](https://github.com/cmir79/CvInspect/blob/main/THIRD-PARTY-NOTICES.md).
 
 ## License
 
 Apache-2.0. Not affiliated with OpenCV or OpenCvSharp.
-Dependency licences and trademark notes: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Dependency licences and trademark notes: [THIRD-PARTY-NOTICES.md](https://github.com/cmir79/CvInspect/blob/main/THIRD-PARTY-NOTICES.md).
