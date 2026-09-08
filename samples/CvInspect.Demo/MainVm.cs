@@ -296,6 +296,19 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         if (rerun) Rerun();
     }
 
+    /// <summary>편집기에서 값을 고친 뒤 — 선택한 툴의 도형을 Opt 에서 다시 만든다. 도형은 만들 때의 Opt 를 굳힌 것이라
+    /// 숫자를 고쳐도 따라오지 않고, 크롭·탐색 영역 같은 스위치(UseCrop·UseSearchRegion)를 켜면 도형 자체가 새로 생겨야 한다.
+    /// 도형 드래그 콜백에서는 부르지 않는다 — 드래그 중에 도형을 갈아 끼우면 잡고 있던 것이 사라진다.</summary>
+    public void OptEdited()
+    {
+        if (SelectedTool is { } t)
+        {
+            _shapeCache.Remove(t);
+            Shapes = ShapesOf(t);
+        }
+        MarkDirty(rerun: true);
+    }
+
     private void Show(CamFrame frame)
     {
         _last = frame;
