@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- CvDispCtrl 을 창 없이 오프스크린으로 그려 픽셀을 세는 묶음. WPF 라 Windows 에서만 빌드·실행된다 —
+         다른 OS 에서는 tests/CvInspect.Tests 만 돌린다. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CvInspect.Wpf\CvInspect.Wpf.csproj" />
+    <ProjectReference Include="..\..\src\CvInspect.Imaging\CvInspect.Imaging.csproj" />
+    <!-- 네이티브 런타임은 소비자가 고른다는 계약의 실증 — 테스트도 소비자다 (Mat 경로 비교에 필요) -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+</Project>

@@ -143,6 +143,11 @@ defect that was actually observed — Bayer phase parity, packed-format bit dept
 bounds, reconnect invariants, exposure-grid snapping — so a failure message states why that case
 exists. It needs no camera and no network.
 
+`tests/CvInspect.Wpf.Tests` renders `CvDispCtrl` off-screen (no window) and compares pixels: the
+`ICvPixelSource` path against the `Mat` path, row padding, and what happens when the pixel
+contract is violated. It is WPF, so it builds and runs on Windows only — on other platforms run
+the core suite alone with `dotnet test tests/CvInspect.Tests`.
+
 ## License
 
 Apache-2.0. Not affiliated with OpenCV or OpenCvSharp.
