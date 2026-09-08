@@ -24,8 +24,9 @@ public sealed record UsbCamInfo(int Index, string Name, string VendorId, string 
 /// (<c>USB\VID_046D&amp;PID_082D\5&amp;2C1F7A8&amp;0&amp;0001</c>) · Linux by-id 이름. 같은 모델 두 대는 VID/PID 로 못 가르므로
 /// 그때는 인스턴스 식별자를 적는다 — 후보가 둘 이상이면 조용히 첫 것을 열지 않고 예외로 목록을 보여 준다.
 ///
-/// <b>검증 상태.</b> Windows: SetupAPI 열거 순번이 OpenCV 인덱스와 일치한다는 것은 이 코드의 원형이 웹캠 두 대짜리 설비
-/// PC 에서 실증한 것이다(WMI 의 순서는 맞지 않았다). 이 이식본 자체는 아직 다중 카메라 PC 에서 다시 돌려 보지 않았다.
+/// <b>검증 상태.</b> Windows: 서로 다른 모델 두 대(내장 + 외장)를 꽂은 Windows 11 PC 에서 이 이식본으로 실측 — SetupAPI 열거
+/// 순번이 ANY·DSHOW·MSMF 세 백엔드 모두에서 OpenCV 인덱스와 일치했고 VID/PID 로 연 것이 그 카메라였다(원형도 웹캠 두 대짜리
+/// 설비에서 실증됐고, WMI 의 순서는 맞지 않았다). 같은 모델 두 대(인스턴스 ID 경로)와 핫 재연결은 아직 안 쟀다.
 /// Linux: 하드웨어에서 돌려 보지 않았다 — 합성 sysfs 트리 회귀만 있다. macOS: 미지원(예외).
 /// </summary>
 public static class UsbCamId

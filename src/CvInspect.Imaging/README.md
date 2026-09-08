@@ -81,7 +81,7 @@ ids. `UsbCamId.Enumerate()` gives you the same list programmatically. `UserSetti
 
 | OS | How | Verified |
 |---|---|---|
-| Windows | SetupAPI enumeration of `KSCATEGORY_VIDEO`; the enumeration position is the OpenCV index | The code this was ported from ran on a two-webcam production PC; **this port has not yet been re-run on a multi-camera PC** |
+| Windows | SetupAPI enumeration of `KSCATEGORY_VIDEO`; the enumeration position is the OpenCV index | **Verified** on a Windows 11 PC with two cameras of different models (built-in + external): the enumeration position matched the OpenCV index for the ANY, DSHOW and MSMF backends alike, and opening by VID/PID returned the right camera. The code it was ported from also ran on a two-webcam production line. Not yet exercised: identical models (instance-id path), hot re-plug |
 | Linux | `/sys/class/video4linux` + `device/modalias` for VID/PID, `/dev/v4l/by-id` for the instance; opens by `/dev/videoN` path, so ordering never matters | **Not run on hardware** — only a synthetic-sysfs regression. `net8.0` asset only (symlink resolution) |
 | macOS | — | **Unsupported**: `Enumerate()` throws; use `VideoSource` with an index |
 
