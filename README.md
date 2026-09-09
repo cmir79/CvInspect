@@ -97,7 +97,9 @@ Choosing the runtime is deliberately left to you; see
 
 **If you do not want that codec in your output**, drop it during the build. Only
 `CvInspect.Imaging`'s `VideoCaptureCam` (video-file playback) needs it, and `videoio` is
-demand-loaded, so everything else keeps working without it. Two targets are required, because
+demand-loaded, so everything else keeps working without it — USB webcams included, since they go
+through the Media Foundation / DirectShow backends inside the main native library (the demo's
+single-file exe ships without the codec and streams a webcam). Two targets are required, because
 the publish list and the build output are separate item flows — removing from one leaves the
 file in the other:
 
@@ -123,8 +125,11 @@ file in the other:
 </Project>
 ```
 
-Measured on this repository's own sample (`samples/CvInspect.GevProbe`): publish output drops
-from 95 MB to 68 MB and `bin\` no longer carries the codec.
+Measured on this repository's own samples: `samples/CvInspect.GevProbe`'s publish output drops
+from 95 MB to 68 MB and `bin\` no longer carries the codec; the demo's self-contained single-file
+exe extracts only `OpenCvSharpExtern.dll` (verified with `DOTNET_BUNDLE_EXTRACT_BASE_DIR`). The
+bundled `deps.json` still names the codec as a package asset, so a byte search of the exe finds the
+file name — that is the manifest, not the file.
 
 ## Targets
 

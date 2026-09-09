@@ -26,9 +26,12 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
   </ItemGroup>
 
-  <!-- 루트 README 의 "LGPL 코덱 빼기" 레시피 그대로. 이 예제는 이미지를 ImDecode 로만 읽고 동영상(videoio)은 쓰지
-       않으므로 27MB 짜리 opencv_videoio_ffmpeg 를 게시물에서 뺀다. 게시 목록과 빌드 출력이 서로 다른 항목으로
-       흐르므로 타깃이 둘이고, 게시 쪽은 단일파일 번들 목록이 확정되는 ComputeResolvedFilesToPublishList 뒤여야 한다. -->
+  <!-- 루트 README 의 "LGPL 코덱 빼기" 레시피 그대로. ffmpeg 플러그인은 videoio 의 동영상 파일·스트림 백엔드다 — 이 예제는
+       이미지를 ImDecode 로 읽고, 웹캠은 OpenCvSharpExtern 안의 MSMF/DirectShow 백엔드로 여니 27MB 짜리
+       opencv_videoio_ffmpeg 를 게시물에서 뺀다(빠진 채로 웹캠 라이브 실측 확인). 게시 목록과 빌드 출력이 서로 다른
+       항목으로 흐르므로 타깃이 둘이고, 게시 쪽은 단일파일 번들 목록이 확정되는 ComputeResolvedFilesToPublishList 뒤여야
+       한다. 단일 파일 exe 의 deps.json 에는 패키지 자산으로 그 이름이 여전히 적혀 있지만(파일은 없음) 아무 문제 없다 —
+       exe 바이트에서 이름을 찾았다고 실려 있다고 오독하지 말 것. 실제 수록 여부는 DOTNET_BUNDLE_EXTRACT_BASE_DIR 로 풀어 본다. -->
   <Target Name="DropVideoCodecFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
