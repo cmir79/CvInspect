@@ -357,8 +357,9 @@ public sealed class GevCam : ICam
         var nodes = _nodes!;
 
         // 새로 찍기 전에 남은 것을 버린다 — 안 버리면 이 그랩이 옛 프레임을 가져간다.
-        if (DrainStream(stream) is var dropped and > 0)
-            WriteLog(CvLogLevel.Debug, $"discarded {dropped} queued frame(s) before grabbing a fresh one");
+        if (DrainStream(stream, out var drainedUpTo) is var dropped and > 0)
+            WriteLog(CvLogLevel.Debug,
+                $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");
 
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
         await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
@@ -433,8 +434,10 @@ public sealed class GevCam : ICam
                 Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
 
             // 멈춘 뒤에 대기열을 비운다 — 남겨 두면 다음 단발 그랩이 그것을 가져간다.
-            if (stopped && _stream != null && DrainStream(_stream) is var left and > 0)
-                WriteLog(CvLogLevel.Debug, $"discarded {left} frame(s) left in the queue when acquisition stopped");
+            // 펌프를 세운 다음이라야 배수가 수신과 겹치지 않는다 — 이 자리를 락 밖으로도, 정지 앞으로도 옮기지 않는다.
+            if (stopped && _stream != null && DrainStream(_stream, out var drainedUpTo) is var left and > 0)
+                WriteLog(CvLogLevel.Debug,
+                    $"discarded {left} frame(s) left in the queue when acquisition stopped (up to frame {drainedUpTo})");
         }
         if (stopped)
         {
@@ -596,20 +599,24 @@ public sealed class GevCam : ICam
     /// 새로 찍은 것이 아니라 그 옛것을 가져간다 — 화면이라면 한 장 늦은 그림이지만
     /// <b>검사라면 이전 대상을 판정한다.</b> 예외도 경고도 없이 조용히 틀린다.
     /// </summary>
-    /// <remarks>취득 라이브러리에 같은 일을 하는 <c>DiscardQueuedFrames()</c> 가 있지만 쓰지 않는다 —
-    /// 그쪽은 몇 장 버렸는지만 알려 주고 <b>무엇을 버렸는지는 알려 주지 않는다.</b> 우리가 일부러 버린
-    /// 프레임의 번호를 기준에 반영하지 않으면, 다음 프레임이 "카메라가 보냈는데 안 온 것" 으로 잡혀
-    /// 우리가 만든 배수가 스스로 거짓 경보를 낸다.</remarks>
-    private int DrainStream(GevStream stream)
+    /// <remarks>비우는 절차는 취득 라이브러리 것을 쓴다 — 버린 장수와 <b>마지막으로 버린 프레임 번호</b>를
+    /// 함께 준다. 손으로 하나씩 꺼내면 프레임마다 Dispose 를 지켜야 버퍼가 풀로 돌아오는데, 그 하나를
+    /// 빠뜨리면 비우려던 것이 오히려 취득을 굶긴다. 이미 접힌 대기열에서는 꺼내기가 예외까지 던진다.
+    ///
+    /// 버린 프레임의 번호는 <b>기준에 올려 둔다</b> — 안 올리면 다음 프레임이 "카메라가 보냈는데 안 온 것"
+    /// 으로 잡혀 우리가 만든 배수가 스스로 거짓 경보를 낸다(<see cref="GevCamHealth"/> 의 미도착 계수).
+    /// 기준은 <b>내려가지 않게 큰 쪽만</b> 남긴다: 버린 것이 없으면 번호가 0 으로 오고, 장치가 촬영을 다시
+    /// 시작해 번호를 처음부터 세면 버린 번호가 기준보다 작게 온다.
+    ///
+    /// 여기서 비워지는 것은 <b>대기열에 든 완성 프레임뿐이다.</b> 조립 중이던 것은 그대로 남아 이 호출 뒤에
+    /// 완성되고, 이미 기다리고 있는 수신자에게는 대기열을 거치지 않고 바로 건네진다 — 그 갈래는 단발
+    /// 그랩의 번호 가드가 막는다.</remarks>
+    /// <param name="stream">비울 스트림.</param>
+    /// <param name="lastDiscardedFrameId">버린 것 가운데 마지막 프레임의 장치 번호. 버린 것이 없으면 0.</param>
+    private int DrainStream(GevStream stream, out ulong lastDiscardedFrameId)
     {
-        var dropped = 0;
-        while (stream.TryReceive(out var stale) && stale != null)
-        {
-            // 버린 것도 지나간 프레임이다 — 기준을 올려 두지 않으면 다음 프레임이 "건너뛴 것" 으로 잡힌다.
-            if (stale.FrameId > _lastEmittedFrameId) _lastEmittedFrameId = stale.FrameId;
-            stale.Dispose();
-            dropped++;
-        }
+        var dropped = stream.DiscardQueuedFrames(out lastDiscardedFrameId);
+        if (lastDiscardedFrameId > _lastEmittedFrameId) _lastEmittedFrameId = lastDiscardedFrameId;
         return dropped;
     }
 
