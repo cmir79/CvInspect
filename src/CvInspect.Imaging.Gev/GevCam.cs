@@ -287,13 +287,28 @@ public sealed class GevCam : ICam
 
     public void Close()
     {
+        bool closed;
         lock (_sync)
         {
-            if (_disposed || _dev is null) return;
-            StopPumpCore();
-            Run(CloseCoreAsync, CancellationToken.None);
-            IsConnected = false;
+            if (_disposed) return;
+            closed = CloseWhileLocked();
         }
+        if (closed) RaiseClosed();
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 열려 있었으면 정리하고 <c>true</c>.</summary>
+    private bool CloseWhileLocked()
+    {
+        if (_dev is null) return false;
+        StopPumpCore();
+        Run(CloseCoreAsync, CancellationToken.None);
+        IsConnected = false;
+        return true;
+    }
+
+    /// <summary>닫힘 통지 — <b>락 밖에서</b> 부른다. 핸들러가 이 카메라를 다시 부를 수 있다.</summary>
+    private void RaiseClosed()
+    {
         GrabbingChanged?.Invoke(this, false);
         ConnectionChanged?.Invoke(this, new ConnArgs(false));
         WriteLog(CvLogLevel.Info, "closed");
@@ -327,28 +342,53 @@ public sealed class GevCam : ICam
         }
     }
 
+    /// <summary>
+    /// 닫고 버린다. <b>정리를 먼저 하고 표시를 나중에 한다</b> — 순서가 뒤집히면 정리 경로가 자기
+    /// "버려졌음" 검사에 걸려 아무것도 하지 않고 돌아간다. 그러면 장치가 열린 채 남아 제어권이
+    /// 하트비트가 만료될 때까지 잡히고(다음 열기가 "다른 응용이 잡고 있다" 로 실패한다), 스트림 소켓도
+    /// 반납되지 않으며, 수신 펌프는 배경 스레드라 프로세스가 끝날 때까지 프레임을 계속 발행한다.
+    /// </summary>
     public void Dispose()
     {
+        bool closed;
         lock (_sync)
         {
             if (_disposed) return;
+            closed = CloseWhileLocked();
             _disposed = true;
         }
-        Close();
+        if (closed) RaiseClosed();
     }
 
     /// <summary>제어권 상실 — 하트비트가 끊겼거나 다른 응용이 카메라를 가져갔다. 스레드풀에서 오고
     /// 이 통지 뒤 장치는 못 쓴다. 되살리는 것은 상위 몫이다(<c>ReconnectingCam</c> 으로 감싸면 자동).</summary>
+    /// <summary>
+    /// 제어권 상실 통지. <b>여기서 수신 펌프를 접는다.</b>
+    ///
+    /// 제어를 잃어도 스트림은 닫히지 않는다 — 취득 계층에서 수신 대기는 큐가 닫힐 때까지 풀리지 않으므로,
+    /// 접지 않으면 펌프 스레드가 그대로 살아 <b>연결이 끊겼다고 알린 뒤에도 프레임을 계속 발행한다.</b>
+    /// 그리고 펌프 참조가 남아 있는 동안 <see cref="GrabOne"/> 과 <see cref="StartContinuous"/> 는
+    /// "이미 연속 취득 중" 으로 읽혀 <b>예외도 로그도 없이 조용히 돌아간다</b> — 부른 쪽은 오지 않을
+    /// 프레임을 시한이 다 될 때까지 기다린다.
+    ///
+    /// 접고 나면 <see cref="IsGrabbing"/> 이 방금 낸 <see cref="GrabbingChanged"/> 와 같은 말을 하고,
+    /// 그 뒤의 그랩은 장치가 던지는 제어 상실 예외로 <b>시끄럽게</b> 실패한다.
+    ///
+    /// 이 통지는 취득 계층이 스레드 풀에서 올린다 — 수신 펌프 자신이 아니므로 여기서 펌프를 기다려도
+    /// 자기 자신을 기다리지 않는다(그 경우도 <see cref="StopPumpCore"/> 가 따로 막는다).
+    /// </summary>
     private void OnControlLost(GevDevice dev, Exception? ex)
     {
+        bool wasGrabbing;
         lock (_sync)
         {
             if (!ReferenceEquals(dev, _dev)) return;   // 이미 교체·정리된 세션의 늦은 통지
             if (!IsConnected) return;
             IsConnected = false;
+            wasGrabbing = StopPumpCore();
         }
         WriteLog(CvLogLevel.Warning, "control lost", ex);
-        GrabbingChanged?.Invoke(this, false);
+        if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
         ConnectionChanged?.Invoke(this, new ConnArgs(false));
     }
 
