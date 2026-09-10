@@ -15,15 +15,25 @@ public interface ICam : IDisposable
 {
     string Name { get; }
     string ComType { get; }
+    /// <summary>장치와 대화할 수 있는가. <b>구현이 스스로 잃은 것도 반영한다</b> — 사용자가 닫지 않았어도
+    /// 제어권을 빼앗기거나 링크가 끊기면 거짓이 되고 <see cref="ConnectionChanged"/> 가 뒤따른다.</summary>
     bool IsConnected { get; }
+
+    /// <summary>연속 취득이 <b>지금 실제로 돌고 있는가</b> — 사용자가 그렇게 시키려 했는가가 아니다.
+    /// 어떤 이유로든 멈추면(정지 호출, 제어권 상실, 장치 사망) 거짓이고, 마지막으로 낸
+    /// <see cref="GrabbingChanged"/> 와 <b>같은 말을 해야 한다</b>. 둘이 갈리면 부른 쪽은 어느 쪽을 믿느냐로
+    /// 동작이 갈리고, 그 차이는 구현을 감싸는 것만으로 드러난다. <b>의도를 기억하는 것은 감싸는 쪽 몫이다.</b></summary>
     bool IsGrabbing { get; }
 
     /// <summary>완전한 프레임만 발행한다 — 전송 손상·부분 수신 프레임은 구현체가 드롭하고
     /// <see cref="CvLog"/> 로 경고한다 (불완전 데이터가 검사 판정에 섞이는 것 방지).</summary>
     event EventHandler<CamFrame>? FrameAcquired;
+    /// <summary>연결 상태 변화 알림. 사용자가 닫아서 나기도 하고, <b>구현이 제어권을 잃어서</b> 나기도 한다.</summary>
     event EventHandler<ConnArgs>? ConnectionChanged;
 
-    /// <summary>IsGrabbing 상태 변화 알림 (true: continuous 시작 / false: 정지).</summary>
+    /// <summary><see cref="IsGrabbing"/> 변화 알림 (true: 연속 시작 / false: 정지).
+    /// 정지는 사용자가 시켜서만 나지 않는다 — <b>제어권을 잃어 취득이 끊긴 경우도 false 다.</b>
+    /// <b>전이일 때만 낸다</b>: 돌고 있지 않던 것이 멈췄다고 알리지 않는다.</summary>
     event EventHandler<bool>? GrabbingChanged;
 
     void Open();
@@ -33,19 +43,34 @@ public interface ICam : IDisposable
     /// 한 장 취득 — <b>이 호출 뒤에 오는 프레임을 낸다.</b>
     /// 실시간 장치라면 이 호출 뒤에 찍힌 것이고, 파일 재생이라면 순서상 다음 것이다.
     ///
+    /// <b>규정: 부른 쪽이 자기 호출의 답이 아닌 프레임을 받게 두지 않는다. 답할 수 없는 호출은 부른 쪽이
+    /// 볼 수 있게 실패한다.</b> 아래 셋은 그 한 줄의 갈래다.
+    ///
     /// 구현은 <b>앞선 연속 취득이 남긴 프레임을 대신 내주면 안 된다.</b> 연속 취득을 멈춘 직후에는 취득 계층에
     /// 프레임이 남아 있기 쉬운데, 그것을 그대로 내면 화면에서는 한 장 늦은 그림이지만
     /// <b>검사에서는 이전 대상을 판정한다</b> — 예외도 경고도 없이 조용히 틀린다.
     /// 남은 것은 버리고 새로 받는다.
     ///
-    /// 연속 취득 중이면 그 흐름이 이미 프레임을 내고 있으므로 아무것도 하지 않아도 된다.
+    /// <b>연속 취득이 도는 중에 부르는 것은 프로그래밍 오류다 — <see cref="InvalidOperationException"/> 을
+    /// 던진다.</b> 프레임은 이벤트로 오므로, 스트림이 흐르는 동안에는 부른 쪽이 받은 장이 자기 호출의 답인지
+    /// 그저 흘러가던 것인지 가릴 방법이 없다. 실제로 그 자리에 자유 실행 프레임이 들어와 <b>다른 대상을
+    /// 판정하고도 아무 신호가 남지 않은 일이 있었다.</b> 먼저 <see cref="StopContinuous"/> 를 부른다.
+    ///
+    /// 반대로 <b>장치가 없어 애초에 답할 수 없는 구현은 던지지 않고 경고만 남긴다</b>(<see cref="DeadCam"/>).
+    /// 그 경우 프레임이 <b>오지 않는 것</b>으로 끝나 부른 쪽의 시한이 그것을 본다. 규정을 어기는 것은
+    /// "틀린 것이 오는" 쪽이지 "아무것도 안 오는" 쪽이 아니다 — 두 규정이 어긋나 보였던 이유가 이 구분이다.
     /// </summary>
+    /// <exception cref="InvalidOperationException">연속 취득이 도는 중에 불렀다.</exception>
     void GrabOne();
 
     void StartContinuous();
 
     /// <summary>연속 취득 중지. 구현은 <b>남아 있는 프레임을 버린다</b> — 다음 <see cref="GrabOne"/> 이
-    /// 그것을 집어 가지 않게. (<see cref="GrabOne"/> 참조)</summary>
+    /// 그것을 집어 가지 않게. (<see cref="GrabOne"/> 참조)
+    ///
+    /// <b>이 호출이 돌아오면 <see cref="FrameAcquired"/> 도 끝난 것으로 본다.</b> 다만 발행은 부른 쪽의
+    /// 핸들러 안에서 이뤄지므로, <b>그 핸들러가 오래 붙잡고 있으면 구현이 기다리기를 포기하고 한 장이 더
+    /// 나갈 수 있다.</b> 트리거마다 판정하는 쪽은 그 한 장을 흘려보낼 여지를 두는 편이 안전하다.</summary>
     void StopContinuous();
 
     /// <summary>노출 시간 설정 (마이크로초). 소스가 지원하지 않으면 무시하고 로그만 남긴다.</summary>

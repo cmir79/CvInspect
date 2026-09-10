@@ -423,7 +423,12 @@ public sealed class GevCam : ICam
         {
             ThrowIfDisposed();
             var stream = EnsureOpen();
-            if (_pump != null) return;   // 연속 취득 중이면 그 흐름이 이미 프레임을 낸다
+            // 연속 취득 중에는 답할 수 없다 — 흐르는 장과 이 호출의 답을 부른 쪽이 가릴 수 없다.
+            // 조용히 돌아가면 그 자리에 자유 실행 프레임이 들어와 다른 대상을 판정한다.
+            if (_pump != null)
+                throw new InvalidOperationException(
+                    "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
+                    "stream's. Call StopContinuous() first.");
             Run(ct => GrabOnceAsync(stream, ct));
         }
     }

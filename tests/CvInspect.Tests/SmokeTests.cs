@@ -720,6 +720,35 @@ public class SmokeTests
     }
     }
 
+    /// <summary>연속 취득 중의 단발 그랩은 답할 수 없는 호출이다 — 조용히 무동작이면 자유 실행 프레임이
+    /// 그 자리에 들어와 다른 대상을 판정한다.</summary>
+    [Fact]
+    public void GrabOneDuringContinuousThrows()
+    {
+    // === 9-C) 취득 계약 — 연속 중 GrabOne 은 던진다 ===
+    {
+        var opt = new CvInspect.Imaging.CamOpt { ComType = "Virtual", IsColor = false };
+        using var cam = CvInspect.Imaging.CamFactory.Create(opt);
+        cam.Open();
+
+        // 정지 상태에서는 답할 수 있다 — 던지지 않는다.
+        cam.GrabOne();
+
+        cam.StartContinuous();
+        Check(cam.IsGrabbing, "IsGrabbing is true while continuous acquisition runs");
+
+        // 이 저장소의 결함 하나가 여기 있었다: 조용히 돌아가면 부른 쪽은 자기 호출의 답 대신
+        // 흘러가던 프레임을 받고, 티칭 조명으로 찍힌 다른 대상을 판정하고도 아무 신호가 남지 않는다.
+        Assert.Throws<InvalidOperationException>(() => cam.GrabOne());
+
+        cam.StopContinuous();
+        Check(!cam.IsGrabbing, "IsGrabbing is false after StopContinuous");
+
+        // 멈추면 다시 답할 수 있다 — 규정은 "연속 중" 에만 걸린다.
+        cam.GrabOne();
+    }
+    }
+
     /// <summary>프레임 번호는 되돌이를 돈다 — 크기 비교로는 되돌이 뒤 프레임이 전부 옛것이 된다.</summary>
     [Fact]
     public void FrameIdWrapAround()
