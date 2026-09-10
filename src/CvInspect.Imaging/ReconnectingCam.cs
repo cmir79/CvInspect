@@ -124,9 +124,20 @@ public sealed class ReconnectingCam : ICam
         }
         try { cts?.Cancel(); } catch (ObjectDisposedException) { /* 루프가 이미 물러남 */ }
 
-        _gate.Wait();
-        try { RetireInner(); }
-        finally { _gate.Release(); }
+        // 시한을 두고 기다린다 — 재연결 사다리가 게이트를 쥔 채 여는 중이면 그 열기는 취소되지 않으므로
+        // (열기에 취소 토큰이 없다) 무한정 기다리면 <b>닫기가 부른 쪽의 종료 예산을 넘긴다.</b> 그러면
+        // 제어권을 반납하지 못한 채 프로세스가 내려가고, 곧바로 재기동하면 장치가 하트비트 시한을
+        // 넘길 때까지 "다른 응용이 잡고 있다" 로 열기가 실패한다. 현장에는 "가끔 재기동이 실패한다" 로만
+        // 보인다. 시한을 넘기면 <see cref="Dispose"/> 와 같이 그래도 정리를 진행한다.
+        if (_gate.Wait(Math.Max(0, _opt.ShutdownWaitMs)))
+        {
+            try { RetireInner(); }
+            finally { _gate.Release(); }
+        }
+        else
+        {
+            RetireInner();   // 전이가 걸려 있어도 닫기는 진행한다
+        }
 
         RaiseGrabbing(false);
         RaiseConnection(false);
