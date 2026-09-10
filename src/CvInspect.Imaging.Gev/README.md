@@ -103,6 +103,17 @@ Bayer-phase disagreements all go there. The `gevprobe` sample in this repository
 records what it declares, saves a frame, and runs a timed acquisition; it is the quickest way to
 find out what a specific camera does.
 
+**A debugger that pauses the process drops the camera.** A breakpoint, Break All, or a memory
+snapshot stops the heartbeat, and once it has been quiet for the device's heartbeat timeout — a few
+seconds — the device takes control back. Every call after that throws `GevControlLostException` and
+only reopening recovers.
+
+What makes this cost time is how it looks. A live view goes on showing the frame it already had, so
+nothing on screen changes; the loss surfaces at the next operation that actually uses the control
+channel, which is usually a grab. The grab then looks like the cause of a camera that died much
+earlier — in one case 53 minutes earlier. Subscribe to `ICam.ConnectionChanged` if you want to see
+it when it happens rather than when something else trips over it.
+
 ## Targets
 
 `netstandard2.1` and `net8.0`. Depends on `CvInspect.Imaging` and on the GigE protocol library;
