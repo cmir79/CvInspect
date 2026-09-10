@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   # 손으로 다시 돌릴 수 있게 — 결과만 보고 싶을 때 빈 커밋을 만들지 않으려고.
   workflow_dispatch:
