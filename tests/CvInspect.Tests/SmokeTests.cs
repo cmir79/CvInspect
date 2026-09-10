@@ -720,27 +720,62 @@ public class SmokeTests
     }
     }
 
+    /// <summary>연속 취득 중의 단발 그랩은 답할 수 없는 호출이다 — 조용히 무동작이면 자유 실행 프레임이
+    /// 그 자리에 들어와 다른 대상을 판정한다.</summary>
+    [Fact]
+    public void GrabOneDuringContinuousThrows()
+    {
+    // === 9-C) 취득 계약 — 연속 중 GrabOne 은 던진다 ===
+    {
+        var opt = new CvInspect.Imaging.CamOpt { ComType = "Virtual", IsColor = false };
+        using var cam = CvInspect.Imaging.CamFactory.Create(opt);
+        cam.Open();
+
+        // 정지 상태에서는 답할 수 있다 — 던지지 않는다.
+        cam.GrabOne();
+
+        cam.StartContinuous();
+        Check(cam.IsGrabbing, "IsGrabbing is true while continuous acquisition runs");
+
+        // 이 저장소의 결함 하나가 여기 있었다: 조용히 돌아가면 부른 쪽은 자기 호출의 답 대신
+        // 흘러가던 프레임을 받고, 티칭 조명으로 찍힌 다른 대상을 판정하고도 아무 신호가 남지 않는다.
+        Assert.Throws<InvalidOperationException>(() => cam.GrabOne());
+
+        cam.StopContinuous();
+        Check(!cam.IsGrabbing, "IsGrabbing is false after StopContinuous");
+
+        // 멈추면 다시 답할 수 있다 — 규정은 "연속 중" 에만 걸린다.
+        cam.GrabOne();
+    }
+    }
+
     /// <summary>프레임 번호는 되돌이를 돈다 — 크기 비교로는 되돌이 뒤 프레임이 전부 옛것이 된다.</summary>
     [Fact]
     public void FrameIdWrapAround()
     {
     // === 11-C) 프레임 번호 판정 — 크기가 아니라 16비트 안의 거리 ===
     {
-        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(101, 100), "the next number is newer");
-        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(100, 100), "the same number is not newer");
-        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(99, 100), "the previous number is not newer");
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(101, 100, false), "the next number is newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(100, 100, false), "the same number is not newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(99, 100, false), "the previous number is not newer");
 
         // 이 저장소의 결함 하나가 여기 있었다: 되돌이를 지나면 새 프레임의 번호가 작아지는데, 크기로
         // 비교하면 그 뒤 오는 프레임이 전부 옛것으로 기각되어 단발 그랩이 영영 시한을 넘긴다.
         // 14fps 면 78분마다 한 바퀴 돈다 — 하루를 도는 설비에서는 이론이 아니다.
-        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(3, 65530), "a number past the wrap is newer");
-        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(65530, 3), "and the one before the wrap is older");
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(3, 65530, false), "a number past the wrap is newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(65530, 3, false), "and the one before the wrap is older");
         Check(3 < 65530, "size comparison would have said the opposite — that is the defect this pins");
 
-        // 반 바퀴가 경계다. 그보다 멀리 벌어지면 방향을 알 수 없어 이 식도 뒤집힌다 —
+        // 확장 번호는 되돌지 않는다 — 거리 식을 그대로 쓰면 간격이 반 바퀴를 넘는 순간 뒤집히므로
+        // 그쪽은 크기로 본다. 같은 두 값이 폭에 따라 반대로 판정되는 것이 이 갈림의 요점이다.
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(3, 65530, true), "with extended ids 3 is simply older");
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000, 3, true), "with extended ids 40000 is plainly newer than 3");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000, 3, false), "the 16-bit reading of that pair is the opposite — it reads as a wrap");
+
+        // 반 바퀴가 경계다. 16비트 쪽은 그보다 멀리 벌어지면 방향을 알 수 없어 뒤집힌다 —
         // 이 판정이 보는 간격은 대기열 깊이 수준이라 닿지 않는다는 전제 위에 서 있다.
-        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000 + 0x7FFF, 40000), "half a lap ahead is still newer");
-        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000 - 0x7FFF, 40000), "half a lap behind is older");
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000 + 0x7FFF, 40000, false), "half a lap ahead is still newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000 - 0x7FFF, 40000, false), "half a lap behind is older");
     }
     }
 

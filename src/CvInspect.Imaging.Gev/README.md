@@ -8,11 +8,12 @@ proprietary DLLs** are needed.
 
 > **Status.** Verified against real hardware, with **no vendor SDK and no vendor filter driver
 > installed** on any of the machines. Two monochrome cameras from different vendors are discovered,
-> opened, streamed and stopped — including an eight-hour run of the pair over one 1 GbE port with
-> no packet missing — and a pair of colour cameras acquires on an inspection line, where the Bayer
-> path produced the right colour with nothing pinned and nothing tuned. Endurance comes from the
-> monochrome pair and the colour pair has function but not run time, so treat other cameras as
-> unproven.
+> opened, streamed and stopped on a bench, and a pair of colour cameras acquires on an inspection
+> line, where the Bayer path produced the right colour with nothing pinned and nothing tuned.
+> **That is hours of run time, not months.** The eight-hour figures quoted further down were
+> measured on the GigE transport this package streams through, not through this `ICam` layer — the
+> transport carried 1.46 TB without losing a packet, but nothing has run this backend for that
+> long. Treat other cameras as unproven.
 
 ## Use
 
@@ -91,9 +92,10 @@ reconnect restarts the counters, and a consumer computing deltas across that bou
 numbers.
 
 Alarm on `MissingPackets` and `IncompleteFrames`, never on `ResendRequests`. Packets that arrive out
-of order but still in time leave a resend request behind with nothing actually lost — a measured run
-logged 6,392 requests against zero missing packets over eight hours, and raising the timeouts does
-not reduce it.
+of order but still in time leave a resend request behind with nothing actually lost — an eight-hour
+two-camera bench run of the protocol library logged 6,392 requests against zero missing packets, and
+raising the timeouts does not reduce it. The rule is what that run settled; it was measured on the
+transport, not through this package.
 
 ## Diagnostics
 
@@ -101,6 +103,19 @@ Attach `CvLog.Sink` before opening — discovery results, feature fallbacks, dro
 Bayer-phase disagreements all go there. The `gevprobe` sample in this repository opens a camera,
 records what it declares, saves a frame, and runs a timed acquisition; it is the quickest way to
 find out what a specific camera does.
+
+**A debugger that pauses the process drops the camera.** A breakpoint, Break All, or a memory
+snapshot stops the heartbeat, and once it has been quiet for the device's heartbeat timeout — a few
+seconds — the device takes control back. Every call after that throws `GevControlLostException` and
+only reopening recovers. **The exception says how long the gap was**, so a stall of tens of seconds
+against a timeout of three names itself; a loss with no gap at all points at another application
+taking the channel, or at the device restarting.
+
+What makes this cost time is how it looks. A live view goes on showing the frame it already had, so
+nothing on screen changes; the loss surfaces at the next operation that actually uses the control
+channel, which is usually a grab. The grab then looks like the cause of a camera that died much
+earlier — in one case 53 minutes earlier. Subscribe to `ICam.ConnectionChanged` if you want to see
+it when it happens rather than when something else trips over it.
 
 ## Targets
 

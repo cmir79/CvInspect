@@ -108,6 +108,11 @@ public sealed class VideoCaptureCam : ICam
         {
             ThrowIfDisposed();
             EnsureConnected();
+            // 연속 취득 중에는 답할 수 없다 — 여기서 한 장 더 내도 부른 쪽은 그것과 흐르던 장을 가릴 수 없다.
+            if (_liveThread != null)
+                throw new InvalidOperationException(
+                    "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
+                    "stream's. Call StopContinuous() first.");
             EmitOnce();
         }
     }
