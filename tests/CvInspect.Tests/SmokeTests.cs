@@ -720,6 +720,30 @@ public class SmokeTests
     }
     }
 
+    /// <summary>프레임 번호는 되돌이를 돈다 — 크기 비교로는 되돌이 뒤 프레임이 전부 옛것이 된다.</summary>
+    [Fact]
+    public void FrameIdWrapAround()
+    {
+    // === 11-C) 프레임 번호 판정 — 크기가 아니라 16비트 안의 거리 ===
+    {
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(101, 100), "the next number is newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(100, 100), "the same number is not newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(99, 100), "the previous number is not newer");
+
+        // 이 저장소의 결함 하나가 여기 있었다: 되돌이를 지나면 새 프레임의 번호가 작아지는데, 크기로
+        // 비교하면 그 뒤 오는 프레임이 전부 옛것으로 기각되어 단발 그랩이 영영 시한을 넘긴다.
+        // 14fps 면 78분마다 한 바퀴 돈다 — 하루를 도는 설비에서는 이론이 아니다.
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(3, 65530), "a number past the wrap is newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(65530, 3), "and the one before the wrap is older");
+        Check(3 < 65530, "size comparison would have said the opposite — that is the defect this pins");
+
+        // 반 바퀴가 경계다. 그보다 멀리 벌어지면 방향을 알 수 없어 이 식도 뒤집힌다 —
+        // 이 판정이 보는 간격은 대기열 깊이 수준이라 닿지 않는다는 전제 위에 서 있다.
+        Check(CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000 + 0x7FFF, 40000), "half a lap ahead is still newer");
+        Check(!CvInspect.Imaging.Gev.GevCam.IsNewerFrameId(40000 - 0x7FFF, 40000), "half a lap behind is older");
+    }
+    }
+
     /// <summary>패킷 간 지연의 틱 환산 — 같은 지연이라도 장치마다 숫자가 다르다.</summary>
     [Fact]
     public void ScpdTicks()

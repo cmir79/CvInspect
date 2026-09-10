@@ -411,8 +411,10 @@ public sealed class GevCam : ICam
             frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
 
             // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 번호로 걸러 낸다.
-            // 장치 번호는 스트림 안에서 단조 증가하므로 이 비교가 곧 "이 호출 뒤에 온 것" 이다.
-            while (frame.FrameId != 0 && frame.FrameId <= _lastEmittedFrameId)
+            // 번호는 되돌이를 도므로 크기가 아니라 16비트 안의 거리로 본다. 기준이 0 이면 아직 아무것도
+            // 지나가지 않은 것이라 무엇이든 받는다.
+            while (frame.FrameId != 0 && _lastEmittedFrameId != 0
+                   && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId))
             {
                 frame.Dispose();
                 frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
@@ -551,11 +553,15 @@ public sealed class GevCam : ICam
     {
         // 무엇을 내보냈는지 여기 한 자리에서 기억한다 — 단발 그랩의 "새 프레임" 판정 기준이다.
         // 변환에 실패해 발행하지 못한 것도 이미 지나간 프레임이므로 기준에 넣는다.
-        if (frame.FrameId > _lastEmittedFrameId)
+        // 기준이 0 이면 아직 아무것도 안 지나갔다 — 첫 번호가 무엇이든 그대로 기준이 된다.
+        if (_lastEmittedFrameId == 0 || IsNewerFrameId(frame.FrameId, _lastEmittedFrameId))
         {
             // 번호가 건너뛰었으면 카메라가 보낸 것이 여기까지 오지 못한 것이다.
-            if (_lastEmittedFrameId != 0 && frame.FrameId > _lastEmittedFrameId + 1)
-                _neverArrivedFrames += (long)(frame.FrameId - _lastEmittedFrameId - 1);
+            // 간격도 16비트 안에서 센다 — 되돌이를 걸친 간격을 크기로 빼면 65,000 장이 한꺼번에
+            // 사라진 것처럼 보인다.
+            var gap = (frame.FrameId - _lastEmittedFrameId) & 0xFFFF;
+            if (_lastEmittedFrameId != 0 && gap > 1)
+                _neverArrivedFrames += (long)(gap - 1);
             _lastEmittedFrameId = frame.FrameId;
         }
 
@@ -988,6 +994,26 @@ public sealed class GevCam : ICam
             $"reported one and nothing else will say so. Read {name} with the gevprobe sample; if red and blue are " +
             "swapped, pin the pattern with BayerPatternOverride.");
     }
+
+    /// <summary>
+    /// <paramref name="id"/> 가 <paramref name="newest"/> 보다 <b>새 프레임</b>인가.
+    ///
+    /// 장치 번호는 우리가 세는 카운터가 아니라 전송 블록 번호 그대로다. 16비트면 65535 에서 한 바퀴 돌아
+    /// <b>새 프레임의 번호가 작아진다</b> — 그때 크기로 비교하면 새것이 전부 옛것으로 보여, 단발 그랩이
+    /// 오는 프레임을 모두 기각하고 시한을 넘긴다. 카메라를 다시 열기 전까지 풀리지 않는다.
+    /// 연속 취득 여덟 시간이면 실제로 두 바퀴 돈다.
+    ///
+    /// 그래서 크기가 아니라 <b>16비트 안의 거리</b>로 본다: 뒤로 간 거리가 반 바퀴를 넘으면 앞으로 간
+    /// 것으로 읽는다. 취득 계층의 수신부가 쓰는 것과 같은 식이다 — 두 층이 다른 식을 쓰면 같은 프레임을
+    /// 두고 판정이 갈린다. 장치가 촬영을 다시 시작해 번호를 처음부터 세는 경우도 이 식이 자연스럽게
+    /// 새것으로 본다.
+    ///
+    /// <b>전제: 16비트 블록 번호다.</b> 확장 번호를 쓰는 장치에서는 간격이 반 바퀴를 넘을 때 뒤집힌다.
+    /// 이 판정이 보는 간격은 대기열 깊이 수준이라 실무상 닿지 않지만, 취득 계층이 확장 여부를 알려 주게
+    /// 되면 그 값으로 두 식을 갈라야 한다.
+    /// </summary>
+    internal static bool IsNewerFrameId(ulong id, ulong newest)
+        => id != newest && ((newest - id) & 0xFFFF) >= 0x8000;
 
     // === 노드 접근 도우미 ===
 
