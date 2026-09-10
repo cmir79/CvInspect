@@ -77,18 +77,54 @@ public sealed class GevCam : ICam
 
     public void Open()
     {
+        string opened;
         lock (_sync)
         {
             ThrowIfDisposed();
             if (_dev != null) return;
             Run(OpenCoreAsync);
             IsConnected = true;
+            // 문구는 락 안에서 뜬다 — 밖에서 장치를 읽으면 곧바로 닫는 흐름과 겹친 순간 신원도 주소도
+            // 빠진 줄이 남는다.
+            opened = DescribeOpened();
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
-        // 이름과 장치 주소를 한 번 이어 둔다 — 취득 라이브러리는 자기 줄에 주소를 달고 우리 이름은
+        // 이름과 장치 신원을 한 번 이어 둔다 — 취득 라이브러리는 자기 줄에 주소를 달고 우리 이름은
         // 모르므로, 이 한 줄이 있어야 그쪽 줄들이 이 카메라 것으로 읽힌다. 주소는 세션 내내 안 바뀐다.
-        WriteLog(CvLogLevel.Info, $"opened (SN={_opt.SerialNumber} at {_dev?.Address})");
+        WriteLog(CvLogLevel.Info, opened);
     }
+
+    /// <summary>
+    /// 여는 줄에 실을 카메라 신원. <see cref="_sync"/> 보유 전제 — <see cref="_dev"/> 를 읽는다.
+    ///
+    /// 제조사·모델·장치버전은 <b>열 때 장치에서 이미 읽어 둔 값</b>이라 추가 통신이 없다. 이것을 안 남기면
+    /// 로그만으로는 어느 기종이 어느 펌웨어로 돌았는지 알 수 없어, 나중에 설비에 사람을 보내 물어야 한다.
+    ///
+    /// 시리얼은 장치가 보고한 값을 쓴다 — 설정값과 같다는 것은 여는 길에서 이미 확인했다. 시리얼 레지스터를
+    /// 내놓지 않는 기종에서만 설정값으로 떨어지고, 그런 장치에서는 설정값도 비어 있다.
+    ///
+    /// <b>빈 값은 자리도 남기지 않는다</b> — "ver=" 같은 빈 칸은 값으로 오독된다. 장치가 아무것도 알려 주지
+    /// 않으면 시리얼과 주소만 남아, 신원을 싣기 전의 줄과 같은 모양이 된다.
+    /// </summary>
+    private string DescribeOpened()
+    {
+        var info = _dev?.Info;
+        var sb = new System.Text.StringBuilder("opened");
+
+        if (Trimmed(info?.Manufacturer) is { Length: > 0 } vendor) sb.Append(' ').Append(vendor);
+        if (Trimmed(info?.Model) is { Length: > 0 } model) sb.Append(' ').Append(model);
+
+        var serial = Trimmed(info?.SerialNumber);
+        if (serial.Length == 0) serial = Trimmed(_opt.SerialNumber);
+        sb.Append(" (SN=").Append(serial.Length == 0 ? "(not reported)" : serial);
+
+        if (Trimmed(info?.DeviceVersion) is { Length: > 0 } version) sb.Append(" ver=").Append(version);
+        sb.Append(" at ").Append(_dev?.Address).Append(')');
+        return sb.ToString();
+    }
+
+    /// <summary>없는 값과 공백뿐인 값을 한 가지로 접는다 — 문자열 레지스터를 공백으로 채워 보내는 장치가 있다.</summary>
+    private static string Trimmed(string? text) => text?.Trim() ?? string.Empty;
 
     private async Task OpenCoreAsync(CancellationToken ct)
     {
@@ -357,8 +393,9 @@ public sealed class GevCam : ICam
         var nodes = _nodes!;
 
         // 새로 찍기 전에 남은 것을 버린다 — 안 버리면 이 그랩이 옛 프레임을 가져간다.
-        if (DrainStream(stream) is var dropped and > 0)
-            WriteLog(CvLogLevel.Debug, $"discarded {dropped} queued frame(s) before grabbing a fresh one");
+        if (DrainStream(stream, out var drainedUpTo) is var dropped and > 0)
+            WriteLog(CvLogLevel.Debug,
+                $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");
 
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
         await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
@@ -374,8 +411,10 @@ public sealed class GevCam : ICam
             frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
 
             // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 번호로 걸러 낸다.
-            // 장치 번호는 스트림 안에서 단조 증가하므로 이 비교가 곧 "이 호출 뒤에 온 것" 이다.
-            while (frame.FrameId != 0 && frame.FrameId <= _lastEmittedFrameId)
+            // 번호는 되돌이를 도므로 크기가 아니라 16비트 안의 거리로 본다. 기준이 0 이면 아직 아무것도
+            // 지나가지 않은 것이라 무엇이든 받는다.
+            while (frame.FrameId != 0 && _lastEmittedFrameId != 0
+                   && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId))
             {
                 frame.Dispose();
                 frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
@@ -433,8 +472,10 @@ public sealed class GevCam : ICam
                 Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
 
             // 멈춘 뒤에 대기열을 비운다 — 남겨 두면 다음 단발 그랩이 그것을 가져간다.
-            if (stopped && _stream != null && DrainStream(_stream) is var left and > 0)
-                WriteLog(CvLogLevel.Debug, $"discarded {left} frame(s) left in the queue when acquisition stopped");
+            // 펌프를 세운 다음이라야 배수가 수신과 겹치지 않는다 — 이 자리를 락 밖으로도, 정지 앞으로도 옮기지 않는다.
+            if (stopped && _stream != null && DrainStream(_stream, out var drainedUpTo) is var left and > 0)
+                WriteLog(CvLogLevel.Debug,
+                    $"discarded {left} frame(s) left in the queue when acquisition stopped (up to frame {drainedUpTo})");
         }
         if (stopped)
         {
@@ -512,11 +553,15 @@ public sealed class GevCam : ICam
     {
         // 무엇을 내보냈는지 여기 한 자리에서 기억한다 — 단발 그랩의 "새 프레임" 판정 기준이다.
         // 변환에 실패해 발행하지 못한 것도 이미 지나간 프레임이므로 기준에 넣는다.
-        if (frame.FrameId > _lastEmittedFrameId)
+        // 기준이 0 이면 아직 아무것도 안 지나갔다 — 첫 번호가 무엇이든 그대로 기준이 된다.
+        if (_lastEmittedFrameId == 0 || IsNewerFrameId(frame.FrameId, _lastEmittedFrameId))
         {
             // 번호가 건너뛰었으면 카메라가 보낸 것이 여기까지 오지 못한 것이다.
-            if (_lastEmittedFrameId != 0 && frame.FrameId > _lastEmittedFrameId + 1)
-                _neverArrivedFrames += (long)(frame.FrameId - _lastEmittedFrameId - 1);
+            // 간격도 16비트 안에서 센다 — 되돌이를 걸친 간격을 크기로 빼면 65,000 장이 한꺼번에
+            // 사라진 것처럼 보인다.
+            var gap = (frame.FrameId - _lastEmittedFrameId) & 0xFFFF;
+            if (_lastEmittedFrameId != 0 && gap > 1)
+                _neverArrivedFrames += (long)(gap - 1);
             _lastEmittedFrameId = frame.FrameId;
         }
 
@@ -596,20 +641,28 @@ public sealed class GevCam : ICam
     /// 새로 찍은 것이 아니라 그 옛것을 가져간다 — 화면이라면 한 장 늦은 그림이지만
     /// <b>검사라면 이전 대상을 판정한다.</b> 예외도 경고도 없이 조용히 틀린다.
     /// </summary>
-    /// <remarks>취득 라이브러리에 같은 일을 하는 <c>DiscardQueuedFrames()</c> 가 있지만 쓰지 않는다 —
-    /// 그쪽은 몇 장 버렸는지만 알려 주고 <b>무엇을 버렸는지는 알려 주지 않는다.</b> 우리가 일부러 버린
-    /// 프레임의 번호를 기준에 반영하지 않으면, 다음 프레임이 "카메라가 보냈는데 안 온 것" 으로 잡혀
-    /// 우리가 만든 배수가 스스로 거짓 경보를 낸다.</remarks>
-    private int DrainStream(GevStream stream)
+    /// <remarks>비우는 절차는 취득 라이브러리 것을 쓴다 — 버린 장수와 <b>마지막으로 버린 프레임 번호</b>를
+    /// 함께 준다. 손으로 하나씩 꺼내면 프레임마다 Dispose 를 지켜야 버퍼가 풀로 돌아오는데, 그 하나를
+    /// 빠뜨리면 비우려던 것이 오히려 취득을 굶긴다. 이미 접힌 대기열에서는 꺼내기가 예외까지 던진다.
+    ///
+    /// 버린 프레임의 번호는 <b>기준으로 삼는다</b> — 안 옮기면 다음 프레임이 "카메라가 보냈는데 안 온 것"
+    /// 으로 잡혀 우리가 만든 배수가 스스로 거짓 경보를 낸다(<see cref="GevCamHealth"/> 의 미도착 계수).
+    ///
+    /// <b>조건은 버린 장수에 건다. 번호의 크기에 걸면 안 된다.</b> 장치 번호는 우리가 세는 카운터가 아니라
+    /// 전송 블록 번호 그대로라, 16비트면 65535 에서 한 바퀴 돈다 — 연속 취득 여덟 시간이면 실제로 돈다.
+    /// 되돌이를 걸쳐 버렸을 때 "더 큰 값일 때만" 올리면 기준이 되돌이 앞에 멈추고, 그 뒤 오는 프레임이
+    /// 전부 옛것으로 기각되어 단발 그랩이 시한을 넘긴다. 버린 것이 없을 때 번호가 0 으로 오는 것은 장수가
+    /// 0 이라 딸려 오는 값이므로, 장수로 거르면 그 0 이 기준을 지우는 일도 없다.
+    ///
+    /// 여기서 비워지는 것은 <b>대기열에 든 완성 프레임뿐이다.</b> 조립 중이던 것은 그대로 남아 이 호출 뒤에
+    /// 완성되고, 이미 기다리고 있는 수신자에게는 대기열을 거치지 않고 바로 건네진다 — 그 갈래는 단발
+    /// 그랩의 번호 가드가 막는다.</remarks>
+    /// <param name="stream">비울 스트림.</param>
+    /// <param name="lastDiscardedFrameId">버린 것 가운데 마지막 프레임의 장치 번호. 버린 것이 없으면 0.</param>
+    private int DrainStream(GevStream stream, out ulong lastDiscardedFrameId)
     {
-        var dropped = 0;
-        while (stream.TryReceive(out var stale) && stale != null)
-        {
-            // 버린 것도 지나간 프레임이다 — 기준을 올려 두지 않으면 다음 프레임이 "건너뛴 것" 으로 잡힌다.
-            if (stale.FrameId > _lastEmittedFrameId) _lastEmittedFrameId = stale.FrameId;
-            stale.Dispose();
-            dropped++;
-        }
+        var dropped = stream.DiscardQueuedFrames(out lastDiscardedFrameId);
+        if (dropped > 0) _lastEmittedFrameId = lastDiscardedFrameId;
         return dropped;
     }
 
@@ -828,12 +881,54 @@ public sealed class GevCam : ICam
     private async Task<CvBayerPattern?> ResolveBayerAsync(GenApiNodeMap nodes, CancellationToken ct)
     {
         var code = (uint?)await TryReadIntAsync(nodes, "PixelFormat", ct).ConfigureAwait(false) ?? 0u;
-        if (code == 0 || !PixelFormatInfo.IsBayer(code)) return null;
-        if (ToCvPattern(PixelFormatInfo.BayerPattern(code)) is not { } declared) return null;
+
+        // 조용히 돌아가면 계산이 아예 돌지 않았다는 사실이 아무 데도 남지 않는다 — 그러면 "어긋남 경고가
+        // 없다" 가 "패턴이 맞았다" 로 읽힌다. 갈래마다 왜 못 돌았는지 남기되, 정상 구성이 지나는 갈래에는
+        // 넣지 않는다. 상시 발화하는 경고는 진짜 경고까지 안 읽히게 만든다.
+        if (code == 0)
+        {
+            // 흑백 카메라도 지나는 자리다 — 색을 걸어 경고하면 거짓 경보가 된다.
+            WriteLog(CvLogLevel.Info,
+                "PixelFormat could not be read, so the Bayer phase check did not run for this session. " +
+                "Frame conversion is unaffected — it uses the format each frame declares — but a mirror or an odd " +
+                "ROI offset would swap red and blue with nothing logged. If this is a colour camera and the colours " +
+                "look wrong, pin the pattern with BayerPatternOverride.");
+            return null;
+        }
+
+        // 코드 0 을 먼저 걸러야 한다 — 0 도 "표에 없는 코드" 라 이 검사에 먼저 걸리면 문구가 틀린다.
+        if (!PixelFormatInfo.IsKnown(code))
+        {
+            WriteLog(CvLogLevel.Warning,
+                $"PixelFormat 0x{code:X8} is not a format this package can convert, so every frame in it is " +
+                "dropped and the Bayer phase check cannot run. Set the camera to a supported format " +
+                "(Mono 8/10/12/16 including the packed ones, Bayer 8/10/12/16, RGB8, BGR8, RGBa8, BGRa8).");
+            return null;
+        }
+
+        // 흑백·RGB 카메라의 정상 경로 — 남길 것이 없다. 화소 포맷은 "camera state" 줄에 이미 있다.
+        if (!PixelFormatInfo.IsBayer(code)) return null;
+
+        if (ToCvPattern(PixelFormatInfo.BayerPattern(code)) is not { } declared)
+        {
+            // 지금의 화소 포맷 표에서는 나올 수 없는 갈래다 — Bayer 포맷 전부가 시작 패턴을 들고 있다.
+            // 그래도 남긴다: 표가 늘어 이 자리가 열리면 프레임마다 변환이 터지는데 알릴 곳이 여기뿐이다.
+            WriteLog(CvLogLevel.Warning,
+                $"{PixelFormatInfo.Name(code)} is a Bayer format whose start pattern this package cannot name, " +
+                "so the phase check cannot run and conversion has no pattern to demosaic with — every frame will " +
+                "fail. Pin the pattern with BayerPatternOverride to keep acquisition working.");
+            return null;
+        }
 
         // 없는 노드는 중립값으로 — ReverseY 를 아예 선언하지 않는 카메라가 흔하다.
-        var revX = await TryReadFlagAsync(nodes, "ReverseX", ct).ConfigureAwait(false) ?? false;
-        var revY = await TryReadFlagAsync(nodes, "ReverseY", ct).ConfigureAwait(false) ?? false;
+        // 다만 "노드가 없다" 와 "노드는 있는데 값을 못 읽었다" 는 갈라야 한다. 둘 다 null 로 오지만,
+        // 뒤쪽은 미러가 켜져 있어도 꺼진 것으로 계산되어 위상이 어긋난 채 아무 줄도 남지 않는다.
+        var revXRead = await TryReadFlagAsync(nodes, "ReverseX", ct).ConfigureAwait(false);
+        var revYRead = await TryReadFlagAsync(nodes, "ReverseY", ct).ConfigureAwait(false);
+        NoteUnreadMirror(nodes, "ReverseX", revXRead);
+        NoteUnreadMirror(nodes, "ReverseY", revYRead);
+        var revX = revXRead ?? false;
+        var revY = revYRead ?? false;
         var offX = (int)(await TryReadIntAsync(nodes, "OffsetX", ct).ConfigureAwait(false) ?? 0);
         var offY = (int)(await TryReadIntAsync(nodes, "OffsetY", ct).ConfigureAwait(false) ?? 0);
 
@@ -843,10 +938,29 @@ public sealed class GevCam : ICam
                          ?? await TryReadIntAsync(nodes, "Width", ct).ConfigureAwait(false) ?? 0);
         var maxH = (int)(await TryReadIntAsync(nodes, "HeightMax", ct).ConfigureAwait(false)
                          ?? await TryReadIntAsync(nodes, "Height", ct).ConfigureAwait(false) ?? 0);
-        if (maxW <= 0 || maxH <= 0) return null;
+        if (maxW <= 0 || maxH <= 0)
+        {
+            // 여기까지 왔으면 Bayer 카메라가 확실하다 — 기준 치수를 못 읽어 검사가 멈추면 색 뒤바뀜이
+            // 그대로 지나간다. 흑백은 위에서 이미 빠졌으므로 이 줄이 정상 구성에서 나오지 않는다.
+            WriteLog(CvLogLevel.Warning,
+                $"the Bayer phase check did not run for this {PixelFormatInfo.Name(code)} camera: neither " +
+                $"WidthMax/HeightMax nor Width/Height could be read (got {maxW}x{maxH}), and the mirror reference " +
+                "size is what decides the phase. A mirror or an odd ROI offset would swap red and blue with " +
+                "nothing logged — check that the camera exposes Width/Height, and pin the pattern with " +
+                "BayerPatternOverride if the colours are wrong.");
+            return null;
+        }
 
         var computed = CvBayerPhase.Effective(declared, maxW, maxH, revX, revY, offX, offY);
-        if (computed == declared) return null;   // 선언값을 그대로 쓴다
+        if (computed == declared)
+        {
+            // 이 한 줄이 있어야 "경고가 없다" 를 "계산이 돌았고 맞았다" 로 읽을 수 있다 — 없으면 계산이
+            // 못 돈 경우와 구분되지 않는다. 여는 때 한 번뿐이라 흐름을 어지럽히지 않는다.
+            WriteLog(CvLogLevel.Info,
+                $"Bayer phase checked: the reported {declared} matches the geometry " +
+                $"(ReverseX={revX} ReverseY={revY} OffsetX={offX} OffsetY={offY} max={maxW}x{maxH}).");
+            return null;   // 선언값을 그대로 쓴다
+        }
 
         WriteLog(CvLogLevel.Warning,
             $"Bayer phase disagreement: the camera reports {declared} but geometry implies {computed} " +
@@ -854,6 +968,52 @@ public sealed class GevCam : ICam
             $"Using the reported pattern — if colours look wrong, pin it with BayerPatternOverride.");
         return null;
     }
+
+    /// <summary>
+    /// 미러 플래그를 <b>못 읽은 것</b>을 남긴다. 노드를 아예 선언하지 않은 카메라는 흔하고 그건 정상이라
+    /// 조용히 넘긴다 — 선언이 없으면 켜져 있을 수도 없다. 그러나 <b>노드는 있는데 값을 못 읽은 것</b>은
+    /// 다르다: 위상 계산이 꺼진 것으로 단정해 실효 패턴을 잘못 잡고, 그 결과가 "어긋남 없음" 이라 아무 줄도
+    /// 남지 않는다. 못 읽는 사유는 셋이다 — 다루지 않는 노드 종류, 알아볼 수 없는 낱말, 읽기 실패.
+    /// 종류를 문구에 실어 가리게 한다.
+    ///
+    /// 노드 유무만 본다. 접근 모드까지 캐물으면 더 정확하지만 그 조회는 장치 거절·시한 초과를 그대로
+    /// 올려보내 <b>진단이 여는 과정을 깨뜨릴 수 있다</b>. 여기 있는 것은 맵 조회 하나뿐이라 던지지 않는다.
+    ///
+    /// 수준을 Info 로 두는 것은 <b>선언만 해 두고 구현하지 않은 카메라</b>에서 이 줄이 잘못 나올 수 있기
+    /// 때문이다. 정상 장비에서 발화하는 경고를 만드는 것이 이 저장소가 이미 치른 대가라, 확인을 청할 뿐
+    /// 조치를 지시하지 않는다.
+    /// </summary>
+    private void NoteUnreadMirror(GenApiNodeMap nodes, string name, bool? read)
+    {
+        if (read is not null) return;
+        if (nodes.GetNode(name) is not { } node) return;   // 선언 자체가 없다 — 정상이다
+
+        WriteLog(CvLogLevel.Info,
+            $"{name} is declared on this camera ({node.Kind}) but its value could not be read, so the Bayer phase " +
+            "check assumed the mirror is off. If it is actually on, the transmitted pattern differs from the " +
+            $"reported one and nothing else will say so. Read {name} with the gevprobe sample; if red and blue are " +
+            "swapped, pin the pattern with BayerPatternOverride.");
+    }
+
+    /// <summary>
+    /// <paramref name="id"/> 가 <paramref name="newest"/> 보다 <b>새 프레임</b>인가.
+    ///
+    /// 장치 번호는 우리가 세는 카운터가 아니라 전송 블록 번호 그대로다. 16비트면 65535 에서 한 바퀴 돌아
+    /// <b>새 프레임의 번호가 작아진다</b> — 그때 크기로 비교하면 새것이 전부 옛것으로 보여, 단발 그랩이
+    /// 오는 프레임을 모두 기각하고 시한을 넘긴다. 카메라를 다시 열기 전까지 풀리지 않는다.
+    /// 연속 취득 여덟 시간이면 실제로 두 바퀴 돈다.
+    ///
+    /// 그래서 크기가 아니라 <b>16비트 안의 거리</b>로 본다: 뒤로 간 거리가 반 바퀴를 넘으면 앞으로 간
+    /// 것으로 읽는다. 취득 계층의 수신부가 쓰는 것과 같은 식이다 — 두 층이 다른 식을 쓰면 같은 프레임을
+    /// 두고 판정이 갈린다. 장치가 촬영을 다시 시작해 번호를 처음부터 세는 경우도 이 식이 자연스럽게
+    /// 새것으로 본다.
+    ///
+    /// <b>전제: 16비트 블록 번호다.</b> 확장 번호를 쓰는 장치에서는 간격이 반 바퀴를 넘을 때 뒤집힌다.
+    /// 이 판정이 보는 간격은 대기열 깊이 수준이라 실무상 닿지 않지만, 취득 계층이 확장 여부를 알려 주게
+    /// 되면 그 값으로 두 식을 갈라야 한다.
+    /// </summary>
+    internal static bool IsNewerFrameId(ulong id, ulong newest)
+        => id != newest && ((newest - id) & 0xFFFF) >= 0x8000;
 
     // === 노드 접근 도우미 ===
 

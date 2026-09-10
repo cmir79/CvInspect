@@ -241,15 +241,17 @@ Read these before adopting — they are real, and they are not going away soon.
   while Media Foundation (what `any` picks) could — leave `backend=` at its default unless you have measured.
 - **Display is WPF, so Windows only.** The core and Imaging packages are cross-platform; the WPF
   package and its off-screen test suite build on Windows alone.
-- **GigE has hours, not years, behind it.** Two cameras from two vendors have been streamed
-  end-to-end; production run time has not accumulated. Bayer is demosaiced to Bgr24, packed
+- **GigE has hours, not years, behind it.** Monochrome and colour cameras from two vendors have
+  been streamed end-to-end — eight hours for a monochrome pair, an inspection line for a colour
+  pair — but that is hours of run time, not months. Bayer is demosaiced to Bgr24, packed
   10/12-bit is folded to 8, vendor-specific features are not exposed.
 - **It is a toolkit, not a framework.** No tool chain, recipe persistence or run history; no
   pixel-to-millimetre calibration beyond scalar resolution fields; no lens distortion correction;
   no OCR, deep learning or 3D.
 - **0.x API.** Breaking changes have happened (the `CvDispCtrl.Frame` type changed in 0.16.0) and
-  will happen again before 1.0 — pin versions. Releases are cut from `v*` tags only; `main` carries
-  the *next* version number while changes accumulate, so a version bump is not one change but one release.
+  will happen again before 1.0 — pin versions. `main` always holds the latest release and every release
+  is a `v*` tag on it; work happens on `dev` and reaches `main` through a release pull request whose
+  description is the change log.
 - **Tests are a regression harness, not coverage.** Each case pins a defect that was actually
   seen; accuracy figures quoted above come from synthetic scenes.
 - **Comments are Korean.** READMEs are English; XML documentation (what IntelliSense shows) is
