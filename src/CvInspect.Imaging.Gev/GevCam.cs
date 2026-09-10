@@ -639,10 +639,14 @@ public sealed class GevCam : ICam
     /// 함께 준다. 손으로 하나씩 꺼내면 프레임마다 Dispose 를 지켜야 버퍼가 풀로 돌아오는데, 그 하나를
     /// 빠뜨리면 비우려던 것이 오히려 취득을 굶긴다. 이미 접힌 대기열에서는 꺼내기가 예외까지 던진다.
     ///
-    /// 버린 프레임의 번호는 <b>기준에 올려 둔다</b> — 안 올리면 다음 프레임이 "카메라가 보냈는데 안 온 것"
+    /// 버린 프레임의 번호는 <b>기준으로 삼는다</b> — 안 옮기면 다음 프레임이 "카메라가 보냈는데 안 온 것"
     /// 으로 잡혀 우리가 만든 배수가 스스로 거짓 경보를 낸다(<see cref="GevCamHealth"/> 의 미도착 계수).
-    /// 기준은 <b>내려가지 않게 큰 쪽만</b> 남긴다: 버린 것이 없으면 번호가 0 으로 오고, 장치가 촬영을 다시
-    /// 시작해 번호를 처음부터 세면 버린 번호가 기준보다 작게 온다.
+    ///
+    /// <b>조건은 버린 장수에 건다. 번호의 크기에 걸면 안 된다.</b> 장치 번호는 우리가 세는 카운터가 아니라
+    /// 전송 블록 번호 그대로라, 16비트면 65535 에서 한 바퀴 돈다 — 연속 취득 여덟 시간이면 실제로 돈다.
+    /// 되돌이를 걸쳐 버렸을 때 "더 큰 값일 때만" 올리면 기준이 되돌이 앞에 멈추고, 그 뒤 오는 프레임이
+    /// 전부 옛것으로 기각되어 단발 그랩이 시한을 넘긴다. 버린 것이 없을 때 번호가 0 으로 오는 것은 장수가
+    /// 0 이라 딸려 오는 값이므로, 장수로 거르면 그 0 이 기준을 지우는 일도 없다.
     ///
     /// 여기서 비워지는 것은 <b>대기열에 든 완성 프레임뿐이다.</b> 조립 중이던 것은 그대로 남아 이 호출 뒤에
     /// 완성되고, 이미 기다리고 있는 수신자에게는 대기열을 거치지 않고 바로 건네진다 — 그 갈래는 단발
@@ -652,7 +656,7 @@ public sealed class GevCam : ICam
     private int DrainStream(GevStream stream, out ulong lastDiscardedFrameId)
     {
         var dropped = stream.DiscardQueuedFrames(out lastDiscardedFrameId);
-        if (lastDiscardedFrameId > _lastEmittedFrameId) _lastEmittedFrameId = lastDiscardedFrameId;
+        if (dropped > 0) _lastEmittedFrameId = lastDiscardedFrameId;
         return dropped;
     }
 
