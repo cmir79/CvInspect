@@ -10,9 +10,10 @@ proprietary DLLs** are needed.
 > installed** on any of the machines. Two monochrome cameras from different vendors are discovered,
 > opened, streamed and stopped on a bench, and a pair of colour cameras acquires on an inspection
 > line, where the Bayer path produced the right colour with nothing pinned and nothing tuned.
-> **That is hours of run time, not months, and none of it is an endurance run of this backend** —
-> the eight-hour figures quoted further down were measured by the protocol library's own harness,
-> not through this `ICam` implementation. Treat other cameras as unproven.
+> **That is hours of run time, not months.** The eight-hour figures quoted further down were
+> measured on the GigE transport this package streams through, not through this `ICam` layer — the
+> transport carried 1.46 TB without losing a packet, but nothing has run this backend for that
+> long. Treat other cameras as unproven.
 
 ## Use
 
@@ -93,8 +94,8 @@ numbers.
 Alarm on `MissingPackets` and `IncompleteFrames`, never on `ResendRequests`. Packets that arrive out
 of order but still in time leave a resend request behind with nothing actually lost — an eight-hour
 two-camera bench run of the protocol library logged 6,392 requests against zero missing packets, and
-raising the timeouts does not reduce it. The rule is what that run settled; the run itself was not
-made through this package.
+raising the timeouts does not reduce it. The rule is what that run settled; it was measured on the
+transport, not through this package.
 
 ## Diagnostics
 

@@ -243,8 +243,8 @@ Read these before adopting — they are real, and they are not going away soon.
   package and its off-screen test suite build on Windows alone.
 - **GigE has hours, not years, behind it.** Monochrome and colour cameras from two vendors have been
   streamed end-to-end — a monochrome pair on a bench, a colour pair on an inspection line — but that
-  is hours of run time, not months, and no endurance run has been made through this stack. Bayer is
-  demosaiced to Bgr24, packed 10/12-bit is folded to 8, vendor-specific features are not exposed.
+  is hours of run time, not months. Bayer is demosaiced to Bgr24, packed 10/12-bit is folded to 8,
+  vendor-specific features are not exposed.
 - **It is a toolkit, not a framework.** No tool chain, recipe persistence or run history; no
   pixel-to-millimetre calibration beyond scalar resolution fields; no lens distortion correction;
   no OCR, deep learning or 3D.
