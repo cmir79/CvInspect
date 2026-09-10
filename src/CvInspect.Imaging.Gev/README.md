@@ -6,10 +6,13 @@ GigE camera acquisition for the [CvInspect](https://github.com/cmir79/CvInspect)
 toolkit — an `ICam` backend that speaks the protocol directly, so **no vendor SDK and no
 proprietary DLLs** are needed.
 
-> **Status.** Verified against real hardware: cameras from two different vendors are discovered,
-> opened, streamed and stopped with **no vendor SDK and no vendor filter driver installed**.
-> Only those two models have been exercised and production run time has not accumulated yet,
-> so treat other cameras as unproven.
+> **Status.** Verified against real hardware, with **no vendor SDK and no vendor filter driver
+> installed** on any of the machines. Two monochrome cameras from different vendors are discovered,
+> opened, streamed and stopped — including an eight-hour run of the pair over one 1 GbE port with
+> no packet missing — and a pair of colour cameras acquires on an inspection line, where the Bayer
+> path produced the right colour with nothing pinned and nothing tuned. Endurance comes from the
+> monochrome pair and the colour pair has function but not run time, so treat other cameras as
+> unproven.
 
 ## Use
 
@@ -63,7 +66,9 @@ with no error at all.
 
 This package **does not force its own calculation**, because firmware that already compensates
 would then be corrected twice. It uses the camera's declaration, and when the geometry implies a
-different pattern it logs both so the mismatch is visible. If colours are wrong, pin the pattern:
+different pattern it logs both so the mismatch is visible. On the colour cameras run so far the
+declared pattern was the right one — colour came out correct with nothing pinned and no
+disagreement logged. If colours are wrong, pin the pattern:
 
 ```csharp
 new GevCamOpt { BayerPatternOverride = CvBayerPattern.GR }
