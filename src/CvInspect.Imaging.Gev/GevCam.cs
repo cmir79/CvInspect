@@ -459,7 +459,7 @@ public sealed class GevCam : ICam
             // 번호는 되돌이를 도므로 크기가 아니라 16비트 안의 거리로 본다. 기준이 0 이면 아직 아무것도
             // 지나가지 않은 것이라 무엇이든 받는다.
             while (frame.FrameId != 0 && _lastEmittedFrameId != 0
-                   && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId))
+                   && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId, frame.IsExtendedId))
             {
                 frame.Dispose();
                 frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
@@ -599,12 +599,14 @@ public sealed class GevCam : ICam
         // 무엇을 내보냈는지 여기 한 자리에서 기억한다 — 단발 그랩의 "새 프레임" 판정 기준이다.
         // 변환에 실패해 발행하지 못한 것도 이미 지나간 프레임이므로 기준에 넣는다.
         // 기준이 0 이면 아직 아무것도 안 지나갔다 — 첫 번호가 무엇이든 그대로 기준이 된다.
-        if (_lastEmittedFrameId == 0 || IsNewerFrameId(frame.FrameId, _lastEmittedFrameId))
+        if (_lastEmittedFrameId == 0 || IsNewerFrameId(frame.FrameId, _lastEmittedFrameId, frame.IsExtendedId))
         {
             // 번호가 건너뛰었으면 카메라가 보낸 것이 여기까지 오지 못한 것이다.
-            // 간격도 16비트 안에서 센다 — 되돌이를 걸친 간격을 크기로 빼면 65,000 장이 한꺼번에
-            // 사라진 것처럼 보인다.
-            var gap = (frame.FrameId - _lastEmittedFrameId) & 0xFFFF;
+            // 되돌이가 있는 쪽은 간격도 16비트 안에서 센다 — 되돌이를 걸친 간격을 크기로 빼면
+            // 65,000 장이 한꺼번에 사라진 것처럼 보인다. 확장 번호는 되돌지 않으니 그냥 뺀다.
+            var gap = frame.IsExtendedId
+                ? frame.FrameId - _lastEmittedFrameId
+                : (frame.FrameId - _lastEmittedFrameId) & 0xFFFF;
             if (_lastEmittedFrameId != 0 && gap > 1)
                 _neverArrivedFrames += (long)(gap - 1);
             _lastEmittedFrameId = frame.FrameId;
@@ -1048,17 +1050,21 @@ public sealed class GevCam : ICam
     /// 오는 프레임을 모두 기각하고 시한을 넘긴다. 카메라를 다시 열기 전까지 풀리지 않는다.
     /// 연속 취득 여덟 시간이면 실제로 두 바퀴 돈다.
     ///
-    /// 그래서 크기가 아니라 <b>16비트 안의 거리</b>로 본다: 뒤로 간 거리가 반 바퀴를 넘으면 앞으로 간
-    /// 것으로 읽는다. 취득 계층의 수신부가 쓰는 것과 같은 식이다 — 두 층이 다른 식을 쓰면 같은 프레임을
-    /// 두고 판정이 갈린다. 장치가 촬영을 다시 시작해 번호를 처음부터 세는 경우도 이 식이 자연스럽게
-    /// 새것으로 본다.
+    /// 그래서 되돌이가 있는 쪽은 크기가 아니라 <b>16비트 안의 거리</b>로 본다: 뒤로 간 거리가 반 바퀴를
+    /// 넘으면 앞으로 간 것으로 읽는다. 취득 계층의 수신부가 쓰는 것과 같은 식이다 — 두 층이 다른 식을
+    /// 쓰면 같은 프레임을 두고 판정이 갈린다. 장치가 촬영을 다시 시작해 번호를 처음부터 세는 경우도 이
+    /// 식이 자연스럽게 새것으로 본다.
     ///
-    /// <b>전제: 16비트 블록 번호다.</b> 확장 번호를 쓰는 장치에서는 간격이 반 바퀴를 넘을 때 뒤집힌다.
-    /// 이 판정이 보는 간격은 대기열 깊이 수준이라 실무상 닿지 않지만, 취득 계층이 확장 여부를 알려 주게
-    /// 되면 그 값으로 두 식을 갈라야 한다.
+    /// <b>확장 번호를 쓰는 장치는 되돌이가 없으므로 그냥 크기로 본다.</b> 거리 식을 그대로 쓰면 간격이
+    /// 반 바퀴를 넘는 순간 옛것을 새것으로 읽는다 — 폭을 프레임이 알려 주니 식을 가른다.
     /// </summary>
-    internal static bool IsNewerFrameId(ulong id, ulong newest)
-        => id != newest && ((newest - id) & 0xFFFF) >= 0x8000;
+    /// <param name="id">판정할 프레임의 장치 번호.</param>
+    /// <param name="newest">지금까지 지나간 것 중 가장 새 번호.</param>
+    /// <param name="extendedIds">그 번호가 64비트 확장 블록 ID 인가 — 프레임이 스스로 밝힌다.</param>
+    internal static bool IsNewerFrameId(ulong id, ulong newest, bool extendedIds)
+        => extendedIds
+            ? id > newest
+            : id != newest && ((newest - id) & 0xFFFF) >= 0x8000;
 
     // === 노드 접근 도우미 ===
 

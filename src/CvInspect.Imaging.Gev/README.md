@@ -107,7 +107,9 @@ find out what a specific camera does.
 **A debugger that pauses the process drops the camera.** A breakpoint, Break All, or a memory
 snapshot stops the heartbeat, and once it has been quiet for the device's heartbeat timeout — a few
 seconds — the device takes control back. Every call after that throws `GevControlLostException` and
-only reopening recovers.
+only reopening recovers. **The exception says how long the gap was**, so a stall of tens of seconds
+against a timeout of three names itself; a loss with no gap at all points at another application
+taking the channel, or at the device restarting.
 
 What makes this cost time is how it looks. A live view goes on showing the frame it already had, so
 nothing on screen changes; the loss surfaces at the next operation that actually uses the control
