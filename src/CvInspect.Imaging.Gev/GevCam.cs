@@ -77,18 +77,54 @@ public sealed class GevCam : ICam
 
     public void Open()
     {
+        string opened;
         lock (_sync)
         {
             ThrowIfDisposed();
             if (_dev != null) return;
             Run(OpenCoreAsync);
             IsConnected = true;
+            // 문구는 락 안에서 뜬다 — 밖에서 장치를 읽으면 곧바로 닫는 흐름과 겹친 순간 신원도 주소도
+            // 빠진 줄이 남는다.
+            opened = DescribeOpened();
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
-        // 이름과 장치 주소를 한 번 이어 둔다 — 취득 라이브러리는 자기 줄에 주소를 달고 우리 이름은
+        // 이름과 장치 신원을 한 번 이어 둔다 — 취득 라이브러리는 자기 줄에 주소를 달고 우리 이름은
         // 모르므로, 이 한 줄이 있어야 그쪽 줄들이 이 카메라 것으로 읽힌다. 주소는 세션 내내 안 바뀐다.
-        WriteLog(CvLogLevel.Info, $"opened (SN={_opt.SerialNumber} at {_dev?.Address})");
+        WriteLog(CvLogLevel.Info, opened);
     }
+
+    /// <summary>
+    /// 여는 줄에 실을 카메라 신원. <see cref="_sync"/> 보유 전제 — <see cref="_dev"/> 를 읽는다.
+    ///
+    /// 제조사·모델·장치버전은 <b>열 때 장치에서 이미 읽어 둔 값</b>이라 추가 통신이 없다. 이것을 안 남기면
+    /// 로그만으로는 어느 기종이 어느 펌웨어로 돌았는지 알 수 없어, 나중에 설비에 사람을 보내 물어야 한다.
+    ///
+    /// 시리얼은 장치가 보고한 값을 쓴다 — 설정값과 같다는 것은 여는 길에서 이미 확인했다. 시리얼 레지스터를
+    /// 내놓지 않는 기종에서만 설정값으로 떨어지고, 그런 장치에서는 설정값도 비어 있다.
+    ///
+    /// <b>빈 값은 자리도 남기지 않는다</b> — "ver=" 같은 빈 칸은 값으로 오독된다. 장치가 아무것도 알려 주지
+    /// 않으면 시리얼과 주소만 남아, 신원을 싣기 전의 줄과 같은 모양이 된다.
+    /// </summary>
+    private string DescribeOpened()
+    {
+        var info = _dev?.Info;
+        var sb = new System.Text.StringBuilder("opened");
+
+        if (Trimmed(info?.Manufacturer) is { Length: > 0 } vendor) sb.Append(' ').Append(vendor);
+        if (Trimmed(info?.Model) is { Length: > 0 } model) sb.Append(' ').Append(model);
+
+        var serial = Trimmed(info?.SerialNumber);
+        if (serial.Length == 0) serial = Trimmed(_opt.SerialNumber);
+        sb.Append(" (SN=").Append(serial.Length == 0 ? "(not reported)" : serial);
+
+        if (Trimmed(info?.DeviceVersion) is { Length: > 0 } version) sb.Append(" ver=").Append(version);
+        sb.Append(" at ").Append(_dev?.Address).Append(')');
+        return sb.ToString();
+    }
+
+    /// <summary>없는 값과 공백뿐인 값을 한 가지로 접는다 — 문자열 레지스터를 공백으로 채워 보내는 장치가 있다.</summary>
+    private static string Trimmed(string? text) => text?.Trim() ?? string.Empty;
 
     private async Task OpenCoreAsync(CancellationToken ct)
     {
@@ -835,12 +871,54 @@ public sealed class GevCam : ICam
     private async Task<CvBayerPattern?> ResolveBayerAsync(GenApiNodeMap nodes, CancellationToken ct)
     {
         var code = (uint?)await TryReadIntAsync(nodes, "PixelFormat", ct).ConfigureAwait(false) ?? 0u;
-        if (code == 0 || !PixelFormatInfo.IsBayer(code)) return null;
-        if (ToCvPattern(PixelFormatInfo.BayerPattern(code)) is not { } declared) return null;
+
+        // 조용히 돌아가면 계산이 아예 돌지 않았다는 사실이 아무 데도 남지 않는다 — 그러면 "어긋남 경고가
+        // 없다" 가 "패턴이 맞았다" 로 읽힌다. 갈래마다 왜 못 돌았는지 남기되, 정상 구성이 지나는 갈래에는
+        // 넣지 않는다. 상시 발화하는 경고는 진짜 경고까지 안 읽히게 만든다.
+        if (code == 0)
+        {
+            // 흑백 카메라도 지나는 자리다 — 색을 걸어 경고하면 거짓 경보가 된다.
+            WriteLog(CvLogLevel.Info,
+                "PixelFormat could not be read, so the Bayer phase check did not run for this session. " +
+                "Frame conversion is unaffected — it uses the format each frame declares — but a mirror or an odd " +
+                "ROI offset would swap red and blue with nothing logged. If this is a colour camera and the colours " +
+                "look wrong, pin the pattern with BayerPatternOverride.");
+            return null;
+        }
+
+        // 코드 0 을 먼저 걸러야 한다 — 0 도 "표에 없는 코드" 라 이 검사에 먼저 걸리면 문구가 틀린다.
+        if (!PixelFormatInfo.IsKnown(code))
+        {
+            WriteLog(CvLogLevel.Warning,
+                $"PixelFormat 0x{code:X8} is not a format this package can convert, so every frame in it is " +
+                "dropped and the Bayer phase check cannot run. Set the camera to a supported format " +
+                "(Mono 8/10/12/16 including the packed ones, Bayer 8/10/12/16, RGB8, BGR8, RGBa8, BGRa8).");
+            return null;
+        }
+
+        // 흑백·RGB 카메라의 정상 경로 — 남길 것이 없다. 화소 포맷은 "camera state" 줄에 이미 있다.
+        if (!PixelFormatInfo.IsBayer(code)) return null;
+
+        if (ToCvPattern(PixelFormatInfo.BayerPattern(code)) is not { } declared)
+        {
+            // 지금의 화소 포맷 표에서는 나올 수 없는 갈래다 — Bayer 포맷 전부가 시작 패턴을 들고 있다.
+            // 그래도 남긴다: 표가 늘어 이 자리가 열리면 프레임마다 변환이 터지는데 알릴 곳이 여기뿐이다.
+            WriteLog(CvLogLevel.Warning,
+                $"{PixelFormatInfo.Name(code)} is a Bayer format whose start pattern this package cannot name, " +
+                "so the phase check cannot run and conversion has no pattern to demosaic with — every frame will " +
+                "fail. Pin the pattern with BayerPatternOverride to keep acquisition working.");
+            return null;
+        }
 
         // 없는 노드는 중립값으로 — ReverseY 를 아예 선언하지 않는 카메라가 흔하다.
-        var revX = await TryReadFlagAsync(nodes, "ReverseX", ct).ConfigureAwait(false) ?? false;
-        var revY = await TryReadFlagAsync(nodes, "ReverseY", ct).ConfigureAwait(false) ?? false;
+        // 다만 "노드가 없다" 와 "노드는 있는데 값을 못 읽었다" 는 갈라야 한다. 둘 다 null 로 오지만,
+        // 뒤쪽은 미러가 켜져 있어도 꺼진 것으로 계산되어 위상이 어긋난 채 아무 줄도 남지 않는다.
+        var revXRead = await TryReadFlagAsync(nodes, "ReverseX", ct).ConfigureAwait(false);
+        var revYRead = await TryReadFlagAsync(nodes, "ReverseY", ct).ConfigureAwait(false);
+        NoteUnreadMirror(nodes, "ReverseX", revXRead);
+        NoteUnreadMirror(nodes, "ReverseY", revYRead);
+        var revX = revXRead ?? false;
+        var revY = revYRead ?? false;
         var offX = (int)(await TryReadIntAsync(nodes, "OffsetX", ct).ConfigureAwait(false) ?? 0);
         var offY = (int)(await TryReadIntAsync(nodes, "OffsetY", ct).ConfigureAwait(false) ?? 0);
 
@@ -850,16 +928,61 @@ public sealed class GevCam : ICam
                          ?? await TryReadIntAsync(nodes, "Width", ct).ConfigureAwait(false) ?? 0);
         var maxH = (int)(await TryReadIntAsync(nodes, "HeightMax", ct).ConfigureAwait(false)
                          ?? await TryReadIntAsync(nodes, "Height", ct).ConfigureAwait(false) ?? 0);
-        if (maxW <= 0 || maxH <= 0) return null;
+        if (maxW <= 0 || maxH <= 0)
+        {
+            // 여기까지 왔으면 Bayer 카메라가 확실하다 — 기준 치수를 못 읽어 검사가 멈추면 색 뒤바뀜이
+            // 그대로 지나간다. 흑백은 위에서 이미 빠졌으므로 이 줄이 정상 구성에서 나오지 않는다.
+            WriteLog(CvLogLevel.Warning,
+                $"the Bayer phase check did not run for this {PixelFormatInfo.Name(code)} camera: neither " +
+                $"WidthMax/HeightMax nor Width/Height could be read (got {maxW}x{maxH}), and the mirror reference " +
+                "size is what decides the phase. A mirror or an odd ROI offset would swap red and blue with " +
+                "nothing logged — check that the camera exposes Width/Height, and pin the pattern with " +
+                "BayerPatternOverride if the colours are wrong.");
+            return null;
+        }
 
         var computed = CvBayerPhase.Effective(declared, maxW, maxH, revX, revY, offX, offY);
-        if (computed == declared) return null;   // 선언값을 그대로 쓴다
+        if (computed == declared)
+        {
+            // 이 한 줄이 있어야 "경고가 없다" 를 "계산이 돌았고 맞았다" 로 읽을 수 있다 — 없으면 계산이
+            // 못 돈 경우와 구분되지 않는다. 여는 때 한 번뿐이라 흐름을 어지럽히지 않는다.
+            WriteLog(CvLogLevel.Info,
+                $"Bayer phase checked: the reported {declared} matches the geometry " +
+                $"(ReverseX={revX} ReverseY={revY} OffsetX={offX} OffsetY={offY} max={maxW}x{maxH}).");
+            return null;   // 선언값을 그대로 쓴다
+        }
 
         WriteLog(CvLogLevel.Warning,
             $"Bayer phase disagreement: the camera reports {declared} but geometry implies {computed} " +
             $"(ReverseX={revX} ReverseY={revY} OffsetX={offX} OffsetY={offY} max={maxW}x{maxH}). " +
             $"Using the reported pattern — if colours look wrong, pin it with BayerPatternOverride.");
         return null;
+    }
+
+    /// <summary>
+    /// 미러 플래그를 <b>못 읽은 것</b>을 남긴다. 노드를 아예 선언하지 않은 카메라는 흔하고 그건 정상이라
+    /// 조용히 넘긴다 — 선언이 없으면 켜져 있을 수도 없다. 그러나 <b>노드는 있는데 값을 못 읽은 것</b>은
+    /// 다르다: 위상 계산이 꺼진 것으로 단정해 실효 패턴을 잘못 잡고, 그 결과가 "어긋남 없음" 이라 아무 줄도
+    /// 남지 않는다. 못 읽는 사유는 셋이다 — 다루지 않는 노드 종류, 알아볼 수 없는 낱말, 읽기 실패.
+    /// 종류를 문구에 실어 가리게 한다.
+    ///
+    /// 노드 유무만 본다. 접근 모드까지 캐물으면 더 정확하지만 그 조회는 장치 거절·시한 초과를 그대로
+    /// 올려보내 <b>진단이 여는 과정을 깨뜨릴 수 있다</b>. 여기 있는 것은 맵 조회 하나뿐이라 던지지 않는다.
+    ///
+    /// 수준을 Info 로 두는 것은 <b>선언만 해 두고 구현하지 않은 카메라</b>에서 이 줄이 잘못 나올 수 있기
+    /// 때문이다. 정상 장비에서 발화하는 경고를 만드는 것이 이 저장소가 이미 치른 대가라, 확인을 청할 뿐
+    /// 조치를 지시하지 않는다.
+    /// </summary>
+    private void NoteUnreadMirror(GenApiNodeMap nodes, string name, bool? read)
+    {
+        if (read is not null) return;
+        if (nodes.GetNode(name) is not { } node) return;   // 선언 자체가 없다 — 정상이다
+
+        WriteLog(CvLogLevel.Info,
+            $"{name} is declared on this camera ({node.Kind}) but its value could not be read, so the Bayer phase " +
+            "check assumed the mirror is off. If it is actually on, the transmitted pattern differs from the " +
+            $"reported one and nothing else will say so. Read {name} with the gevprobe sample; if red and blue are " +
+            "swapped, pin the pattern with BayerPatternOverride.");
     }
 
     // === 노드 접근 도우미 ===
