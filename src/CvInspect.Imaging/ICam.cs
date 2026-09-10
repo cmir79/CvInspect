@@ -26,7 +26,13 @@ public interface ICam : IDisposable
     bool IsGrabbing { get; }
 
     /// <summary>완전한 프레임만 발행한다 — 전송 손상·부분 수신 프레임은 구현체가 드롭하고
-    /// <see cref="CvLog"/> 로 경고한다 (불완전 데이터가 검사 판정에 섞이는 것 방지).</summary>
+    /// <see cref="CvLog"/> 로 경고한다 (불완전 데이터가 검사 판정에 섞이는 것 방지).
+    ///
+    /// <b>이 핸들러는 취득 스레드에서 동기로 돈다.</b> 여기서 무거운 일을 하면 취득이 그만큼 밀리고,
+    /// <see cref="StopContinuous"/> 가 이 핸들러를 기다리다 시한을 넘겨 <b>정지 뒤에 한 장이 더 나갈 수
+    /// 있다</b> — 트리거마다 판정하는 쪽에서는 그 한 장이 다음 대상의 답으로 들어간다.
+    /// 받아 두고 즉시 돌아간다: 화면 갱신은 UI 스레드로 넘기고, 기다리는 쪽을 깨울 때는 그 뒤 작업이
+    /// 이 스레드에 인라인으로 이어지지 않게 한다.</summary>
     event EventHandler<CamFrame>? FrameAcquired;
     /// <summary>연결 상태 변화 알림. 사용자가 닫아서 나기도 하고, <b>구현이 제어권을 잃어서</b> 나기도 한다.</summary>
     event EventHandler<ConnArgs>? ConnectionChanged;
