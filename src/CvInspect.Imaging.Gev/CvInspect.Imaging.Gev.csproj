@@ -12,7 +12,7 @@
   <PropertyGroup>
     <PackageId>CvInspect.Imaging.Gev</PackageId>
     <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
-    <Description>GigE camera acquisition for the CvInspect toolkit - an ICam backend that speaks the protocol directly, with no vendor SDK and no proprietary DLLs. Serial-number binding with actionable discovery diagnostics, user-set load, exposure control across SFNC generations, and PFNC pixel conversion including Bayer demosaic with phase diagnostics. Run against real hardware with no vendor SDK installed - an eight-hour two-camera monochrome run without a lost packet, and a colour pair acquiring on an inspection line. Only a few models have been exercised, so treat other cameras as unproven.</Description>
+    <Description>GigE camera acquisition for the CvInspect toolkit - an ICam backend that speaks the protocol directly, with no vendor SDK and no proprietary DLLs. Serial-number binding with actionable discovery diagnostics, user-set load, exposure control across SFNC generations, and PFNC pixel conversion including Bayer demosaic with phase diagnostics. Run against real hardware with no vendor SDK installed - a monochrome pair on a bench and a colour pair acquiring on an inspection line - but hours of run time, not months, and no endurance run through this backend. Only a few models have been exercised, so treat other cameras as unproven.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>gige;genicam;camera;acquisition;machine-vision;opencvsharp;vendor-free</PackageTags>
   </PropertyGroup>

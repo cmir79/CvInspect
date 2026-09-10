@@ -8,11 +8,11 @@ proprietary DLLs** are needed.
 
 > **Status.** Verified against real hardware, with **no vendor SDK and no vendor filter driver
 > installed** on any of the machines. Two monochrome cameras from different vendors are discovered,
-> opened, streamed and stopped — including an eight-hour run of the pair over one 1 GbE port with
-> no packet missing — and a pair of colour cameras acquires on an inspection line, where the Bayer
-> path produced the right colour with nothing pinned and nothing tuned. Endurance comes from the
-> monochrome pair and the colour pair has function but not run time, so treat other cameras as
-> unproven.
+> opened, streamed and stopped on a bench, and a pair of colour cameras acquires on an inspection
+> line, where the Bayer path produced the right colour with nothing pinned and nothing tuned.
+> **That is hours of run time, not months, and none of it is an endurance run of this backend** —
+> the eight-hour figures quoted further down were measured by the protocol library's own harness,
+> not through this `ICam` implementation. Treat other cameras as unproven.
 
 ## Use
 
@@ -91,9 +91,10 @@ reconnect restarts the counters, and a consumer computing deltas across that bou
 numbers.
 
 Alarm on `MissingPackets` and `IncompleteFrames`, never on `ResendRequests`. Packets that arrive out
-of order but still in time leave a resend request behind with nothing actually lost — a measured run
-logged 6,392 requests against zero missing packets over eight hours, and raising the timeouts does
-not reduce it.
+of order but still in time leave a resend request behind with nothing actually lost — an eight-hour
+two-camera bench run of the protocol library logged 6,392 requests against zero missing packets, and
+raising the timeouts does not reduce it. The rule is what that run settled; the run itself was not
+made through this package.
 
 ## Diagnostics
 
