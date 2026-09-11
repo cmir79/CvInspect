@@ -149,7 +149,10 @@ knowing this library. Resolution order:
    `CvLoc.Culture` selects the language (`"en"` default, `"ko"` included; regional tags
    such as `ko-KR` fold to their parent language). The package ships the tables embedded
    only — for field edits, create the loose file yourself with just the keys you want to
-   change (partial files merge over the embedded table)
+   change (partial files merge over the embedded table). **Set `CvLoc.Culture` at startup even
+   when you want English** — the default cannot tell "never chosen" from "chose `en`";
+   `CvLoc.IsCultureSet` reports which, and the first lookup without it (and without a `Resolver`)
+   raises one `System.Diagnostics.Trace` warning
 3. The raw key, with a one-time `CvLoc.MissingKey` notification
 
 Category display order is exposed as `CvCategoryAttribute.Order` (see `ICvOrderedCategory`);
@@ -170,7 +173,14 @@ Implementations must treat `Pixels` as immutable once published.
 
 ## Logging
 
-The library never writes logs itself. Attach a sink once at startup:
+**Attach a sink at startup, before the first camera is created, and assert `CvLog.IsAttached` in
+your startup checks.** The library never writes logs itself; without a sink its diagnostics go
+nowhere. `GevLogBridge` only carries the GigE layer into `CvLog` — it does not give you a sink, so a
+host with the bridge in place and no sink looks wired and is not. One consumer ran a line for two
+days that way, and every control-loss reason, dropped-frame line and ignored-call warning was lost.
+That state is now visible: the last 64 lines are held and replayed when a sink attaches (behind one
+line saying so), anything older is counted in `CvLog.DroppedCount`, and the first held line raises
+one `System.Diagnostics.Trace` warning. The attach itself is one line:
 
 ```csharp
 CvLog.Sink = (level, source, message, ex) => myLogger.Log(level, source, message, ex);

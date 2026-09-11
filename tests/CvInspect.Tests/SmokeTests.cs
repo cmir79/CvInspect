@@ -19,6 +19,18 @@ public class SmokeTests
     /// <summary>단언 하나 — 실패 메시지가 곧 그 회귀가 존재하는 이유다.</summary>
     private static void Check(bool cond, string name) => Assert.True(cond, name);
 
+    /// <summary>진단 추적을 받아 두는 청취기 — 싱크가 없을 때 남는 그 한 줄이 실제로 나오는지 본다.
+    /// 그 호출은 TRACE 상수가 있어야 컴파일에 남으므로, 여기서 잡힌다는 것이 곧 배포 빌드에 들어 있다는 증거다.</summary>
+    private sealed class TraceCapture : System.Diagnostics.TraceListener
+    {
+        public readonly List<string> Lines = new();
+        public override void Write(string? message) { if (message is not null) Lines.Add(message); }
+        public override void WriteLine(string? message) { if (message is not null) Lines.Add(message); }
+        public override void TraceEvent(System.Diagnostics.TraceEventCache? eventCache, string source,
+            System.Diagnostics.TraceEventType eventType, int id, string? message)
+            => Lines.Add($"{eventType}|{message}");
+    }
+
     /// <summary>번역 조회 — 리졸버 우선, 내장 표, 느슨한 파일의 키 단위 병합, 문화권 정규화.
     /// 이 절은 <b>순서를 지켜야 한다</b> — CvLoc 은 프로세스 전역이고 누락 이력과 적재 상태가
     /// 앞 단계에서 만들어진다. 그래서 하나로 묶어 둔다(쪼개면 서로의 전제를 지운다).</summary>
@@ -136,11 +148,69 @@ public class SmokeTests
     public void LogSink()
     {
     // === 7) CvLog sink ===
+    // 싱크가 붙는 순간 그동안 붙잡혀 있던 줄이 먼저 흘러든다 — 이 절이 세는 것은 자기 줄뿐이다.
     var logHits = new List<string>();
-    CvLog.Sink = (level, src, msg, ex) => logHits.Add($"{level}|{src}|{msg}");
+    CvLog.Sink = (level, src, msg, ex) => { if (src == "smoke") logHits.Add($"{level}|{src}|{msg}"); };
     CvLog.Publish(CvLogLevel.Warning, "smoke", "hello");
     Check(logHits.Count == 1 && logHits[0].StartsWith("Warning|smoke"), "CvLog sink receives");
 
+    }
+
+    /// <summary>싱크가 없는 동안의 진단은 사라지지 않는다 — 붙는 순간 순서대로 흘러가고, 밀려난 것은 세어지고,
+    /// 첫 줄은 진단 추적에 한 번 남는다. 한 소비자가 배선 없이 이틀을 돌며 잃은 것이 이 줄들이다.</summary>
+    [Fact]
+    public void LogSinkHoldsUntilAttached()
+    {
+    // === 7-B) CvLog — 배선이 늦어도 잃지 않고, 없으면 세어서 드러낸다 ===
+    {
+        var prev = CvLog.Sink;
+        var trace = new TraceCapture();
+        System.Diagnostics.Trace.Listeners.Add(trace);
+        try
+        {
+            CvLog.Sink = (_, _, _, _) => { };   // 붙였다 뗀다 — 다음 미연결 구간이 새 구간으로 세어진다
+            CvLog.Sink = null;
+            var before = CvLog.DroppedCount;
+            Check(!CvLog.IsAttached, "no sink attached");
+
+            CvLog.Publish(CvLogLevel.Info, "t", "one");
+            CvLog.Publish(CvLogLevel.Warning, "t", "two");
+            Check(trace.Lines.Count(l => l.Contains("CvLog.Sink is not set")) == 1,
+                $"the first held line raises exactly one Trace warning: [{string.Join(" | ", trace.Lines)}]");
+
+            var seen = new List<string>();
+            CvLog.Sink = (lv, src, msg, _) => seen.Add($"{lv}|{src}|{msg}");
+            Check(CvLog.IsAttached, "sink attached");
+            Check(seen.Count == 3 && seen[0] == "Info|CvLog|replaying 2 lines held before a sink was attached."
+                  && seen[1] == "Info|t|one" && seen[2] == "Warning|t|two",
+                $"held lines replay in order behind one line that says so: [{string.Join(" | ", seen)}]");
+            CvLog.Publish(CvLogLevel.Error, "t", "three");
+            Check(seen.Count == 4 && seen[3] == "Error|t|three", "after attach lines go straight through");
+            Check(CvLog.DroppedCount == before, "nothing is dropped while under the hold limit");
+
+            // 한도를 넘긴 것은 오래된 순으로 밀려나고 세어진다 — 0 이 아닌 계수가 "배선이 없었다" 의 증거다
+            CvLog.Sink = null;
+            for (var i = 0; i < CvLog.HoldCapacity + 6; i++) CvLog.Publish(CvLogLevel.Debug, "t", $"m{i}");
+            Check(CvLog.DroppedCount == before + 6, $"lines pushed out of the hold are counted (dropped={CvLog.DroppedCount - before})");
+            Check(trace.Lines.Count(l => l.Contains("CvLog.Sink is not set")) == 2,
+                "a new unattached stretch warns once more, not once per line");
+            seen.Clear();
+            CvLog.Sink = (_, _, msg, _) => seen.Add(msg);
+            Check(seen.Count == CvLog.HoldCapacity + 1
+                  && seen[0] == $"replaying {CvLog.HoldCapacity} lines held before a sink was attached; 6 older lines were dropped."
+                  && seen[1] == "m6" && seen[^1] == $"m{CvLog.HoldCapacity + 5}",
+                $"the newest {CvLog.HoldCapacity} replay and the notice names the drop (first={seen.FirstOrDefault()} second={seen.Skip(1).FirstOrDefault()} last={seen.LastOrDefault()})");
+        }
+        finally
+        {
+            System.Diagnostics.Trace.Listeners.Remove(trace);
+            CvLog.Sink = prev;
+        }
+
+        // 문화권을 골랐다는 사실이 보인다 — 기본 en 과 명시된 en 을 가르는 유일한 표지
+        CvLoc.Culture = CvLoc.Culture;
+        Check(CvLoc.IsCultureSet, "an explicit Culture assignment is visible as such");
+    }
     }
 
     /// <summary>알고리즘 스모크 — 합성 원 이미지에서 서클 파인더(네이티브 경유).</summary>

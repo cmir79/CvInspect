@@ -13,6 +13,10 @@ namespace CvInspect.Imaging.Gev;
 /// <see cref="GevCam"/> 이 처음 만들어질 때 <b>창구가 비어 있는 경우에만</b> 자동으로 연결한다 —
 /// 호스트가 이미 자기 창구를 꽂았으면 건드리지 않는다. 수준을 바꾸거나 명시적으로 연결하려면
 /// <see cref="AttachToCvLog"/> 를 호스트 기동 때 한 번 부른다.
+///
+/// <b>이 다리는 <see cref="CvLog"/> 까지만 잇는다.</b> 호스트가 <see cref="CvLog.Sink"/> 를 붙이지 않았으면 그 끝은
+/// 비어 있다 — 취득 계층 쪽에서는 창구가 차 있어 끝까지 이어진 것처럼 읽히기 쉽다. 그 상태는
+/// <see cref="CvLog.IsAttached"/> 가 말하고, 붙기 전의 줄은 <see cref="CvLog"/> 가 붙잡아 둔다.
 /// </summary>
 public static class GevLogBridge
 {

@@ -26,6 +26,8 @@ public static class CvLoc
     private static readonly Dictionary<string, Dictionary<string, string>?> _tables = new(StringComparer.Ordinal);
     private static readonly HashSet<string> _missingLogged = new(StringComparer.OrdinalIgnoreCase);
     private static string _culture = NeutralCulture;
+    private static bool _cultureSet;        // 호스트가 Culture 를 한 번이라도 골랐는가 — 기본값과 명시된 같은 값을 가른다
+    private static bool _cultureNoticed;    // 안 고른 채 첫 조회가 왔을 때의 알림을 냈는가
     private static Func<string, string?>? _resolver;
 
     // 표 적재 중 로그 sink 가 CvLoc.T 를 되부르는 재진입 차단 — 없으면 미적재 문화권에서 무한 재귀.
@@ -56,6 +58,7 @@ public static class CvLoc
             if (string.IsNullOrWhiteSpace(value)) return;
             lock (_sync)
             {
+                _cultureSet = true;   // 같은 값을 다시 골라도 "골랐다" 는 사실은 남는다 — 명시된 en 은 기본 en 과 다르다
                 if (string.Equals(_culture, value, StringComparison.OrdinalIgnoreCase)) return;
                 _culture = value;
                 _missingLogged.Clear();
@@ -76,10 +79,31 @@ public static class CvLoc
         }
     }
 
+    /// <summary>호스트가 <see cref="Culture"/> 를 명시했는가. 기본 "en" 은 "안 골랐다" 와 "en 을 골랐다" 를 구분하지
+    /// 못한다 — 한 소비자가 기본값인 줄 모른 채 영어 화면으로 이틀을 돌았고, 키가 다 있어 <see cref="MissingKey"/> 는
+    /// 울리지 않았다. 기동 검사에서 단언한다. 같은 값을 다시 골라도 "골랐다" 는 사실은 남는다.</summary>
+    public static bool IsCultureSet { get { lock (_sync) return _cultureSet; } }
+
+    /// <summary>문화권을 한 번도 고르지 않은 채 첫 조회가 오면 진단 추적에 한 번만 알린다. <see cref="Resolver"/> 가 꽂혀
+    /// 있으면 번역은 호스트가 맡은 것이므로 알리지 않는다. 예외도 로그도 아니다 — 이 라이브러리의 로그 자체가 배선을
+    /// 기다리는 쪽이라 진단 추적만 쓴다.</summary>
+    private static void NoticeDefaultCultureOnce()
+    {
+        lock (_sync)
+        {
+            if (_cultureSet || _cultureNoticed || _resolver is not null) return;
+            _cultureNoticed = true;
+        }
+        System.Diagnostics.Trace.TraceWarning(
+            "CvInspect: CvLoc.Culture was never set, so translations fall back to 'en'. " +
+            "Set CvLoc.Culture at startup (set 'en' explicitly to keep English and silence this) and assert CvLoc.IsCultureSet.");
+    }
+
     /// <summary>번역 조회. 실패 시 키 원문(스코프 프리픽스 제거)을 반환한다 — 예외를 내지 않는다.</summary>
     public static string T(string scopedKey)
     {
         if (string.IsNullOrEmpty(scopedKey)) return scopedKey ?? string.Empty;
+        NoticeDefaultCultureOnce();
 
         var custom = Resolver?.Invoke(scopedKey);
         if (custom is not null) return custom;
