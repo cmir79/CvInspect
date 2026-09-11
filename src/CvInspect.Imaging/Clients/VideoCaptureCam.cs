@@ -104,6 +104,7 @@ public sealed class VideoCaptureCam : ICam
 
     public void GrabOne()
     {
+        CamFrame? frame;
         lock (_sync)
         {
             ThrowIfDisposed();
@@ -113,8 +114,9 @@ public sealed class VideoCaptureCam : ICam
                 throw new InvalidOperationException(
                     "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
                     "stream's. Call StopContinuous() first.");
-            EmitOnce();
+            TryReadFrame(out frame);
         }
+        if (frame != null) FrameAcquired?.Invoke(this, frame);
     }
 
     public void StartContinuous()
@@ -205,11 +207,13 @@ public sealed class VideoCaptureCam : ICam
         {
             sw.Restart();
             bool emitted;
+            CamFrame? frame;
             lock (_sync)
             {
                 if (token.IsCancellationRequested || _cap is null) break;
-                emitted = EmitOnce();
+                emitted = TryReadFrame(out frame);
             }
+            if (frame != null) FrameAcquired?.Invoke(this, frame);
 
             if (!emitted)
             {
@@ -236,8 +240,12 @@ public sealed class VideoCaptureCam : ICam
     }
 
     /// <summary>한 프레임 읽기 → 채널 정합 → 방향 보정 → 발행. _sync 보유 전제. 실패 시 false.</summary>
-    private bool EmitOnce()
+    /// <summary>한 장을 읽어 <see cref="CamFrame"/> 으로 만든다 — <see cref="_sync"/> 아래에서 부른다.
+    /// 발행은 부른 쪽이 <b>락 밖에서</b> 한다. 락 안에서 발행하면 구독자가 이 카메라를 되부르는 순간
+    /// 서로를 붙잡는다. 프레임은 GC 소유 복사본이라 락을 놓은 뒤 넘겨도 수명 계약이 없다.</summary>
+    private bool TryReadFrame(out CamFrame? frame)
     {
+        frame = null;
         if (_cap is null) return false;
 
         if (!_cap.Read(_buf) || _buf.Empty())
@@ -261,7 +269,6 @@ public sealed class VideoCaptureCam : ICam
         }
 
         var processed = CamXform.Apply(src, _opt.Flip, _opt.Rotation);
-        CamFrame frame;
         try
         {
             frame = CamFrame.FromMat(processed);   // GC 소유 실체화 — 발행 후 수명 계약 없음
@@ -270,7 +277,6 @@ public sealed class VideoCaptureCam : ICam
         {
             if (!ReferenceEquals(processed, src)) processed.Dispose();
         }
-        FrameAcquired?.Invoke(this, frame);
         return true;
     }
 
