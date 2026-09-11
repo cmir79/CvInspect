@@ -48,6 +48,13 @@ public sealed class GevCam : ICam
     private GevStream? _stream;
 
     private Thread? _pump;
+
+    /// <summary>진행 중인 단발 그랩. 제어 상실과 닫기가 이것을 끊어 그랩이 시한을 다 채우지 않게 한다.
+    /// <see cref="_sync"/> 아래에서만 만들고 지운다.</summary>
+    private CancellationTokenSource? _grabCts;
+
+    /// <summary>그랩을 끊은 쪽이 남긴 사유 — 끊긴 그랩이 부른 쪽에 던질 문구다. 끊기 전에 적는다.</summary>
+    private string? _grabAbortReason;
     private CancellationTokenSource? _pumpCts;
     private bool _disposed;
 
@@ -300,6 +307,7 @@ public sealed class GevCam : ICam
     private bool CloseWhileLocked()
     {
         if (_dev is null) return false;
+        AbortGrabWhileLocked("The camera was closed while the single grab waited for its frame.");
         StopPumpCore();
         Run(CloseCoreAsync, CancellationToken.None);
         IsConnected = false;
@@ -385,6 +393,10 @@ public sealed class GevCam : ICam
             if (!ReferenceEquals(dev, _dev)) return;   // 이미 교체·정리된 세션의 늦은 통지
             if (!IsConnected) return;
             IsConnected = false;
+            // 기다리던 그랩을 지금 끊는다. 두면 시한을 다 채우고 "프레임이 안 왔다, 카메라 설정을 보라" 로
+            // 끝나 조작자를 엉뚱한 데로 보낸다 — 원인은 제어 상실이다.
+            AbortGrabWhileLocked(
+                "Control of the camera was lost while the single grab waited for its frame; reopen the camera.");
             wasGrabbing = StopPumpCore();
         }
         WriteLog(CvLogLevel.Warning, "control lost", ex);
@@ -419,18 +431,59 @@ public sealed class GevCam : ICam
 
     public void GrabOne()
     {
+        GevStream stream;
+        CancellationTokenSource cts;
         lock (_sync)
         {
             ThrowIfDisposed();
-            var stream = EnsureOpen();
+            stream = EnsureOpen();
             // 연속 취득 중에는 답할 수 없다 — 흐르는 장과 이 호출의 답을 부른 쪽이 가릴 수 없다.
             // 조용히 돌아가면 그 자리에 자유 실행 프레임이 들어와 다른 대상을 판정한다.
             if (_pump != null)
                 throw new InvalidOperationException(
                     "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
                     "stream's. Call StopContinuous() first.");
-            Run(ct => GrabOnceAsync(stream, ct));
+            // 그랩은 한 번에 하나다 — 둘이 같은 대기열을 다투면 어느 쪽이 어느 프레임을 받았는지 알 수 없다.
+            if (_grabCts != null)
+                throw new InvalidOperationException(
+                    "A single grab is already waiting for its frame on this camera.");
+            cts = _grabCts = new CancellationTokenSource();
+            _grabAbortReason = null;
         }
+
+        // 락을 놓고 기다린다. 쥔 채 기다리면 시한만큼 제어 상실 통지·닫기·재연결이 밀리고, 발행이 락
+        // 아래에서 나가 구독자가 이 카메라를 되부르는 순간 서로를 붙잡는다 — 그랩의 시한은 프레임을 이미
+        // 받은 뒤라 그것을 풀지 못한다. 락이 지키던 것은 위에서 확보한 상태뿐이고, 그 뒤 스트림이 닫히면
+        // 취득 계층이 던져서 알린다.
+        try
+        {
+            Run(ct => GrabOnceAsync(stream, ct), cts.Token);
+        }
+        catch (Exception ex) when (cts.IsCancellationRequested)
+        {
+            // 우리가 끊은 그랩의 뒤끝은 하나로 접는다 — 취소·닫힌 스트림·버려진 장치 중 무엇에 걸려
+            // 나왔든 원인은 끊은 쪽에 있고, 그 사유가 부른 쪽이 들어야 할 말이다.
+            string reason;
+            lock (_sync) reason = _grabAbortReason ?? "The single grab was cancelled while it waited for its frame.";
+            throw new InvalidOperationException(reason, ex);
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                if (ReferenceEquals(_grabCts, cts)) { _grabCts = null; _grabAbortReason = null; }
+            }
+            cts.Dispose();
+        }
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 진행 중인 단발 그랩을 사유와 함께 끊는다 — 사유를 먼저 적고
+    /// 끊어야 끊긴 쪽이 그것을 읽는다. 없으면 아무 일도 안 한다.</summary>
+    private void AbortGrabWhileLocked(string reason)
+    {
+        if (_grabCts is null) return;
+        _grabAbortReason = reason;
+        try { _grabCts.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     private async Task GrabOnceAsync(GevStream stream, CancellationToken ct)
@@ -488,6 +541,10 @@ public sealed class GevCam : ICam
             ThrowIfDisposed();
             var stream = EnsureOpen();
             if (_pump != null) return;
+            // 단발 그랩이 대기열을 기다리는 동안 펌프를 세우면 둘이 같은 대기열을 다툰다.
+            if (_grabCts != null)
+                throw new InvalidOperationException(
+                    "A single grab is waiting for its frame; continuous acquisition cannot start until it returns.");
 
             Run(async ct =>
             {

@@ -189,7 +189,30 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     }
 
     // --- 카메라 ---
-    [RelayCommand] private void Grab() => _cam?.GrabOne();
+    // 계약대로 한다: 연속 취득 중의 단발 그랩은 던지므로 먼저 멈춘다(재개는 Live 로). 그랩은 프레임이 오거나
+    // 시한이 다할 때까지 부른 쪽을 붙잡으므로 UI 스레드에서 직접 부르지 않고, 실패는 상태줄에 낸다 —
+    // 커맨드 안에서 새는 예외는 창을 통째로 닫는다.
+    [RelayCommand]
+    private void Grab()
+    {
+        if (_cam is not { } cam) return;
+        Task.Run(() =>
+        {
+            try
+            {
+                if (cam.IsGrabbing) cam.StopContinuous();
+                cam.GrabOne();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }).ContinueWith(t =>
+        {
+            if (ReferenceEquals(_cam, cam) && t.Result is not null) Status = $"grab failed: {t.Result}";
+        }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
     [RelayCommand] private void Live() => _cam?.StartContinuous();
     [RelayCommand] private void Stop() => _cam?.StopContinuous();
 

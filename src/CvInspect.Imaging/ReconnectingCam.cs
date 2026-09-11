@@ -124,9 +124,20 @@ public sealed class ReconnectingCam : ICam
         }
         try { cts?.Cancel(); } catch (ObjectDisposedException) { /* 루프가 이미 물러남 */ }
 
-        _gate.Wait();
-        try { RetireInner(); }
-        finally { _gate.Release(); }
+        // 시한을 두고 기다린다 — 재연결 사다리가 게이트를 쥔 채 여는 중이면 그 열기는 취소되지 않으므로
+        // (열기에 취소 토큰이 없다) 무한정 기다리면 <b>닫기가 부른 쪽의 종료 예산을 넘긴다.</b> 그러면
+        // 제어권을 반납하지 못한 채 프로세스가 내려가고, 곧바로 재기동하면 장치가 하트비트 시한을
+        // 넘길 때까지 "다른 응용이 잡고 있다" 로 열기가 실패한다. 현장에는 "가끔 재기동이 실패한다" 로만
+        // 보인다. 시한을 넘기면 <see cref="Dispose"/> 와 같이 그래도 정리를 진행한다.
+        if (_gate.Wait(Math.Max(0, _opt.ShutdownWaitMs)))
+        {
+            try { RetireInner(); }
+            finally { _gate.Release(); }
+        }
+        else
+        {
+            RetireInner();   // 전이가 걸려 있어도 닫기는 진행한다
+        }
 
         RaiseGrabbing(false);
         RaiseConnection(false);
@@ -177,15 +188,28 @@ public sealed class ReconnectingCam : ICam
     public void StartContinuous()
     {
         ICam? cam;
+        bool wantedBefore;
+        int myVersion;
         lock (_sync)
         {
             ThrowIfDisposed();
+            wantedBefore = _wantContinuous;
             _wantContinuous = true;           // 미연결 구간이면 의도만 기록 — 복원 때 반영된다
-            _intentVersion++;
+            myVersion = ++_intentVersion;
             cam = _connected ? _inner : null;
         }
         if (cam is null) return;
-        cam.StartContinuous();
+        try
+        {
+            cam.StartContinuous();
+        }
+        catch
+        {
+            // 안쪽이 거부했다(단발 그랩이 기다리는 중 등). 부른 쪽은 예외를 받았는데 의도만 남겨 두면
+            // 다음 재연결 때 아무도 청하지 않은 연속 취득이 되살아난다 — 그 사이 새 의도가 없을 때만 되돌린다.
+            lock (_sync) { if (_intentVersion == myVersion) _wantContinuous = wantedBefore; }
+            throw;
+        }
         RaiseGrabbing(true);
     }
 

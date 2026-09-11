@@ -410,6 +410,23 @@ public class SmokeTests
             Check(!cam.IsGrabbing && !made[1].IsGrabbing, "stopped intent is not revived by reconnect");
         }
 
+        // 10-3b) 안쪽 시작이 실패하면 의도가 남지 않는다 — 남으면 다음 재연결 때 아무도 청하지 않은 연속 취득이
+        //        되살아난다. 부른 쪽은 예외를 받았지 시작을 받은 것이 아니다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            cam.Open();
+            made[0].FailNextStart = true;
+            var threw = false;
+            try { cam.StartContinuous(); } catch (InvalidOperationException) { threw = true; }
+            Check(threw, "an inner start failure reaches the caller");
+            made[0].LoseConnection();
+            Check(Wait(() => made.Count == 2), "reconnect after a failed start");
+            Thread.Sleep(60);
+            Check(!cam.IsGrabbing && !made[1].IsGrabbing,
+                "a start that failed is not revived by reconnect — the caller saw an exception, not a start");
+        }
+
         // 10-4) 명시적 Close 이후 부활 금지 — 백오프 대기 중 Close 하면 새 인스턴스가 안 생긴다
         {
             var made = new List<FakeCam>();
