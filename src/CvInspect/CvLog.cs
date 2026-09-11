@@ -45,7 +45,9 @@ public static class CvLog
     private static bool _noticed;        // 지금 미연결 구간에서 진단 추적 경고를 냈는가
 
     /// <summary>(level, source, message, exception) 수신 델리게이트 — 호스트 로거 어댑터 연결 지점.
-    /// 붙이는 순간 붙잡아 둔 줄이 안내 한 줄 뒤에 이 델리게이트로 순서대로 흘러간다(부른 스레드에서, 락 밖에서).</summary>
+    /// 붙이는 순간 붙잡아 둔 줄이 안내 한 줄 뒤에 이 델리게이트로 순서대로 흘러간다(부른 스레드에서, 락 밖에서).
+    /// 그래서 <b>호스트 로거가 받을 준비가 된 뒤에</b> 붙인다 — 재생분은 붙이는 순간 그 로거로 가므로, 로거가 아직
+    /// 못 받으면 거기서 사라지고 아무도 세지 않는다. 늦게 붙이는 쪽은 잃지 않는다: 그 사이의 줄이 여기 붙잡혀 있다.</summary>
     public static Action<CvLogLevel, string, string, Exception?>? Sink
     {
         get { lock (_gate) return _sink; }

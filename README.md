@@ -173,14 +173,17 @@ Implementations must treat `Pixels` as immutable once published.
 
 ## Logging
 
-**Attach a sink at startup, before the first camera is created, and assert `CvLog.IsAttached` in
+**Attach a sink at startup, as soon as your logger can write, and assert `CvLog.IsAttached` in
 your startup checks.** The library never writes logs itself; without a sink its diagnostics go
 nowhere. `GevLogBridge` only carries the GigE layer into `CvLog` — it does not give you a sink, so a
 host with the bridge in place and no sink looks wired and is not. One consumer ran a line for two
 days that way, and every control-loss reason, dropped-frame line and ignored-call warning was lost.
 That state is now visible: the last 64 lines are held and replayed when a sink attaches (behind one
 line saying so), anything older is counted in `CvLog.DroppedCount`, and the first held line raises
-one `System.Diagnostics.Trace` warning. The attach itself is one line:
+one `System.Diagnostics.Trace` warning. Because of the replay, order the startup as *logger ready →
+`CvLog.Sink` → cameras*: attaching after the logger is up loses nothing, while a sink attached
+before the logger can write hands the replay to a logger that is not listening yet — those lines are
+gone, and nothing counts them. The attach itself is one line:
 
 ```csharp
 CvLog.Sink = (level, source, message, ex) => myLogger.Log(level, source, message, ex);
