@@ -64,10 +64,14 @@ public static class CvInspGeom
     /// 루프 안에서 잡고 놓는다).
     ///
     /// <b>회전은 <paramref name="extraDeg"/> 하나로 다 준다.</b> 창은 <b>원본에서 한 번에</b> 최종 자세로
-    /// 떠 오므로, 잘라 놓고 다시 돌릴 때 필요하던 모서리 여유(회전 패딩)가 아예 필요 없다. 후보 각도 스윕뿐
-    /// 아니라 <b>대상 템플릿 자신의 학습각</b>도 여기에 실어 주면 된다 — 대상이 기울여 티칭됐다면
-    /// 티칭 공간에서는 그 각도만큼 돌아 있으므로, <c>extraDeg</c> 에 그 학습각을 <b>더하면</b> 창 안에서
-    /// 템플릿 자세로 선다(회귀가 그 부호를 못 박는다).
+    /// 떠 오므로, 잘라 놓고 다시 돌릴 때 필요하던 모서리 여유(회전 패딩)가 아예 필요 없다.
+    ///
+    /// ⚠ <b>대상 템플릿이 기울여 티칭됐다면 그 학습각도 여기에 실어야 한다</b> — 티칭 공간에서는 대상이
+    /// 자기 <see cref="CvPatternOpt.TrainedAngleDeg"/> 만큼 돌아 있으므로, <c>extraDeg</c> 에 그 값을
+    /// <b>더해야</b> 창 안에서 템플릿 자세로 선다(부호는 회귀가 실측으로 못 박는다).
+    /// 안 더하면 기울여 티칭한 대상에서만 점수가 깎이는데, 증상이 "좀 낮다" 라서 <b>진짜 미검출과 구분되지
+    /// 않는다.</b> 그 덧셈을 손으로 하지 않으려면 <b>대상 옵트를 받는 오버로드</b>를 쓴다 — 거기서는 이 함정이
+    /// 구조로 사라진다.
     ///
     /// 창 크기는 <b>티칭 공간 픽셀</b>이다 — 부품이 크게 보여도 창에 담기는 티칭 범위는 그대로다.
     /// 이것이 의도다: 정규화가 발견 스케일을 나눠 없애므로 <b>대상도 티칭 크기로 돌아온다</b>. 그래서
@@ -100,6 +104,37 @@ public static class CvInspGeom
         using (var m = AffineOf(windowToImage.Inverse()))
             Cv2.WarpAffine(img, window, m, new Size(width, height), interp, border, borderValue ?? Scalar.All(0));
         return (window, windowToImage);
+    }
+
+    /// <summary>
+    /// 정규화 창 — <b>대상 패턴이 티칭된 자리를, 그 패턴의 템플릿 자세로</b> 잘라 온다.
+    /// 앵커(<paramref name="pat"/>)의 발견 포즈로 공간을 세우고, 창의 자리·크기·회전을
+    /// <paramref name="target"/> 이 스스로 말하게 하는 형태다.
+    ///
+    /// 자리는 <see cref="CvPatternOpt.TrainedOriginX"/>/<c>Y</c>, 크기는 학습 템플릿 크기
+    /// (<see cref="CvPatternOpt.TemplateSize"/>, 디코드 없음) + <paramref name="marginPx"/> 여유,
+    /// 회전은 <paramref name="extraDeg"/> 에 <b><paramref name="target"/> 의 학습각을 더한 값</b>이다.
+    ///
+    /// <b>그 덧셈이 이 오버로드의 존재 이유다.</b> 낮은 쪽 오버로드는 각도를 호출자가 합쳐 넘겨야 하는데,
+    /// 대상 학습각은 <b>조작자가 학습 사각을 기울이는 순간에만</b> 0 이 아니게 된다 — 원형으로 잡아도,
+    /// 사각을 반듯하게 잡아도 0 이라 테스트와 평소 티칭에서는 드러나지 않는다. 빠뜨리면 기울여 잡은
+    /// 첫 티칭에서만 점수가 깎이고, 그 증상이 진짜 미검출과 같은 모양이다. 손으로 더하게 두지 않는다.
+    ///
+    /// <paramref name="extraDeg"/> 는 후보 각도 가산분으로 남는다(대칭 접힘 스윕은 호출자가 돈다).
+    /// 대상이 아직 학습되지 않았으면(템플릿 없음) null.
+    /// </summary>
+    public static (Mat Window, CvPose WindowToImage)? NormalizedWindow(
+        Mat img, CvPatternOpt pat, CvPose found, CvPatternOpt target, int marginPx, double extraDeg = 0,
+        InterpolationFlags interp = InterpolationFlags.Linear,
+        BorderTypes border = BorderTypes.Constant, Scalar? borderValue = null)
+    {
+        if (target?.TemplateSize() is not { } t) return null;
+
+        return NormalizedWindow(img, pat, found,
+            target.TrainedOriginX, target.TrainedOriginY,
+            t.W + 2 * marginPx, t.H + 2 * marginPx,
+            extraDeg + target.TrainedAngleDeg,
+            interp, border, borderValue);
     }
 
     /// <summary>포즈를 warpAffine 용 2×3 행렬로. 포즈 대수와 한 곳에서 맞물리게 두어 각도 부호를 다시 정하지 않는다 —
@@ -169,8 +204,12 @@ public static class CvInspGeom
     /// </summary>
     [Obsolete("검증 정책은 호스트 몫이다 — 이 메서드가 하는 일은 툴킷 조각들의 조립이고, 그 조립이 " +
         "툴킷의 매처보다 약하다(마스크·각도/스케일 탐색·게이트 없이 MatchTemplate 한 번). " +
-        "NormalizedWindow 로 창을 얻어 MatchPattern 으로 찾고 WindowToImage.Apply 로 좌표를 되돌리는 쪽으로 옮긴다 — " +
-        "그 길에서는 랜드마크 옵트의 TrainedShape(원형 마스크)와 탐색 설정이 실제로 먹는다. 다음 minor 에서 제거된다.")]
+        "NormalizedWindow(img, pat, found, target: 랜드마크옵트, marginPx: searchPx, extraDeg: 스윕각) 으로 창을 얻어 " +
+        "MatchPattern 으로 찾고 WindowToImage.Apply 로 좌표를 되돌린다 — 그 길에서는 랜드마크 옵트의 " +
+        "TrainedShape(원형 마스크)와 탐색 설정이 실제로 먹는다. " +
+        "⚠ 옮길 때 호출부 계약이 하나 바뀐다: 이 메서드는 랜드마크 자신의 TrainedAngleDeg 를 안에서 처리했지만, " +
+        "낮은 쪽 NormalizedWindow 오버로드는 그 각을 extraDeg 에 더해 넘겨야 한다(target 을 받는 오버로드는 대신 더해 준다). " +
+        "빠뜨리면 기울여 티칭한 대상에서만 점수가 깎이고 진짜 미검출과 구분되지 않는다. 다음 minor 에서 제거된다.")]
     public static (double Score, double ExpX, double ExpY, (double X, double Y)[] Found) VerifyLandmark(
         Mat pre, CvPatternOpt pat, CvPose p, double extraDeg, CvPatternOpt landmark, double searchPx)
     {

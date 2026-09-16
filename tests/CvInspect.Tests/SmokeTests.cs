@@ -1156,6 +1156,35 @@ public class SmokeTests
         using var wrongWin = wrong!.Value.Window;
         Check(Math.Abs(OrientDeg(wrongWin)) > 30.0,
             $"the opposite sign leans it twice as far, which is why this is measured and not reasoned ({OrientDeg(wrongWin):F2} deg)");
+
+        // 대상 옵트를 받는 오버로드는 그 덧셈을 대신한다 — 호출부가 학습각을 손으로 더할 일이 없다.
+        // 그 덧셈은 조작자가 학습 사각을 기울이는 순간에만 0 이 아니게 되므로, 손에 맡기면 평소 티칭에서는
+        // 드러나지 않다가 기울여 잡은 첫 티칭에서만 점수가 깎인다.
+        using (var templ = new Mat(30, 40, MatType.CV_8UC1, Scalar.Gray))
+        {
+            Cv2.ImEncode(".png", templ, out var png);
+            var target = new CvPatternOpt
+            {
+                TrainedOriginX = 240, TrainedOriginY = 80,
+                TrainedAngleDeg = lmTrainedAngle, TemplatePng = png,
+            };
+            var auto = CvInspGeom.NormalizedWindow(scene, pat, found, target, marginPx: 15);
+            using var autoWin = auto!.Value.Window;
+            Check(autoWin.Width == 40 + 30 && autoWin.Height == 30 + 30,
+                $"the window is sized from the target's own template plus the margin ({autoWin.Width}x{autoWin.Height})");
+            Check(Math.Abs(OrientDeg(autoWin)) < 3.0,
+                $"and it stands the target up without the caller adding the trained angle ({OrientDeg(autoWin):F2} deg)");
+
+            // 대조군: 같은 창을 낮은 오버로드로 부르면서 학습각을 빠뜨리면 기울어진다 — 그게 옮길 때 밟는 자리다.
+            var byHand = CvInspGeom.NormalizedWindow(scene, pat, found,
+                target.TrainedOriginX, target.TrainedOriginY, 70, 60, extraDeg: 0);
+            using var byHandWin = byHand!.Value.Window;
+            Check(Math.Abs(OrientDeg(byHandWin) - lmTrainedAngle) < 3.0,
+                $"forgetting it leaves the target leaning by exactly its trained angle ({OrientDeg(byHandWin):F2} deg)");
+
+            Check(CvInspGeom.NormalizedWindow(scene, pat, found, new CvPatternOpt(), marginPx: 15) is null,
+                "a target with no template trained yet gives null instead of guessing a window size");
+        }
     }
 
     // === 10-C) Clone — 프로퍼티를 손으로 베끼지 않으므로 빠지는 것이 없다 ===
