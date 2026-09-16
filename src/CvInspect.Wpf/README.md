@@ -143,6 +143,13 @@ is referenced.
 
 `net8.0-windows`, AnyCPU. The native OpenCV runtime is chosen by the consuming application.
 
+## Versions
+
+The four CvInspect packages move together — upgrade them as a set. **This is a 0.x API: breaking
+changes happen, so pin versions.** What changed in each release is on the
+[Releases page](https://github.com/cmir79/CvInspect/releases), one entry per version; read the entries
+between the version you are on and the one you are moving to.
+
 ## License
 
 Apache-2.0. Not affiliated with OpenCV or OpenCvSharp.

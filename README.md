@@ -266,9 +266,11 @@ Read these before adopting — they are real, and they are not going away soon.
   pixel-to-millimetre calibration beyond scalar resolution fields; no lens distortion correction;
   no OCR, deep learning or 3D.
 - **0.x API.** Breaking changes have happened (the `CvDispCtrl.Frame` type changed in 0.16.0) and
-  will happen again before 1.0 — pin versions. `main` always holds the latest release and every release
-  is a `v*` tag on it; work happens on `dev` and reaches `main` through a release pull request whose
-  description is the change log.
+  will happen again before 1.0 — pin versions. **What changed in each release is on the
+  [Releases page](https://github.com/cmir79/CvInspect/releases)**, one entry per version; read the
+  entries between the version you are on and the one you are moving to. `main` always holds the latest
+  release and every release is a `v*` tag on it; work happens on `dev` and reaches `main` through a
+  release pull request.
 - **Tests are a regression harness, not coverage.** Each case pins a defect that was actually
   seen; accuracy figures quoted above come from synthetic scenes.
 - **Comments are Korean.** READMEs are English; XML documentation (what IntelliSense shows) is

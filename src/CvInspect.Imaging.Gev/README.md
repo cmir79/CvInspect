@@ -125,6 +125,16 @@ it when it happens rather than when something else trips over it.
 `netstandard2.1` and `net8.0`. Depends on `CvInspect.Imaging` and on the GigE protocol library;
 neither pulls in a native OpenCV runtime — the consuming application still chooses that.
 
+## Versions
+
+The four CvInspect packages move together — upgrade them as a set. **This is a 0.x API: breaking
+changes happen, so pin versions.** What changed in each release is on the
+[Releases page](https://github.com/cmir79/CvInspect/releases), one entry per version; read the entries
+between the version you are on and the one you are moving to.
+
+**If you are on a version below 0.20.0, move up.** Below it the device's 16-bit frame id was compared
+by size, so acquisition stalled when the number wrapped — about every 78 minutes at 14 fps.
+
 ## License
 
 Apache-2.0. Not affiliated with OpenCV, OpenCvSharp, or any camera vendor.

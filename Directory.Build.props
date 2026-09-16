@@ -18,6 +18,13 @@
     <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
     <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+
+    <!-- 노트 본문이 아니라 그 판의 릴리스 주소를 싣는다. 베껴 넣으면 사본이 갈리고 nupkg 는 불변이라 고칠 수도 없다 —
+         실제로 0.20.0 은 저자가 틀렸다고 정정한 문장이 그 판 페이지에 그대로 남아 있고, 정정은 릴리스 본문에만 있다.
+         포인터는 갈리지 않는다. 이 한 줄이 없으면 nuget.org 패키지 페이지에 릴리스 노트 탭 자체가 안 생겨서,
+         패키지만 보고 온 소비자가 판별 변경으로 건너갈 첫 링크가 없다(4패키지 중 안내가 실리는 것은 루트 README 를
+         싣는 코어 하나뿐이다). 소급은 안 된다 — 이미 올린 판에는 영원히 이 탭이 없다. -->
+    <PackageReleaseNotes>https://github.com/cmir79/CvInspect/releases/tag/v$(Version)</PackageReleaseNotes>
   </PropertyGroup>
 
 </Project>
