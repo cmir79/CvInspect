@@ -114,7 +114,11 @@ public sealed class VideoCaptureCam : ICam
                 throw new InvalidOperationException(
                     "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
                     "stream's. Call StopContinuous() first.");
-            TryReadFrame(out frame);
+            // 읽기 실패를 삼키지 않는다 — 사람이 부른 한 장이다. 종전에는 프레임도 예외도 로그도 없이
+            // 돌아와서, 부른 쪽에서 성공과 구분되지 않았다(구독자가 아무것도 못 받은 것이 유일한 단서인데
+            // 그것을 이유와 함께 설명해 주는 곳이 없었다). 연속 취득 루프는 같은 실패를 이미 남긴다.
+            if (!TryReadFrame(out frame))
+                WriteLog(CvLogLevel.Warning, "frame read failed — the single grab produced no frame.");
         }
         if (frame != null) FrameAcquired?.Invoke(this, frame);
     }
