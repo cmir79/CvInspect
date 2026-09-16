@@ -122,19 +122,51 @@ public static class CvInspGeom
     ///
     /// <paramref name="extraDeg"/> 는 후보 각도 가산분으로 남는다(대칭 접힘 스윕은 호출자가 돈다).
     /// 대상이 아직 학습되지 않았으면(템플릿 없음) null.
+    ///
+    /// <b>창과 함께 그 창에서 쓸 옵트(<c>MatchOpt</c>)를 돌려준다</b> — 정규화가 무엇을 걷어냈는지 아는 곳은
+    /// 창을 만든 여기뿐이라서다. 원본 옵트를 그대로 <see cref="MatchPattern"/> 에 넣으면 <b>조용히 못 찾는다</b>:
+    /// 파인더는 각도 존의 중심을 <see cref="CvPatternOpt.TrainedAngleDeg"/> 로 잡는데(장면에서 대상이 그 자세로
+    /// 누워 있다는 전제), 이 창은 이미 그 각을 걷어 대상을 0° 로 세워 놓았다. 각도 탐색이 꺼져 있으면 존이 0 이라
+    /// <b>창에 없는 그 한 자세만</b> 평가한다(실측: 준비된 옵트는 <c>ThetaDeg 0</c>, 그대로 넣으면 <c>20</c> —
+    /// 학습각 그대로다). 점수가 얼마나 떨어지는지는 대상 나름이고, 자세가 뚜렷한 대상일수록 미검출로 간다.
+    /// 각도 탐색이 켜져 있으면 존이 그 어긋남을 덮어 가려지기도 한다 — <b>그래서 더 나쁘다.</b>
+    /// 편집기에서 스위치 하나를 끄는 순간 드러나는 결함이 된다.
+    /// 그래서 <c>MatchOpt</c> 는 사본에 두 가지를 맞춰 준다:
+    /// <list type="bullet">
+    /// <item><c>TrainedAngleDeg = 0</c> — 창이 이미 세워 두었다.</item>
+    /// <item><c>UseSearchRegion = true</c> + 창 중앙 ±<paramref name="marginPx"/> 사각 — 호출자가 말한 그 허용
+    /// 범위를 그대로 지킨다. 안 걸면 파인더는 <b>창 전체</b>를 중심 허용 범위로 잡아, 실효 반경이
+    /// <c>marginPx + 템플릿 절반</c> 쪽으로 넓어진다(옆 후보가 미끄러져 들어온다).</item>
+    /// </list>
+    /// 원본은 건드리지 않는다(<see cref="CvPatternOpt.Clone"/>).
+    ///
+    /// ⚠ <b><see cref="CvPatternOpt.UseAngleSearch"/>·<see cref="CvPatternOpt.UseScaleSearch"/> 는 그대로 둔다 —
+    /// 그것은 호출자의 판단이다.</b> 다만 이 창에서 뜻이 달라진다: 각도 탐색을 켜면 이제 <b>0° 중심</b>으로 돌므로
+    /// 자세가 흔들려도 잡히는데, 그 말은 <b>자세로 후보를 가르던 판별이 무력해진다</b>는 뜻이다(어느 후보각에서든
+    /// 돌려 맞출 수 있다). 스케일 탐색은 창이 이미 티칭 크기라 1.0 중심이 되어 대개 불필요하다.
     /// </summary>
-    public static (Mat Window, CvPose WindowToImage)? NormalizedWindow(
+    public static (Mat Window, CvPose WindowToImage, CvPatternOpt MatchOpt)? NormalizedWindow(
         Mat img, CvPatternOpt pat, CvPose found, CvPatternOpt target, int marginPx, double extraDeg = 0,
         InterpolationFlags interp = InterpolationFlags.Linear,
         BorderTypes border = BorderTypes.Constant, Scalar? borderValue = null)
     {
         if (target?.TemplateSize() is not { } t) return null;
 
-        return NormalizedWindow(img, pat, found,
-            target.TrainedOriginX, target.TrainedOriginY,
-            t.W + 2 * marginPx, t.H + 2 * marginPx,
-            extraDeg + target.TrainedAngleDeg,
-            interp, border, borderValue);
+        var w = t.W + 2 * marginPx;
+        var h = t.H + 2 * marginPx;
+        var got = NormalizedWindow(img, pat, found,
+            target.TrainedOriginX, target.TrainedOriginY, w, h,
+            extraDeg + target.TrainedAngleDeg, interp, border, borderValue);
+        if (got is not { } g) return null;
+
+        var run = target.Clone();
+        run.TrainedAngleDeg = 0;
+        run.UseSearchRegion = true;
+        run.SearchX = w / 2.0 - marginPx;
+        run.SearchY = h / 2.0 - marginPx;
+        run.SearchW = 2 * marginPx;
+        run.SearchH = 2 * marginPx;
+        return (g.Window, g.WindowToImage, run);
     }
 
     /// <summary>포즈를 warpAffine 용 2×3 행렬로. 포즈 대수와 한 곳에서 맞물리게 두어 각도 부호를 다시 정하지 않는다 —

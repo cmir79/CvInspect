@@ -1175,6 +1175,14 @@ public class SmokeTests
             Check(Math.Abs(OrientDeg(autoWin)) < 3.0,
                 $"and it stands the target up without the caller adding the trained angle ({OrientDeg(autoWin):F2} deg)");
 
+            // 창이 세워 준 자세를 옵트가 모르면 파인더는 어긋난 한 자세만 본다 — 점수가 낮은 게 아니라 미검출이다.
+            var run = auto.Value.MatchOpt;
+            Check(run.TrainedAngleDeg == 0 && run.UseSearchRegion
+                  && Math.Abs(run.SearchW - 30) < 1e-9 && Math.Abs(run.SearchX - (35 - 15)) < 1e-9,
+                $"the window hands back the opt that matches in it: angle normalised, centre held to +-margin ({run.TrainedAngleDeg}, {run.SearchX},{run.SearchW})");
+            Check(Math.Abs(target.TrainedAngleDeg - lmTrainedAngle) < 1e-9 && !target.UseSearchRegion,
+                "and the caller's own opt is untouched");
+
             // 대조군: 같은 창을 낮은 오버로드로 부르면서 학습각을 빠뜨리면 기울어진다 — 그게 옮길 때 밟는 자리다.
             var byHand = CvInspGeom.NormalizedWindow(scene, pat, found,
                 target.TrainedOriginX, target.TrainedOriginY, 70, 60, extraDeg: 0);
@@ -1185,6 +1193,67 @@ public class SmokeTests
             Check(CvInspGeom.NormalizedWindow(scene, pat, found, new CvPatternOpt(), marginPx: 15) is null,
                 "a target with no template trained yet gives null instead of guessing a window size");
         }
+    }
+
+    // === 10-B3) 끝까지 — 기울여 티칭한 대상을 창에서 실제로 찾는다. 준비 안 된 옵트는 못 찾는다 ===
+    using (var scene = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+    {
+        var pat = new CvPatternOpt { TrainedOriginX = 150, TrainedOriginY = 120, TrainedAngleDeg = 25 };
+        var found = new CvPose(70, pat.TrainedOriginX, pat.TrainedOriginY, 300, 230, 0.95, 1.0);
+        const double lmAngle = 20;
+
+        // 비대칭 템플릿(자세가 실제로 구별되게) — 학습각을 편 상태로 저장되는 규약 그대로.
+        using var templ = new Mat(34, 46, MatType.CV_8UC1, Scalar.All(40));
+        Cv2.Rectangle(templ, new Rect(4, 4, 30, 10), new Scalar(230), -1);
+        Cv2.Circle(templ, new OpenCvSharp.Point(38, 26), 5, new Scalar(230), -1);
+        Cv2.ImEncode(".png", templ, out var lmPng);
+
+        var lm = new CvPatternOpt
+        {
+            TrainedOriginX = 240, TrainedOriginY = 80, TrainedAngleDeg = lmAngle, TemplatePng = lmPng,
+            AcceptScore = 0.45,
+            // 각도 탐색을 끈 상태가 이 결함이 드러나는 조건이다 — 켜 두면 존이 어긋남을 덮어 가려진다.
+            UseAngleSearch = false,
+        };
+
+        // 런 장면에 그 템플릿을 실제 자세로 심는다: 티칭 공간 회전(발견각−앵커 학습각) + 대상 자신의 학습각.
+        var placeDeg = (found.ThetaDeg - pat.TrainedAngleDeg) + lmAngle;
+        var (tx, ty) = CvInspGeom.XformByPose(pat, found, lm.TrainedOriginX, lm.TrainedOriginY);
+        using (var stamp = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+        {
+            using var roi = new Mat(stamp, new Rect((int)tx - templ.Cols / 2, (int)ty - templ.Rows / 2, templ.Cols, templ.Rows));
+            templ.CopyTo(roi);
+            using var rot = Cv2.GetRotationMatrix2D(new Point2f((float)tx, (float)ty), -placeDeg, 1.0);
+            Cv2.WarpAffine(stamp, scene, rot, stamp.Size());
+        }
+
+        var got = CvInspGeom.NormalizedWindow(scene, pat, found, lm, marginPx: 12);
+        using var win = got!.Value.Window;
+
+        var ok = CvInspGeom.MatchPattern(win, got.Value.MatchOpt);
+
+        // 대조군 — 창은 그대로 두고 옵트만 준비 안 된 것(학습각이 그대로)으로 바꾼다.
+        var raw = lm.Clone();
+        raw.UseSearchRegion = false;
+        var missed = CvInspGeom.MatchPattern(win, raw);
+
+        // 단언은 **평가된 자세**로 한다. 점수 낙차로 재면 대상 나름이라 합성 장면에서는 작게 나오는데,
+        // 틀어진 사실 자체는 각도에 정확히 드러난다 — 창은 대상을 0° 로 세웠고, 준비 안 된 옵트는
+        // 학습각(20°) 한 자세만 평가한다(각도 탐색이 꺼져 존이 0 이라 그 하나뿐이다).
+        Check(ok.Pose is { } a && Math.Abs(a.ThetaDeg) < 1e-6,
+            $"the prepared opt evaluates the pose the window actually stood up (theta={ok.Pose?.ThetaDeg})");
+        Check(missed.Pose is { } b && Math.Abs(b.ThetaDeg - lmAngle) < 1e-6,
+            $"the unprepared one is pinned to the trained angle — a pose the window does not contain (theta={missed.Pose?.ThetaDeg})");
+        Check(ok.Score > missed.Score,
+            $"so it scores worse, and how much worse is the target's business (prepared={ok.Score:F4} unprepared={missed.Score:F4})");
+
+        // 탐색 사각이 실제로 걸렸는가 — 발견 중심이 창 중앙 ±마진 안에 있어야 한다. 안 걸면 파인더는
+        // 창 전체를 허용 범위로 잡아 실효 반경이 "마진 + 템플릿 절반" 으로 넓어진다(옆 후보가 미끄러져 들어온다).
+        // (창↔이미지 좌표 왕복 자체는 앞 절이 무게중심으로 못 박았다 — 여기서 다시 재지 않는다.)
+        Check(ok.Pose is { } c
+              && Math.Abs(c.FoundX - win.Width / 2.0) <= 12 + 1e-6
+              && Math.Abs(c.FoundY - win.Height / 2.0) <= 12 + 1e-6,
+            $"the centre stays inside the +-margin box the caller asked for ({ok.Pose?.FoundX:F1},{ok.Pose?.FoundY:F1} in a {win.Width}x{win.Height} window)");
     }
 
     // === 10-C) Clone — 프로퍼티를 손으로 베끼지 않으므로 빠지는 것이 없다 ===
