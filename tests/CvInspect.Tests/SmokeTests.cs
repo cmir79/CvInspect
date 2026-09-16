@@ -1109,6 +1109,55 @@ public class SmokeTests
         Check(edgeWin.Width == 60 && edgeWin.Height == 60, "a window that falls outside the image keeps its size instead of shrinking");
     }
 
+    // === 10-B2) 기울여 티칭한 대상 — extraDeg 에 그 학습각을 더하면 창 안에서 템플릿 자세로 선다 ===
+    using (var scene = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+    {
+        // 창을 돌려 세우는 부호가 이 절의 전부다. 손으로 정하면 뒤집히는 자리라 실측으로 못 박는다 —
+        // 뒤집혀도 "점수가 좀 낮다" 로만 보여서 진짜 미검출과 구분되지 않는다.
+        var pat = new CvPatternOpt { TrainedOriginX = 150, TrainedOriginY = 120, TrainedAngleDeg = 25 };
+        var found = new CvPose(70, pat.TrainedOriginX, pat.TrainedOriginY, 300, 230, 0.95, 1.0);
+        const double lmTrainedAngle = 20;   // 랜드마크를 20° 기울여 티칭했다
+
+        // 티칭 공간에서 lmTrainedAngle 로 누운 막대 → 이미지에서는 그만큼 더 돌아 있다.
+        var barAngleInImage = (found.ThetaDeg - pat.TrainedAngleDeg) + lmTrainedAngle;
+        var (bx, by) = CvInspGeom.XformByPose(pat, found, 240, 80);
+        using (var bar = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+        {
+            Cv2.Rectangle(bar, new Rect(250 - 18, 200 - 4, 36, 8), new Scalar(255), -1);
+            using var rot = Cv2.GetRotationMatrix2D(new Point2f(250, 200), -barAngleInImage, 1.0);
+            using var spun = new Mat();
+            Cv2.WarpAffine(bar, spun, rot, bar.Size());
+            using var moved = new Mat();
+            using var shift = Cv2.GetRotationMatrix2D(new Point2f(250, 200), 0, 1.0);
+            shift.Set(0, 2, shift.At<double>(0, 2) + (bx - 250));
+            shift.Set(1, 2, shift.At<double>(1, 2) + (by - 200));
+            Cv2.WarpAffine(spun, moved, shift, bar.Size());
+            moved.CopyTo(scene);
+        }
+
+        static double OrientDeg(Mat m)
+        {
+            var mo = Cv2.Moments(m, binaryImage: false);
+            return 0.5 * Math.Atan2(2 * mo.Mu11, mo.Mu20 - mo.Mu02) * 180.0 / Math.PI;
+        }
+
+        var plain = CvInspGeom.NormalizedWindow(scene, pat, found, 240, 80, 70, 70);
+        using var plainWin = plain!.Value.Window;
+        Check(Math.Abs(OrientDeg(plainWin) - lmTrainedAngle) < 3.0,
+            $"in taught space the target still lies at its own trained angle ({OrientDeg(plainWin):F2} deg, expected {lmTrainedAngle})");
+
+        var aligned = CvInspGeom.NormalizedWindow(scene, pat, found, 240, 80, 70, 70, extraDeg: lmTrainedAngle);
+        using var alignedWin = aligned!.Value.Window;
+        Check(Math.Abs(OrientDeg(alignedWin)) < 3.0,
+            $"adding the target's trained angle to extraDeg stands it up in template orientation ({OrientDeg(alignedWin):F2} deg) — the sign is pinned here");
+
+        // 부호를 반대로 주면 두 배로 기운다 — 대조군이 없으면 위 단언이 우연히 통과할 수 있다.
+        var wrong = CvInspGeom.NormalizedWindow(scene, pat, found, 240, 80, 70, 70, extraDeg: -lmTrainedAngle);
+        using var wrongWin = wrong!.Value.Window;
+        Check(Math.Abs(OrientDeg(wrongWin)) > 30.0,
+            $"the opposite sign leans it twice as far, which is why this is measured and not reasoned ({OrientDeg(wrongWin):F2} deg)");
+    }
+
     // === 10-C) Clone — 프로퍼티를 손으로 베끼지 않으므로 빠지는 것이 없다 ===
     {
         var src = new CvPatternOpt
@@ -1128,6 +1177,24 @@ public class SmokeTests
         copy.AcceptScore = 0.1;
         Check(src.MaxCount == 3 && Math.Abs(src.AcceptScore - 0.77) < 1e-12, "editing the copy leaves the original alone");
         Check(notified == 0, "the copy does not report its edits to whoever is watching the original (a stale editor would react)");
+
+        // 템플릿 크기는 디코드 없이 머리글에서 — 창을 "템플릿 + 여유" 로 잡으려면 매칭 전에 알아야 한다.
+        using (var templ = new Mat(37, 52, MatType.CV_8UC1, Scalar.Gray))
+        {
+            Cv2.ImEncode(".png", templ, out var png);
+            var sized = new CvPatternOpt { TemplatePng = png };
+            Check(sized.TemplateSize() is { } sz && sz.W == 52 && sz.H == 37,
+                $"TemplateSize reads a real encoded PNG header without decoding it ({sized.TemplateSize()})");
+        }
+        Check(new CvPatternOpt().TemplateSize() is null, "no template trained yet — no size, and no exception");
+        Check(new CvPatternOpt { TemplatePng = [1, 2, 3] }.TemplateSize() is null, "bytes that are not a PNG give null instead of a wrong number");
+
+        // 재학습은 배열을 갈아 끼운다 — 사본이 들고 있던 템플릿은 그대로다(공유해도 안전한 이유).
+        var before = src.TemplatePng;
+        var held = src.Clone();
+        src.TemplatePng = [9, 9];
+        Check(ReferenceEquals(held.TemplatePng, before) && !ReferenceEquals(src.TemplatePng, before),
+            "re-training the original swaps its reference; the copy keeps the template it was cloned with");
     }
     }
 

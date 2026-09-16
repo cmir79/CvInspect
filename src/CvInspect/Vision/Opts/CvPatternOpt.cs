@@ -206,14 +206,34 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     /// 손으로 베끼면 나중에 는 프로퍼티가 조용히 빠진다 — <see cref="TrainedShape"/> 를 빠뜨리면 원형으로
     /// 학습한 템플릿이 사본에서는 마스크 없이 비교되는 식이라, 결과가 달라지는데 아무도 모른다.
     ///
-    /// 얕은 사본이라 <see cref="TemplatePng"/> 바이트 배열과 <see cref="TrainHook"/> 은 원본과 <b>공유</b>한다
-    /// (템플릿은 학습 뒤 바뀌지 않으므로 공유가 맞다). 다만 <c>PropertyChanged</c> 구독자는 <b>물려주지 않는다</b> —
-    /// 물려주면 잠깐 쓰고 버릴 사본의 변경이 원본을 보고 있는 편집기로 흘러간다.</summary>
+    /// 얕은 사본이라 <see cref="TemplatePng"/> 바이트 배열과 <see cref="TrainHook"/> 은 원본과 <b>공유</b>한다.
+    /// 그래도 안전한 이유를 계약으로 적어 둔다: <b>템플릿 바이트는 제자리에서 고쳐지지 않는다</b> — 재학습은
+    /// 배열을 새로 만들어 <see cref="TemplatePng"/> 를 <b>통째로 갈아 끼운다</b>. 그래서 사본을 쓰는 중에 원본이
+    /// 재학습돼도 <b>사본은 복제 시점의 템플릿을 그대로 들고 있다</b>(바뀐 것은 원본의 참조뿐이다).
+    /// 다만 <c>PropertyChanged</c> 구독자는 <b>물려주지 않는다</b> — 물려주면 잠깐 쓰고 버릴 사본의 변경이
+    /// 원본을 보고 있는 편집기로 흘러간다.</summary>
     public CvPatternOpt Clone()
     {
         var copy = (CvPatternOpt)MemberwiseClone();
         copy.PropertyChanged = null;
         return copy;
+    }
+
+    /// <summary>학습된 템플릿의 크기 — 학습본이 없거나 읽을 수 없으면 null.
+    ///
+    /// <b>PNG 머리글만 읽는다(디코드하지 않는다).</b> 창 크기를 "템플릿 + 여유" 로 잡으려면 호출하기 <b>전에</b>
+    /// 크기를 알아야 하는데, 매칭 결과로 오는 크기는 그때는 아직 없다. 여기서 디코드하면 후보 각도를 도는
+    /// 스윕에서 접힘 수만큼 디코드가 붙어, 창만 잘라 도는 이득을 도로 까먹는다 — 그래서 24바이트만 본다.</summary>
+    public (int W, int H)? TemplateSize()
+    {
+        var png = TemplatePng;
+        // PNG: 서명 8 + 길이 4 + "IHDR" 4 + 폭 4 + 높이 4 (빅엔디안)
+        if (png is null || png.Length < 24 || png[0] != 0x89 || png[1] != 0x50 || png[2] != 0x4E || png[3] != 0x47
+            || png[12] != 0x49 || png[13] != 0x48 || png[14] != 0x44 || png[15] != 0x52) return null;
+
+        var w = (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19];
+        var h = (png[20] << 24) | (png[21] << 16) | (png[22] << 8) | png[23];
+        return w > 0 && h > 0 ? (w, h) : null;
     }
 
     /// <summary>편집 도형 — 학습 영역(사각은 회전 그립, 원은 반경 그립) + 탐색 영역(UseSearchRegion 일 때).
