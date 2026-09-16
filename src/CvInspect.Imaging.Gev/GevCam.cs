@@ -58,6 +58,10 @@ public sealed class GevCam : ICam
     private CancellationTokenSource? _pumpCts;
     private bool _disposed;
 
+    /// <summary><see cref="SetExposureTimeUs"/> 로 받은 마지막 값 — 아직 안 열렸으면 열 때 쓰고,
+    /// 열려 있어도 들고 있다가 다음 열기에 다시 적용한다. null 이면 <see cref="CamOpt"/> 값을 쓴다.</summary>
+    private double? _setExposureUs;
+
     // 프레임 해석에 필요한 카메라 상태 — 열 때 한 번 읽는다(프레임마다 레지스터를 읽지 않는다)
     private CvBayerPattern? _bayerOverride;
 
@@ -88,6 +92,16 @@ public sealed class GevCam : ICam
         lock (_sync)
         {
             ThrowIfDisposed();
+            // 제어를 잃은 세션은 장치 참조만 남아 있고 쓸 수는 없다. 그 상태에서 _dev 만 보고 돌아가면
+            // "이미 열려 있다" 로 읽혀 예외도 로그도 없이 아무 일도 일어나지 않는다 — 부른 쪽은 다시
+            // 열렸다고 여긴 채 오지 않을 프레임을 기다린다. 부른 뜻은 "다시 열어라" 이므로 먼저 접는다.
+            // 통지는 내지 않는다 — 끊겼다는 말은 제어 상실 때 이미 나갔고, 여기서 한 번 더 내면
+            // 연결이 false 로 두 번 떨어졌다가 올라온 것처럼 보인다.
+            if (_dev != null && !IsConnected)
+            {
+                WriteLog(CvLogLevel.Info, "reopening after control loss — folding the dead session first");
+                CloseWhileLocked();
+            }
             if (_dev != null) return;
             Run(OpenCoreAsync);
             IsConnected = true;
@@ -172,7 +186,9 @@ public sealed class GevCam : ICam
 
             var nodes = await dev.GetNodeMapAsync(ct).ConfigureAwait(false);
             await LoadUserSetAsync(nodes, ct).ConfigureAwait(false);
-            await ApplyExposureAsync(nodes, _opt.ExposureTimeUs, ct).ConfigureAwait(false);
+            // SetExposureTimeUs 로 받아 둔 값이 있으면 그쪽이 우선이다 — 나중에 부른 쪽이 최신이고,
+            // 여기서 설정값으로 덮으면 운전 중에 맞춘 노출이 재연결마다 원래대로 돌아간다.
+            await ApplyExposureAsync(nodes, _setExposureUs ?? _opt.ExposureTimeUs, ct).ConfigureAwait(false);
             await LogCameraStateAsync(nodes, ct).ConfigureAwait(false);
             _bayerOverride = _gev.BayerPatternOverride ?? await ResolveBayerAsync(nodes, ct).ConfigureAwait(false);
 
@@ -635,14 +651,49 @@ public sealed class GevCam : ICam
             if (stats.Add(done - started, waitTicks, done, capture, frameId) is { } line)
                 WriteLog(CvLogLevel.Info, line);
         }
+
+        // 취소 없이 루프가 끝났다 = 수신이 우리 뜻과 무관하게 접혔다(스트림이 닫혔거나 수신이 실패).
+        if (!ct.IsCancellationRequested) PumpEndedBySelf();
     }
 
+    /// <summary>펌프가 스스로 끝났을 때의 뒷정리. 여기서 손을 놓으면 <see cref="_pump"/> 참조가 남아
+    /// <see cref="IsGrabbing"/> 이 영영 true 로 굳고, 그다음 <see cref="StartContinuous"/> 는 "이미 도는 중"
+    /// 으로 읽혀 <b>예외도 로그도 없이</b> 돌아간다 — 카메라는 다시 돌지 않는데 아무도 그 사실을 모른다.
+    ///
+    /// 카메라에 AcquisitionStop 을 보내지는 않는다 — 여기는 펌프 스레드이고 <see cref="_sync"/> 를 쥔 채
+    /// 죽은 링크로 제어 명령을 던지면 그쪽 시한이 다 찰 때까지 <b>닫기까지 함께 막힌다</b>. 남은 정리는
+    /// <see cref="Close"/> 가 한다.</summary>
+    private void PumpEndedBySelf()
+    {
+        bool wasGrabbing;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            // 정지 경로가 먼저 닿았으면 false 가 돌아온다 — 통지는 그쪽이 낸다.
+            wasGrabbing = StopPumpCore();
+            // _stoppedAtTicks 는 건드리지 않는다 — 그 표식은 "우리가 멈춰서 잘린 프레임" 을 가려내는
+            // 것인데, 여기서는 아무도 멈추지 않았다. 지금부터 오는 드롭이야말로 무슨 일이 났는지
+            // 말해 주는 줄이라, 정지 경계로 접어 Info 로 내려 버리면 안 된다.
+        }
+        if (!wasGrabbing) return;
+        WriteLog(CvLogLevel.Warning,
+            "the receive loop ended without a stop request — continuous grab is no longer running. " +
+            "Check the connection and call StartContinuous again.");
+        GrabbingChanged?.Invoke(this, false);
+    }
+
+    /// <summary>노출 시간(마이크로초) 적용. <b>언제 불러도 된다</b> — 아직 열지 않았으면 들고 있다가
+    /// 열 때 적용하고, 그 값은 세션이 바뀌어도 남아 다음 열기에도 다시 들어간다(<see cref="CamOpt"/> 의
+    /// 초기값보다 나중에 부른 이쪽이 우선이다). 버리면 부른 쪽은 값이 들어간 줄 알고, 정작 카메라는
+    /// 예외도 로그도 없이 다른 노출로 돈다 — 밝기만 틀린 채 검사가 통과한다.
+    /// 0 이하는 "건드리지 않는다" 는 뜻이라 기억하지도 않는다.</summary>
     public void SetExposureTimeUs(double timeUs)
     {
         lock (_sync)
         {
             ThrowIfDisposed();
-            if (_nodes is not { } nodes) return;   // 아직 안 열림 — 열 때 CamOpt 값으로 적용된다
+            if (timeUs > 0) _setExposureUs = timeUs;
+            if (_nodes is not { } nodes) return;   // 아직 안 열림 — 열 때 위에 적어 둔 값으로 적용된다
             Run(ct => ApplyExposureAsync(nodes, timeUs, ct));
         }
     }

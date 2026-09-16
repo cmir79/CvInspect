@@ -29,6 +29,7 @@ public sealed class VideoCaptureCam : ICam
     private Thread? _liveThread;
     private CancellationTokenSource? _liveCts;
     private bool _disposed;
+    private double? _setExposureUs;   // SetExposureTimeUs 로 받은 마지막 값 — 열 때 다시 넣는다(ICam 계약)
 
     public VideoCaptureCam(CamOpt opt)
     {
@@ -79,6 +80,9 @@ public sealed class VideoCaptureCam : ICam
             _cap = cap;
             IsConnected = true;
             _openedAs = src;
+            // 열기 전에 받아 둔 노출을 지금 넣는다. 다시 열 때도 같은 자리에서 복원된다 — 소스를 새로 열면
+            // 속성은 기본값으로 돌아가므로, 여기서 넣지 않으면 운전 중에 맞춘 노출이 조용히 사라진다.
+            if (_setExposureUs is { } exposure) ApplyExposureWhileLocked(exposure);
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
         WriteLog(CvLogLevel.Info, $"video source opened: {_openedAs} (file={_isFileSource})");
@@ -156,14 +160,24 @@ public sealed class VideoCaptureCam : ICam
         }
     }
 
+    /// <summary>노출 적용 — 아직 열지 않았으면 들고 있다가 <see cref="Open"/> 이 넣는다(ICam 계약).
+    /// 소스가 없을 때 그냥 흘리면 "applied=False" 한 줄만 남고 값은 사라지는데, 그 줄은 미지원 소스와
+    /// 구분되지 않아 부른 쪽은 들어간 줄 안다.</summary>
     public void SetExposureTimeUs(double timeUs)
     {
         lock (_sync)
         {
-            // 노출 단위는 백엔드마다 다르다(초·log2초 등) — 초 단위 전달의 best-effort 이며 미지원 소스는 무시된다.
-            var ok = _cap?.Set(VideoCaptureProperties.Exposure, timeUs / 1_000_000.0) ?? false;
-            WriteLog(CvLogLevel.Debug, $"SetExposureTimeUs best-effort: value={timeUs}us applied={ok}");
+            _setExposureUs = timeUs;
+            ApplyExposureWhileLocked(timeUs);
         }
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제.</summary>
+    private void ApplyExposureWhileLocked(double timeUs)
+    {
+        // 노출 단위는 백엔드마다 다르다(초·log2초 등) — 초 단위 전달의 best-effort 이며 미지원 소스는 무시된다.
+        var ok = _cap?.Set(VideoCaptureProperties.Exposure, timeUs / 1_000_000.0) ?? false;
+        WriteLog(CvLogLevel.Debug, $"SetExposureTimeUs best-effort: value={timeUs}us applied={ok}");
     }
 
     public void Dispose()

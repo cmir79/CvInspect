@@ -59,6 +59,11 @@ public interface ICam : IDisposable
     /// <b>전이일 때만 낸다</b>: 돌고 있지 않던 것이 멈췄다고 알리지 않는다.</summary>
     event EventHandler<bool>? GrabbingChanged;
 
+    /// <summary>연결. 이미 연결돼 있으면 아무 일도 하지 않는다.
+    ///
+    /// <b>제어권을 잃어 <see cref="IsConnected"/> 가 false 로 떨어진 뒤라면 이 호출이 다시 연다</b> —
+    /// 그때는 장치 참조가 남아 있어도 "열려 있는 것" 이 아니다. 죽은 세션을 먼저 접고 새로 여는 것이
+    /// 구현의 몫이다. 조용히 돌아가면 부른 쪽은 되살아난 줄 알고 오지 않을 프레임을 기다린다.</summary>
     void Open();
     void Close();
 
@@ -107,6 +112,11 @@ public interface ICam : IDisposable
     /// 나갈 수 있다.</b> 트리거마다 판정하는 쪽은 그 한 장을 흘려보낼 여지를 두는 편이 안전하다.</summary>
     void StopContinuous();
 
-    /// <summary>노출 시간 설정 (마이크로초). 소스가 지원하지 않으면 무시하고 로그만 남긴다.</summary>
+    /// <summary>노출 시간 설정 (마이크로초). 소스가 지원하지 않으면 무시하고 로그만 남긴다.
+    ///
+    /// <b><see cref="Open"/> 전에 불러도 된다</b> — 구현은 값을 들고 있다가 열 때 넣는다. 그리고 그 값은
+    /// <see cref="CamOpt"/> 의 초기값보다 우선하며 다시 열어도 남는다(나중에 부른 쪽이 최신이다).
+    /// 버리는 구현이 있으면 부른 쪽은 값이 들어간 줄 알고, 카메라는 예외도 로그도 없이 다른 노출로 돈다 —
+    /// 밝기만 틀린 채 검사가 통과한다.</summary>
     void SetExposureTimeUs(double timeUs);
 }
