@@ -1034,4 +1034,72 @@ public class SmokeTests
         Check(bad.Success && double.Parse(bad.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) < 1000,
             $"and the latency numbers stay sane instead of showing hours: {line8}");
     }
+
+    /// <summary>측정값이 "그럴싸하게 틀리는" 세 자리 — 못 쓰는 포즈, 증거 부족, 못 본 면적.
+    /// 셋 다 조용히 답을 내놓던 것을 드러내게 고친 자리다.</summary>
+    [Fact]
+    public void PlausibleButWrongMeasurements()
+    {
+    // === 9-A) default(CvPose) 는 null 이 못 되고 Scale 이 0 이다 ===
+    {
+        // 빈 결과에 FirstOrDefault() 를 쓰면 "멀쩡해 보이는" 포즈가 손에 들어온다. 그것으로 티칭 기하를
+        // 옮기면 좌표가 전부 (0,0) 으로 접히는데, 화면에는 도형이 그려지고 검사도 돌아 틀렸다는 신호가 없다.
+        var empty = new List<CvPose>();
+        var fallback = empty.FirstOrDefault();
+        Check(fallback.Scale == 0 && !fallback.IsValid,
+            $"default(CvPose) is not an identity — Scale is 0, not the constructor's 1.0 (scale={fallback.Scale})");
+
+        var real = new CvPose(12, 100, 100, 250, 180, 0.93);
+        Check(real.IsValid && real.Apply(300, 200) is { } p && Math.Abs(p.X - 250) > 1,
+            "a real pose still transforms");
+        Check(Assert.Throws<InvalidOperationException>(() => fallback.Apply(300, 200)).Message.Contains("FirstOrDefault"),
+            "an unusable pose refuses to fold coordinates onto (0,0) and says where it came from");
+        Check(Assert.Throws<InvalidOperationException>(() => fallback.Inverse()) is not null,
+            "inverting it would give an infinite scale, which kills the process in native code — it throws instead");
+    }
+
+    // === 9-B) 증거가 줄면 잔차는 좋아진다 — 점 수로만 걸린다 ===
+    using (var img = new Mat(200, 400, MatType.CV_8UC1, Scalar.Black))
+    {
+        // 티칭 세그먼트는 가로 360px 인데 에지는 왼쪽 100px 에만 있다.
+        Cv2.Rectangle(img, new Rect(20, 100, 100, 100), new Scalar(255), -1);
+        Cv2.GaussianBlur(img, img, new OpenCvSharp.Size(3, 3), 0);
+
+        var opt = new CvFindLineOpt
+        {
+            StartX = 20, StartY = 100, EndX = 380, EndY = 100,
+            NumCalipers = 12, SearchLength = 40, ProjectionLength = 3,
+            Polarity = CvEdgePolarity.Either, ContrastThreshold = 10,
+            UseRmsGate = true, MaxRmsPx = 2.0,
+        };
+        var partial = CvLineFinder.Find(img, opt.StartX, opt.StartY, opt.EndX, opt.EndY, opt);
+        Check(partial is { } f && f.PointCount < 6 && f.RmsPx < 0.5,
+            $"a line seen over a fraction of the taught segment still passes the residual gate — the residual gets BETTER as evidence disappears: {partial}");
+
+        opt.MinPoints = 8;
+        Check(CvLineFinder.Find(img, opt.StartX, opt.StartY, opt.EndX, opt.EndY, opt) is null,
+            "MinPoints is the only gate that catches it — the residual never will");
+
+        opt.MinPoints = 0;
+        Check(CvLineFinder.Find(img, opt.StartX, opt.StartY, opt.EndX, opt.EndY, opt) is not null, "0 keeps the previous behaviour (nothing changes for a recipe that does not set it)");
+    }
+
+    // === 9-C) 못 본 면적을 분모에서 빼면 충전율이 올라간다 (거짓 OK) ===
+    using (var full = new Mat(300, 300, MatType.CV_8UC1, Scalar.Black))
+    {
+        Cv2.Circle(full, new OpenCvSharp.Point(150, 150), 90, new Scalar(255), -1);
+        var opt = new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, Threshold = 128, Polarity = CvBlobPolarity.Bright };
+
+        var inside = CvRingFill.Measure(full, 150, 150, opt);
+        Check(inside is { } a && a.OutsidePx == 0 && a.RatePct > 99.5,
+            $"a band fully inside the image is unchanged: {inside}");
+
+        // 같은 밴드를 화면 가장자리로 옮긴다 — 보이는 부분은 여전히 꽉 차 있다.
+        var clipped = CvRingFill.Measure(full, 20, 150, opt);
+        Check(clipped is { } b && b.OutsidePx > 0 && b.RatePct < 80,
+            $"the part that was never seen counts as unfilled instead of vanishing from the denominator: {clipped}");
+        Check(clipped is { } c && Math.Abs(c.TotalPx - inside!.Value.TotalPx) < inside.Value.TotalPx * 0.02,
+            $"the denominator is the whole band either way — that is what makes two runs comparable (in={inside!.Value.TotalPx} clipped={clipped!.Value.TotalPx})");
+    }
+    }
 }
