@@ -57,7 +57,8 @@ dotnet add package OpenCvSharp4.runtime.win
 ## Property editor
 
 `CvPropEditCtrl` unfolds any option POCO into category groups and rows — checkbox for `bool`,
-text for numbers and strings, combo for enums, a button for `Action` — using only the standard
+text for numbers and strings, combo for enums, a button for `Action`, a read-only line list for
+enumerables, and an indented block of child rows for a nested object — using only the standard
 `System.ComponentModel` attributes, which the core's `[CvCategory]` / `[CvName]` / `[CvDesc]` derive
 from. So a core `Cv*Opt` needs nothing extra:
 
@@ -73,8 +74,18 @@ from. So a core `Cv*Opt` needs nothing extra:
 | `Committed` | A row wrote a value into the POCO — the host's only dirty-marking signal, since most POCOs do not implement `INotifyPropertyChanged`. |
 | `ActionExecuting` / `ActionExecuted` / `ActionFailed` | Around an `Action` row's button. Failures are logged through `CvLog` and never escape to the dispatcher. |
 
+A property becomes a nested block only when it carries
+`[TypeConverter(typeof(ExpandableObjectConverter))]` — nothing else is walked into, so an option
+POCO never drags a whole object graph onto the screen. The block follows the **value's runtime
+type**, and when the property starts returning a different instance (a mode switch that swaps the
+detail object) the child rows are rebuilt, so the POCO must raise `PropertyChanged` for that
+property at the moment it swaps; otherwise the old rows keep writing into the discarded object.
+Nesting stops at three levels, and a level past the limit is not drawn at all rather than left
+half-drawn.
+
 Rules the rows follow: `[Browsable(false)]` hides, `[ReadOnly(true)]` or a getter-only property
-disables, group order comes from `ICvOrderedCategory` (or a `"N. "` prefix on plain
+disables — except list and nested rows, which show or unfold instead of assigning the value itself
+and so stay enabled — group order comes from `ICvOrderedCategory` (or a `"N. "` prefix on plain
 `[Category]` strings), and numeric text commits on Enter or focus loss — an unparsable entry is
 rejected and the row snaps back to the stored value, so what you see is always what is stored.
 The control references no UI library; it adopts the host theme's `SecondaryTextBrush` and

@@ -3,6 +3,7 @@
 // 마킹의 유일한 채널이다(대상 POCO 대부분이 INotifyPropertyChanged 미구현).
 // 이 계층은 MVVM 라이브러리를 참조하지 않는다 — 통지와 커맨드는 이 파일 안에서 자족한다.
 
+using System.Collections;
 using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
@@ -241,5 +242,85 @@ public sealed class CvPropActionRowVm : CvPropRowVm
         public event EventHandler? CanExecuteChanged { add { } remove { } }
         public bool CanExecute(object? parameter) => true;
         public void Execute(object? parameter) => owner.Execute();
+    }
+}
+
+/// <summary>
+/// 읽기 전용 나열 — 항목을 줄바꿈으로 이어 붙여 그대로 보여 준다(문자열 배열 등).
+/// 편집하지 않는다: 이 자리에 오는 것은 도구가 지금 들고 있는 목록(등록된 연산자 등)이라
+/// 화면에서 고칠 값이 아니라 확인할 값이다. 목록이 비면 <c>(empty)</c> 로 적어 "빈 목록"과
+/// "아직 못 읽음"을 가른다.
+/// </summary>
+public sealed class CvPropListRowVm : CvPropRowVm
+{
+    private string _text = string.Empty;
+    public string Text
+    {
+        get => _text;
+        private set => SetProperty(ref _text, value);
+    }
+
+    internal override void RefreshFromSource() => Text = Format(Prop.GetValue(Source));
+
+    private static string Format(object? value)
+    {
+        if (value is not IEnumerable items || value is string) return value?.ToString() ?? string.Empty;
+
+        var parts = new List<string>();
+        foreach (var item in items) parts.Add(item?.ToString() ?? string.Empty);
+        return parts.Count == 0 ? "(empty)" : string.Join(Environment.NewLine, parts);
+    }
+}
+
+/// <summary>
+/// 중첩 객체 — 값이 들고 있는 인스턴스를 다시 펼쳐 자식 행으로 그린다.
+/// <see cref="System.ComponentModel.TypeConverterAttribute"/> 가
+/// <see cref="System.ComponentModel.ExpandableObjectConverter"/> 인 프로퍼티만 이 행이 된다.
+/// 선언 타입이 <c>object</c> 이고 실제 타입이 private 중첩 클래스인 관용구가 이 자리의 주 용도라,
+/// <b>선언 타입이 아니라 값의 런타임 타입으로 펼친다.</b>
+///
+/// 값이 <b>다른 인스턴스로 바뀌면 자식을 통째로 다시 세운다</b> — 모드 전환으로 어댑터가 교체되는
+/// 자리라(세그먼트 방식·연산자 선택 등) 자식의 구성 자체가 달라진다. 값만 갱신하면 옛 타입의
+/// 행이 새 인스턴스를 붙잡고 남아, 화면은 그대로인데 쓰기가 엉뚱한 곳으로 간다.
+/// 그래서 소스는 교체 시점에 그 프로퍼티로 변경 통지를 내야 한다.
+/// </summary>
+public sealed class CvPropNestedRowVm : CvPropRowVm
+{
+    private object? _current;
+    private IReadOnlyList<CvPropRowVm> _children = [];
+
+    /// <summary>자식 행을 세우는 방법 — 빌더가 주입한다(재귀 진입점). 순환 참조를 막기 위해 깊이는 빌더가 센다.</summary>
+    internal Func<object, IReadOnlyList<CvPropRowVm>>? ChildFactory { get; set; }
+
+    public IReadOnlyList<CvPropRowVm> Children
+    {
+        get => _children;
+        private set => SetProperty(ref _children, value);
+    }
+
+    /// <summary>펼칠 것이 없을 때(값이 null) 자리를 비워 두지 않도록 — 헤더만 남는 빈 블록을 감춘다.</summary>
+    public bool HasChildren => _children.Count > 0;
+
+    internal override void Detach()
+    {
+        foreach (var c in _children) c.Detach();
+        ChildFactory = null;
+        base.Detach();
+    }
+
+    internal override void RefreshFromSource()
+    {
+        var value = Prop.GetValue(Source);
+        if (ReferenceEquals(value, _current))
+        {
+            // 같은 인스턴스면 구성은 그대로다 — 자식들이 각자 자기 값만 다시 읽는다.
+            foreach (var c in _children) c.RefreshFromSource();
+            return;
+        }
+
+        foreach (var c in _children) c.Detach();
+        _current = value;
+        Children = value is null || ChildFactory is null ? [] : ChildFactory(value);
+        OnPropertyChanged(nameof(HasChildren));
     }
 }

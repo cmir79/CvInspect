@@ -22,7 +22,8 @@ public sealed record CvPropActionFailedEvt(string Label, Exception Error);
 
 /// <summary>
 /// typed POCO 를 리플렉션으로 펼쳐 편집하는 프로퍼티 편집기 — 카테고리 그룹 + 행별 편집기
-/// (bool 체크박스 / 수치·문자 텍스트 / enum 콤보 / Action 실행 버튼), 설명은 행 아래 캡션 상시 표시.
+/// (bool 체크박스 / 수치·문자 텍스트 / enum 콤보 / Action 실행 버튼 / 읽기 전용 나열 /
+/// 중첩 객체 펼침), 설명은 행 아래 캡션 상시 표시.
 /// 코어의 Cv*Opt 처럼 CvCategory/CvName/CvDesc(System.ComponentModel 파생)를 단 POCO 를 그대로 넣으면 된다.
 /// 값 커밋은 행 VM 이 backing 에 SetValue 직행 후 <see cref="Committed"/> 로 통지 — 대상 POCO
 /// 대부분이 INotifyPropertyChanged 미구현이라 이 이벤트가 호스트 dirty 마킹의 유일한 채널이다.
