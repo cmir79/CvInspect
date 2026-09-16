@@ -94,9 +94,10 @@ half-drawn.
 
 **A nested block with no child rows is hidden entirely, heading and all** — a mode whose detail object
 exposes nothing to edit leaves no trace on screen, and the block appears when the mode changes to one
-that does. Expect this while checking that a property finally shows up: a block that is *there* and a
-block that is *empty* look the same from outside, which is the point (an empty heading would read as
-"could not be read"). If you need to tell them apart, `CvPropNestedRowVm.HasChildren` is public.
+that does. Expect this while checking that a property finally shows up. Hiding it is the point: an empty heading
+would make "there is nothing to unfold" look exactly like "this could not be read", and those two
+deserve different reactions. If you need to tell them apart in code, `CvPropNestedRowVm.HasChildren`
+is public.
 
 Rules the rows follow: `[Browsable(false)]` hides, `[ReadOnly(true)]` or a getter-only property
 disables — except list and nested rows, which show or unfold instead of assigning the value itself
