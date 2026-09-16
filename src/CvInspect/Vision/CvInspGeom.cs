@@ -90,8 +90,14 @@ public static class CvInspGeom
         using (var m = Cv2.GetRotationMatrix2D(new Point2f((float)p.FoundX, (float)p.FoundY), dTheta, 1.0))
             Cv2.WarpAffine(pre, norm, m, pre.Size(), InterpolationFlags.Linear, BorderTypes.Constant, Scalar.Black);
 
-        var expX = p.FoundX + (landmark.TrainedOriginX - pat.TrainedOriginX);
-        var expY = p.FoundY + (landmark.TrainedOriginY - pat.TrainedOriginY);
+        // 티칭 오프셋은 발견 스케일만큼 늘어난다 — 부품이 크게 보이면 랜드마크도 그만큼 멀리 있다.
+        // (<see cref="XformByPose"/> 가 티칭 기하를 옮길 때 쓰는 것과 같은 규약이다. 여기서 빠져 있어서,
+        // 스케일 탐색을 켠 앵커에서는 기대 자리가 오프셋 거리 × |Scale−1| 만큼 밀렸다 — 실측: 오프셋 126px·
+        // Scale 1.15 에서 19px 밀려 <b>있는 랜드마크가 score 0.087</b>, 곧 "없음" 으로 보고됐다.)
+        // ⚠ 남은 한계: 창 위치만 맞추고 템플릿은 런 스케일로 비교한다(정규화 warp 는 배율 1.0 고정) —
+        // 스케일이 1 에서 많이 벗어나면 점수 자체가 낮아지는 것은 그대로다.
+        var expX = p.FoundX + (landmark.TrainedOriginX - pat.TrainedOriginX) * p.Scale;
+        var expY = p.FoundY + (landmark.TrainedOriginY - pat.TrainedOriginY) * p.Scale;
 
         // 회전 티칭 랜드마크 — 템플릿은 학습각을 편(unrotate) 내용으로 저장되므로 비교 창도 같은 각으로
         // 펴야 정합한다 (안 펴면 티칭 각도만큼 틀어져 스코어 폭락). 펴는 회전의 모서리 잘림 방지로
@@ -107,8 +113,8 @@ public static class CvInspGeom
         {
             // 티칭한 탐색 사각을 정규화 공간으로 옮긴다 — 학습 원점 대비 상대 위치가 그대로 유지되므로
             // 패턴 원점만큼 빼고 발견 위치를 더하면 된다.
-            var scx = p.FoundX + (landmark.SearchX + landmark.SearchW / 2.0 - pat.TrainedOriginX);
-            var scy = p.FoundY + (landmark.SearchY + landmark.SearchH / 2.0 - pat.TrainedOriginY);
+            var scx = p.FoundX + (landmark.SearchX + landmark.SearchW / 2.0 - pat.TrainedOriginX) * p.Scale;
+            var scy = p.FoundY + (landmark.SearchY + landmark.SearchH / 2.0 - pat.TrainedOriginY) * p.Scale;
 
             // 탐색 사각은 학습 영역의 회전을 함께 받는다. 잘라 오는 것은 축 정렬 상자라, 돌아간
             // 사각을 감싸도록 폭·높이를 키운다 — 창은 바로 아래에서 학습각만큼 다시 펴진다.
@@ -132,7 +138,18 @@ public static class CvInspGeom
         }
 
         if (roi is null || roi.Value.Width < templ.Cols || roi.Value.Height < templ.Rows)
-            return (0, expX, expY, []);
+        {
+            // 기대점은 pre 공간으로 돌려준다 — 이 반환도 문서가 약속한 "pre 공간 환산치(표시용)" 계약 안이다.
+            // norm 공간 값을 그대로 내보내면 창이 잘렸을 때, 즉 화면 마커가 가장 필요한 때 엉뚱한 자리에 찍힌다
+            // (실측: 248px 어긋남).
+            var radF = dTheta * Math.PI / 180.0;
+            var fdx = expX - p.FoundX;
+            var fdy = expY - p.FoundY;
+            return (0,
+                p.FoundX + fdx * Math.Cos(radF) - fdy * Math.Sin(radF),
+                p.FoundY + fdx * Math.Sin(radF) + fdy * Math.Cos(radF),
+                []);
+        }
 
         using var window = norm[roi.Value];
         Mat cmp = window;
