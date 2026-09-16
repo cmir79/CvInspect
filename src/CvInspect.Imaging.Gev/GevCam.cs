@@ -671,7 +671,34 @@ public sealed class GevCam : ICam
 
         var cam = Convert(frame);
         if (cam is null) return;
-        FrameAcquired?.Invoke(this, cam);
+        FrameAcquired?.Invoke(this, ApplyMountXform(cam));
+    }
+
+    /// <summary>장착 방향 보정(<see cref="CamOpt.Flip"/>·<see cref="CamOpt.Rotation"/>) — 취득 계약이
+    /// "발행되는 프레임에는 이미 적용돼 있다" 이므로 여기서 접는다.
+    ///
+    /// 이 백엔드만 그 계약을 안 지키고 있었다 — USB·파일 소스와 가상 카메라는 <see cref="CamXform"/> 를
+    /// 부르는데 GigE 만 안 불렀다. 그래서 같은 레시피로 백엔드를 갈아 끼우면 <b>화면 방향이 말없이 달라졌다</b>
+    /// (오류도 로그도 없이). 계약이 셋 중 둘에서만 참인 것은 계약이 아니다.
+    ///
+    /// 둘 다 None(기본)이면 프레임을 그대로 통과시킨다 — 그 경우 비용이 0 이라 안 쓰는 설비는 아무것도 달라지지 않는다.
+    /// 장치 시각은 넘겨 보존한다(펌프 통계가 그 값을 쓴다).
+    /// <c>internal</c> 인 것은 회귀가 장치 없이 이 계약을 부를 수 있게 하려는 것이다 — 발행 경로 전체를
+    /// 돌리려면 카메라가 있어야 하는데, 그러면 이 계약은 실기에서만 지켜지는지 알 수 있다.</summary>
+    internal CamFrame ApplyMountXform(CamFrame cam)
+    {
+        if (_opt.Flip == FlipMode.None && _opt.Rotation == RotateMode.None) return cam;
+
+        using var view = cam.AsMat();
+        var processed = CamXform.Apply(view, _opt.Flip, _opt.Rotation);
+        try
+        {
+            return CamFrame.FromMat(processed, cam.DeviceTimestamp);
+        }
+        finally
+        {
+            if (!ReferenceEquals(processed, view)) processed.Dispose();
+        }
     }
 
     private CamFrame? Convert(GevFrame frame)
