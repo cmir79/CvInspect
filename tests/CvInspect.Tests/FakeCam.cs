@@ -43,6 +43,15 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     public void SetExposureTimeUs(double timeUs) => LastExposure = timeUs;
     public void Dispose() { Disposed = true; IsConnected = false; IsGrabbing = false; }
 
+    /// <summary>연결은 살아 있는데 취득만 죽은 경우를 흉내낸다 — 수신 스트림이 접히거나 수신이 실패해
+    /// 구현이 스스로 취득을 접고 통지만 내는 길. 연결 상실과 달리 ConnectionChanged 는 나지 않는다.</summary>
+    public void StopGrabbingOnItsOwn()
+    {
+        if (!IsGrabbing) return;
+        IsGrabbing = false;
+        GrabbingChanged?.Invoke(this, false);
+    }
+
     /// <summary>장치 쪽 연결 상실을 흉내낸다.</summary>
     public void LoseConnection()
     {

@@ -643,6 +643,40 @@ public class SmokeTests
             try { cam.Open(); } catch (ObjectDisposedException) { disposedThrew = true; }
             Check(disposedThrew, "disposed decorator rejects further use");
         }
+
+        // 10-10) 연결은 멀쩡한데 취득만 죽으면 세션을 갈아 끼워 되살린다.
+        //        안쪽 구현은 수신 스트림이 접히면 연결을 잃지 않은 채 취득만 접고 GrabbingChanged(false) 만 낸다.
+        //        그 신호를 안 들으면 의도만 true 로 남아 아무도 다시 켜지 않는다 — 연결은 정상이라고 답하는데
+        //        프레임이 영영 안 온다. 상위가 기다리는 것 말고 할 수 있는 일이 없는 상태다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var grab = new List<bool>();
+            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+            cam.Open();
+            cam.StartContinuous();
+            Check(cam.IsGrabbing && made.Count == 1, "grabbing before the stream dies");
+
+            made[0].StopGrabbingOnItsOwn();                       // 연결 상실은 없다 — 취득만 접혔다
+            Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
+                $"acquisition that dies on its own is resumed on a fresh session (instances={made.Count}, grabbing={made.ElementAtOrDefault(1)?.IsGrabbing})");
+            Check(Wait(() => cam.IsGrabbing), "the decorator reports grabbing again after the rebuild");
+            lock (grab) Check(grab.Count >= 3 && grab[0] && !grab[1] && grab[^1],
+                $"subscribers see the stop before the resume: [{string.Join(",", grab)}]");
+        }
+
+        // 10-10b) 대조군 — 사용자가 끈 취득은 되살아나지 않는다. 같은 통지가 오지만 의도가 내려가 있다.
+        //         이것이 없으면 위 항은 "무슨 일이 있어도 다시 켠다" 와 구분되지 않는다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            cam.Open();
+            cam.StartContinuous();
+            cam.StopContinuous();                                 // 의도를 내린다 — 안쪽도 멈추며 같은 통지를 낸다
+            Thread.Sleep(80);
+            Check(made.Count == 1 && !cam.IsGrabbing,
+                $"a stop the user asked for is not undone (instances={made.Count}, grabbing={cam.IsGrabbing})");
+        }
     }
     }
 
