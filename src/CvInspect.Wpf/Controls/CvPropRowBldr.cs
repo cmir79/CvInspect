@@ -18,6 +18,7 @@ namespace CvInspect.Controls;
 /// 값의 런타임 타입으로 다시 펼친다).
 /// getter-only 프로퍼티도 지원 타입이면 편집 불가 행으로 표시한다([ReadOnly(true)] 와 동일 렌더).
 /// 그 밖의 타입(훅·바이너리 등)은 편집 표면 계약 밖이라 노출하지 않는다.
+/// 값을 읽다 소스가 던지면 그 행만 빠지고 나머지는 그대로 선다 — 이유는 로그에 남는다.
 /// </summary>
 public static class CvPropRowBldr
 {
@@ -135,7 +136,13 @@ public static class CvPropRowBldr
             nested.ChildFactory = value => BuildChildren(value, ctx, depth + 1);
 
         row.Attach();
-        row.RefreshFromSource();
+        // 읽지 못한 프로퍼티는 행으로 내지 않는다 — 빈 칸을 보여 주면 "값이 그렇다" 로 읽히고, 그 위에 편집하면
+        // 읽지도 못한 값을 덮어쓴다. 사라진 이유는 로그에 남는다(TryRefreshFromSource).
+        if (!row.TryRefreshFromSource())
+        {
+            row.Detach();
+            return null;
+        }
         return row;
     }
 

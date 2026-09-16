@@ -74,6 +74,11 @@ from. So a core `Cv*Opt` needs nothing extra:
 | `Committed` | A row wrote a value into the POCO — the host's only dirty-marking signal, since most POCOs do not implement `INotifyPropertyChanged`. |
 | `ActionExecuting` / `ActionExecuted` / `ActionFailed` | Around an `Action` row's button. Failures are logged through `CvLog` and never escape to the dispatcher. |
 
+Because a list row reads and enumerates a property that nothing read before — a lazy getter that
+talks to a device, a list another thread is filling — reading is guarded: a property whose getter or
+enumeration throws is left out of the editor instead of taking the whole control down with it, and a
+`CvLog` warning names it. Setting `Source` never throws because of one bad property.
+
 A list row prints at most the first 20 items and then stops enumerating — it appends `… (+N)` when
 the count is cheap to know and a bare `…` otherwise, so a large array or an endless lazy sequence
 cannot freeze the editor just by being shown.

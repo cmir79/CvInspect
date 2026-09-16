@@ -47,7 +47,10 @@ public static class CvLog
     /// <summary>(level, source, message, exception) 수신 델리게이트 — 호스트 로거 어댑터 연결 지점.
     /// 붙이는 순간 붙잡아 둔 줄이 안내 한 줄 뒤에 이 델리게이트로 순서대로 흘러간다(부른 스레드에서, 락 밖에서).
     /// 그래서 <b>호스트 로거가 받을 준비가 된 뒤에</b> 붙인다 — 재생분은 붙이는 순간 그 로거로 가므로, 로거가 아직
-    /// 못 받으면 거기서 사라지고 아무도 세지 않는다. 늦게 붙이는 쪽은 잃지 않는다: 그 사이의 줄이 여기 붙잡혀 있다.</summary>
+    /// 못 받으면 거기서 사라지고 아무도 세지 않는다. 늦게 붙이는 쪽은 잃지 않는다: 그 사이의 줄이 여기 붙잡혀 있다.
+    /// <b>재생 중 싱크가 던져도 그 예외는 이 대입문 밖으로 나가지 않는다</b> — 아직 못 보낸 줄은 도로 붙잡혀
+    /// 다음 싱크를 기다린다. 아직 받을 준비가 안 된 로거에 먼저 붙인 경우가 그것이라, 그 사정으로 기동이 깨지지도
+    /// 진단이 사라지지도 않게 한다.</summary>
     public static Action<CvLogLevel, string, string, Exception?>? Sink
     {
         get { lock (_gate) return _sink; }
@@ -68,10 +71,33 @@ public static class CvLog
             }
             // 락 밖에서 부른다 — 호스트 싱크가 이 안에서 다시 Publish 해도 맞물리지 않는다. 안내 줄이 앞서므로
             // 호스트 로거가 찍는 시각이 지금이어도 재생분이 "지금 난 일" 로 읽히지 않는다.
-            value(CvLogLevel.Info, nameof(CvLog),
-                $"replaying {replay.Length} lines held before a sink was attached" +
-                (dropped > 0 ? $"; {dropped} older lines were dropped" : "") + ".", null);
-            foreach (var e in replay) value(e.Level, e.Source, e.Message, e.Exception);
+            var sent = 0;
+            try
+            {
+                value(CvLogLevel.Info, nameof(CvLog),
+                    $"replaying {replay.Length} lines held before a sink was attached" +
+                    (dropped > 0 ? $"; {dropped} older lines were dropped" : "") + ".", null);
+                for (; sent < replay.Length; sent++)
+                {
+                    var e = replay[sent];
+                    value(e.Level, e.Source, e.Message, e.Exception);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 여기서 잡지 않으면 예외가 프로퍼티 대입문에서 튀어나온다 — 붙이는 쪽에는 try 를 둘 이유가 없던
+                // 자리라 기동이 그대로 깨진다. 진단을 지키려던 기능이 진단을 붙이는 행위를 위험하게 만드는 꼴이다.
+                // 못 보낸 줄은 버리지 않고 도로 붙잡는다: 이 싱크가 못 받은 것이지 없어도 되는 줄이 아니다.
+                // 잡되 삼키지 않는다 — 이 실패는 싱크로 알릴 수 없으므로(던진 쪽이 그 싱크다) 미배선 경고와 같은
+                // 통로인 진단 추적으로 낸다.
+                lock (_gate)
+                    for (var i = sent; i < replay.Length; i++) HoldLocked(replay[i]);
+                System.Diagnostics.Trace.TraceWarning(
+                    "CvInspect: the CvLog sink threw while replaying held diagnostics (" +
+                    ex.GetType().Name + ": " + ex.Message + "). " + (replay.Length - sent) +
+                    " lines were put back and will replay when a sink is attached again. " +
+                    "Attach the sink after the host logger can receive.");
+            }
         }
     }
 
@@ -91,13 +117,7 @@ public static class CvLog
             sink = _sink;
             if (sink is null)
             {
-                if (_held.Count >= HoldCapacity)
-                {
-                    _held.Dequeue();
-                    Interlocked.Increment(ref _dropped);
-                    _heldDropped++;
-                }
-                _held.Enqueue((level, source, message, exception));
+                HoldLocked((level, source, message, exception));
                 if (!_noticed) { _noticed = true; first = true; }
             }
         }
@@ -112,6 +132,19 @@ public static class CvLog
                 "CvInspect: CvLog.Sink is not set. Library diagnostics are being held (last " + HoldCapacity +
                 " lines) and will replay when a sink is attached; older lines are counted in CvLog.DroppedCount. " +
                 "Attach a sink at startup and assert CvLog.IsAttached.");
+    }
+
+    /// <summary>붙잡아 두기 — 호출자가 <c>_gate</c> 를 잡고 있어야 한다. 한도를 넘으면 오래된 것부터 밀어내고 센다.
+    /// 발행 경로와 재생 실패 시 되돌리는 경로가 같은 셈법을 쓰도록 한곳에 둔다.</summary>
+    private static void HoldLocked((CvLogLevel Level, string Source, string Message, Exception? Exception) entry)
+    {
+        if (_held.Count >= HoldCapacity)
+        {
+            _held.Dequeue();
+            Interlocked.Increment(ref _dropped);
+            _heldDropped++;
+        }
+        _held.Enqueue(entry);
     }
 
     internal static void Warn(string source, string message) => Publish(CvLogLevel.Warning, source, message);

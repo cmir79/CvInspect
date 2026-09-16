@@ -200,6 +200,24 @@ public class SmokeTests
                   && seen[0] == $"replaying {CvLog.HoldCapacity} lines held before a sink was attached; 6 older lines were dropped."
                   && seen[1] == "m6" && seen[^1] == $"m{CvLog.HoldCapacity + 5}",
                 $"the newest {CvLog.HoldCapacity} replay and the notice names the drop (first={seen.FirstOrDefault()} second={seen.Skip(1).FirstOrDefault()} last={seen.LastOrDefault()})");
+
+            // 아직 받을 준비가 안 된 로거에 먼저 붙인 경우 — 재생 중 싱크가 던진다. 대입문 밖으로 새면 기동이 깨지고,
+            // 큐는 재생 전에 비워지므로 못 보낸 줄이 영영 사라진다(지키려던 그 줄들이다).
+            // 이 대입이 던지면 이 절은 예외로 끝난다 — 그 자체가 회귀 신호다.
+            CvLog.Sink = null;
+            var beforeThrow = CvLog.DroppedCount;
+            CvLog.Publish(CvLogLevel.Info, "t", "held-a");
+            CvLog.Publish(CvLogLevel.Info, "t", "held-b");
+            CvLog.Sink = (_, _, msg, _) => { if (msg == "held-a") throw new InvalidOperationException("logger not ready"); };
+            Check(trace.Lines.Count(l => l.Contains("sink threw while replaying")) == 1,
+                $"a throwing replay is reported on the diagnostic trace instead of escaping to the caller: [{string.Join(" | ", trace.Lines)}]");
+
+            var recovered = new List<string>();
+            CvLog.Sink = (_, _, msg, _) => recovered.Add(msg);
+            Check(recovered.Count == 3 && recovered[0] == "replaying 2 lines held before a sink was attached."
+                  && recovered[1] == "held-a" && recovered[2] == "held-b",
+                $"lines the throwing sink never received are put back and reach the next sink: [{string.Join(" | ", recovered)}]");
+            Check(CvLog.DroppedCount == beforeThrow, $"putting lines back does not count them as dropped (dropped={CvLog.DroppedCount - beforeThrow})");
         }
         finally
         {

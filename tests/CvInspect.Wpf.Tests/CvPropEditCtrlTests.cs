@@ -235,6 +235,51 @@ public class CvPropEditCtrlTests
         }
     }
 
+    [Fact]
+    public void APropertyThatThrowsWhenReadIsSkippedInsteadOfKillingTheEditor() => RunSta(() =>
+    {
+        // 나열 행이 생기면서 편집기는 지금까지 아무도 읽지 않던 getter 를 읽고 그 자리에서 열거한다.
+        // 가드가 없으면 그 예외가 Source 대입 밖으로 나가고, WPF 에서는 대개 잡는 사람이 없어 앱이 그대로 죽는다.
+        var warned = new List<string>();
+        var prev = CvLog.Sink;
+        CvLog.Sink = (lv, _, msg, _) => { if (lv == CvLogLevel.Warning) warned.Add(msg); };
+        warned.Clear();   // 붙는 순간 그동안 붙잡혀 있던 줄이 흘러든다
+        try
+        {
+            // 이 대입이 던지면 이 절은 예외로 끝난다 — 그 자체가 회귀 신호다.
+            var ctrl = new CvPropEditCtrl { Source = new ThrowingSampleOpt() };
+            var labels = ctrl.Groups.SelectMany(g => g.Rows).Select(r => r.Label).ToList();
+
+            Check(labels.Contains("Good"), $"the rows that can be read are still built: {string.Join(", ", labels)}");
+            Check(!labels.Contains("Bad") && !labels.Contains("Racing"),
+                $"a property that throws while being read is left out rather than shown with a value nobody read: {string.Join(", ", labels)}");
+            Check(warned.Count(m => m.Contains("Bad")) == 1 && warned.Count(m => m.Contains("Racing")) == 1,
+                $"each skipped row says which property failed and why — caught, not swallowed: [{string.Join(" | ", warned)}]");
+        }
+        finally
+        {
+            CvLog.Sink = prev;
+        }
+    });
+
+    /// <summary>읽기 가드 회귀용 표본 — 장치를 그때 읽다 실패하는 프로퍼티와, 열거 도중 깨지는 목록.</summary>
+    public sealed class ThrowingSampleOpt
+    {
+        [DisplayName("Good")] public int Good { get; set; } = 3;
+
+        [DisplayName("Bad")] public string[] Bad => throw new InvalidOperationException("device not ready");
+
+        [DisplayName("Racing")] public IEnumerable<int> Racing => Racy();
+
+        // 다른 스레드가 채우는 목록을 편집기가 여는 순간 열거하는 자리를 본뜬다.
+        private static IEnumerable<int> Racy()
+        {
+            yield return 1;
+            yield return 2;
+            throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+        }
+    }
+
     /// <summary>나열 상한 회귀용 표본 — 상한을 넘는 배열과, 끝까지 세면 갇히는 무한 지연 열거.</summary>
     public sealed class LongListSampleOpt
     {
