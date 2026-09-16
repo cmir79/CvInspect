@@ -48,7 +48,7 @@ dotnet add package OpenCvSharp4.runtime.win
 |---|---|---|
 | `Frame` | `Mat` or `ICvPixelSource` | Frame to display — a `Mat` is copied on assignment, an `ICvPixelSource` (e.g. `CamFrame` from CvInspect.Imaging) is held by reference. `null` shows a placeholder. Auto-fits when dimensions change. |
 | `Overlay` | `ViOverlay` | Result graphics (segments, labels, rects, polylines); replace the reference to refresh. |
-| `Shapes` | `IReadOnlyList<CvEditShape>` | Editable teaching shapes; drag edits raise `Changed` immediately. |
+| `Shapes` | `IReadOnlyList<CvEditShape>` | Editable teaching shapes; drag edits raise `Changed` immediately. The control subscribes to each shape's `Changed` only while it is loaded (attached on `Loaded`, released on `Unloaded`), so a long-lived shape list never keeps a discarded control alive. |
 | `GrabCommand` / `ContinuousCommand` / `StopCommand` | `ICommand` | Camera actions behind the 📸 / ⏯️ toolbar buttons. |
 | `LoadFrameCommand` | `ICommand` | Receives a `Mat` loaded from a file via the right-click menu. Unset it to hide the load menu entry. |
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |

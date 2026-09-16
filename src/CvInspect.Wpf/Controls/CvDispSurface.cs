@@ -29,6 +29,7 @@ internal sealed partial class CvDispSurface : FrameworkElement
     private int _imgH;
     private ViOverlay? _overlay;
     private IReadOnlyList<CvEditShape>? _shapes;
+    private bool _shapesAttached;   // 지금 도형 변경을 구독 중인가 — 화면에서 내려가면 푼다
     private Matrix _view = Matrix.Identity;   // 이미지 → 화면
     private bool _fitPending = true;
 
@@ -55,6 +56,14 @@ internal sealed partial class CvDispSurface : FrameworkElement
         ClipToBounds = true;
         Focusable = false;
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
+
+        // 화면에서 내려가면 도형 구독을 놓는다 — 도형 목록은 대개 호스트(VM)가 들고 있어서 컨트롤보다
+        // 오래 산다. 그 목록이 우리 핸들러를 붙잡고 있으면 버려진 컨트롤이 수집되지 않는다(실측: 한 목록에
+        // 컨트롤 40개를 붙였다 버리면 +799MB, 도형 없는 같은 40개는 +50MB — 컨트롤 하나가 백버퍼·픽셀
+        // 배열·비주얼 트리를 통째로 끌고 간다). 탭·페이지 전환처럼 뷰만 다시 세우는 배치가 그 자리다.
+        // 다시 붙을 때 되건다 — 내려갔다 올라오는 것은 흔하고, 그때 구독을 잃으면 드래그 편집이 조용히 죽는다.
+        Loaded += (_, _) => AttachShapes(true);
+        Unloaded += (_, _) => AttachShapes(false);
     }
 
     // === 외부 상태 주입 (CvDispCtrl DP 콜백) ===
@@ -214,13 +223,26 @@ internal sealed partial class CvDispSurface : FrameworkElement
 
     public void SetShapes(IReadOnlyList<CvEditShape>? shapes)
     {
-        if (_shapes is not null)
-            foreach (var s in _shapes) s.Changed -= OnShapeChanged;
+        AttachShapes(false);
         _shapes = shapes;
-        if (_shapes is not null)
-            foreach (var s in _shapes) s.Changed += OnShapeChanged;
+        AttachShapes(true);
         _drag = DragMode.None;
         InvalidateVisual();
+    }
+
+    /// <summary>도형 변경 구독을 걸거나 푼다 — 이미 그 상태면 아무것도 안 한다(Loaded 가 두 번 나도 이중 구독이 없다).
+    /// <b>거는 것은 화면에 올라와 있을 때만</b>이다 — 내려간 사이에 목록만 갈아끼워도 구독이 되살아나면
+    /// (그 뒤로 Unloaded 가 다시 나지 않으므로) 그대로 누수가 된다. 올라올 때 Loaded 가 다시 건다.</summary>
+    private void AttachShapes(bool attach)
+    {
+        if (attach && !IsLoaded) return;
+        if (_shapes is null || attach == _shapesAttached) return;
+        foreach (var s in _shapes)
+        {
+            if (attach) s.Changed += OnShapeChanged;
+            else s.Changed -= OnShapeChanged;
+        }
+        _shapesAttached = attach;
     }
 
     private void OnShapeChanged(object? sender, EventArgs e) => InvalidateVisual();
