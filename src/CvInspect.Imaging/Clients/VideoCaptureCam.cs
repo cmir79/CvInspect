@@ -167,7 +167,9 @@ public sealed class VideoCaptureCam : ICam
     {
         lock (_sync)
         {
-            _setExposureUs = timeUs;
+            // 0 이하는 "건드리지 않는다" 는 뜻이라 기억하지 않는다 — 다시 열 때 그것을 되넣으면
+            // CamOpt 값으로 돌아갈 길까지 막힌다. 지금 이 호출은 종전대로 그대로 넘긴다.
+            if (timeUs > 0) _setExposureUs = timeUs;
             ApplyExposureWhileLocked(timeUs);
         }
     }

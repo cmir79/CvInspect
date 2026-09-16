@@ -692,6 +692,9 @@ public sealed class GevCam : ICam
         lock (_sync)
         {
             ThrowIfDisposed();
+            // 장치에 넣기 **전에** 적는다 — 기억하는 것은 요청 값이지 장치가 받아들인 값이 아니다(ICam 계약).
+            // 순서를 뒤집어 "성공했을 때만" 적으면, 적용이 실패한 뒤 다시 열 때 낡은 성공 값이 그사이 갱신된
+            // CamOpt 값을 이겨 "저장했는데 밝기가 안 바뀐다" 가 된다.
             if (timeUs > 0) _setExposureUs = timeUs;
             if (_nodes is not { } nodes) return;   // 아직 안 열림 — 열 때 위에 적어 둔 값으로 적용된다
             Run(ct => ApplyExposureAsync(nodes, timeUs, ct));
