@@ -144,6 +144,8 @@ public static class CvInspGeom
     /// 그것은 호출자의 판단이다.</b> 다만 이 창에서 뜻이 달라진다: 각도 탐색을 켜면 이제 <b>0° 중심</b>으로 돌므로
     /// 자세가 흔들려도 잡히는데, 그 말은 <b>자세로 후보를 가르던 판별이 무력해진다</b>는 뜻이다(어느 후보각에서든
     /// 돌려 맞출 수 있다). 스케일 탐색은 창이 이미 티칭 크기라 1.0 중심이 되어 대개 불필요하다.
+    /// 그래서 이 둘을 호스트가 <b>되돌려 끄기로 했다면, 조용히 끄지 않는다</b> — 편집기에서 켠 사람에게는
+    /// 스위치가 먹지 않는 것으로 보이고, 왜 안 먹는지는 현장에서 풀 수 없다. 껐다는 사실을 로그로 남긴다.
     /// </summary>
     public static (Mat Window, CvPose WindowToImage, CvPatternOpt MatchOpt)? NormalizedWindow(
         Mat img, CvPatternOpt pat, CvPose found, CvPatternOpt target, int marginPx, double extraDeg = 0,
