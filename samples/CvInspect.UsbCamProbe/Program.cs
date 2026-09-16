@@ -8,6 +8,7 @@
 //   byid_<VID_PID or inst>.png  SerialNumber(VID/PID 또는 인스턴스 ID)로 VideoCaptureCam 을 열어 찍은 한 장
 // 판정: byid_* 가 같은 장치의 idx_any_<n>.png 와 같은 카메라를 보여 주면 식별이 맞는 것이다.
 using System.Text;
+using CvInspect;
 using CvInspect.Imaging;
 using OpenCvSharp;
 
@@ -19,6 +20,9 @@ void Log(string line)
     Console.WriteLine(line);
     report.AppendLine(line);
 }
+
+// 라이브러리 진단도 보고서에 싣는다 — 싱크가 없으면 열기 실패 사유·프레임 유실 같은 줄이 붙잡혀만 있고 여기 안 나온다.
+CvLog.Sink = (level, src, msg, ex) => Log($"[{level,-7}] {src}: {msg}{(ex is null ? "" : " | " + ex.GetType().Name + ": " + ex.Message)}");
 
 Log($"=== usbcamprobe {DateTime.Now:yyyy-MM-dd HH:mm:ss}  OS={Environment.OSVersion}  out={outDir}");
 

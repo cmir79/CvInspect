@@ -100,7 +100,10 @@ transport, not through this package.
 ## Diagnostics
 
 Attach `CvLog.Sink` before opening — discovery results, feature fallbacks, dropped frames and
-Bayer-phase disagreements all go there. The `gevprobe` sample in this repository opens a camera,
+Bayer-phase disagreements all go there. This package bridges the GigE library's own log into
+`CvLog` automatically, but the bridge ends there: with no sink attached the lines are held (the
+last 64, replayed on attach) rather than delivered, and `CvLog.IsAttached` is false. The `gevprobe`
+sample in this repository opens a camera,
 records what it declares, saves a frame, and runs a timed acquisition; it is the quickest way to
 find out what a specific camera does.
 

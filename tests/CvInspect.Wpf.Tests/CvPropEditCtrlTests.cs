@@ -104,6 +104,206 @@ public class CvPropEditCtrlTests
     });
 
     [Fact]
+    public void NestedObjectsAndListsBecomeRows() => RunSta(() =>
+    {
+        // 행 종류가 다섯(Action·bool·enum·수치·문자)뿐이던 동안 중첩 객체와 나열은 null 로 떨어져
+        // 화면에서 통째로 사라졌다 — 모드별 세부 파라미터를 중첩으로 둔 POCO 는 편집할 방법이 없었다.
+        var opt = new NestSampleOpt();
+        var ctrl = new CvPropEditCtrl { Source = opt };
+        var rows = ctrl.Groups.SelectMany(g => g.Rows).ToList();
+        var committed = new List<string>();
+        ctrl.Committed += (_, e) => committed.Add(e.PropertyName);
+
+        var nested = rows.OfType<CvPropNestedRowVm>().Single(r => r.Label == "Detail");
+        Check(nested.HasChildren && nested.Children.Single().Label == "Width",
+            $"[TypeConverter(ExpandableObjectConverter)] unfolds into child rows: {string.Join(", ", nested.Children.Select(c => c.Label))}");
+        Check(nested.IsEditable && rows.OfType<CvPropListRowVm>().All(r => r.IsEditable),
+            "getter-only nested/list rows are not locked rows — they show or unfold, they do not assign the value itself");
+
+        var box = (NestSampleOpt.BoxDetail)opt.Detail;
+        ((CvPropNumRowVm)nested.Children.Single()).Text = "24";
+        Check(box.Width == 24 && committed.SequenceEqual(["Width"]),
+            $"a child row writes into the nested instance and notifies with the child property name (width={box.Width}, committed={string.Join(", ", committed)})");
+
+        var list = rows.OfType<CvPropListRowVm>().Single(r => r.Label == "Ops");
+        Check(list.Text == "blur" + Environment.NewLine + "threshold", $"an enumerable is listed line by line: '{list.Text}'");
+        Check(rows.OfType<CvPropListRowVm>().Single(r => r.Label == "Spare").Text == "(empty)",
+            "an empty list says (empty) — 'empty' and 'not read yet' must not look the same");
+    });
+
+    [Fact]
+    public void SwappingTheNestedInstanceRebuildsItsChildren() => RunSta(() =>
+    {
+        // 모드 전환은 세부 파라미터 객체를 다른 타입으로 갈아 끼운다. 값만 갱신하면 옛 타입의 행이
+        // 새 인스턴스를 붙잡고 남아 화면은 그대로인데 쓰기가 엉뚱한 곳으로 간다.
+        var opt = new NestSampleOpt();
+        var ctrl = new CvPropEditCtrl { Source = opt };
+        var nested = ctrl.Groups.SelectMany(g => g.Rows).OfType<CvPropNestedRowVm>().Single(r => r.Label == "Detail");
+        var box = (NestSampleOpt.BoxDetail)opt.Detail;
+        var oldChild = (CvPropNumRowVm)nested.Children.Single();
+
+        opt.Mode = NestSampleOpt.SampleMode.Ring;
+
+        Check(nested.Children.Count == 1 && nested.Children.Single().Label == "Radius",
+            $"child rows follow the new instance's type: {string.Join(", ", nested.Children.Select(c => c.Label))}");
+        oldChild.Text = "99";
+        Check(box.Width == 10, $"rows of the replaced instance are detached — a late edit no longer reaches the discarded object (width={box.Width})");
+    });
+
+    [Fact]
+    public void SelfReferencingNestingStopsAtTheDepthLimit() => RunSta(() =>
+    {
+        // 순환을 못 끊으면 편집기를 여는 것만으로 스택이 넘친다. 한도에 닿은 자리는 아예 안 그린다 —
+        // 자식 없는 소제목만 남기면 "펼칠 것이 없는 것"과 구별되지 않는다.
+        var ctrl = new CvPropEditCtrl { Source = new SelfNestOpt() };
+        var row = ctrl.Groups.SelectMany(g => g.Rows).OfType<CvPropNestedRowVm>().SingleOrDefault();
+
+        var depth = 0;
+        CvPropNestedRowVm? last = null;
+        while (row is not null)
+        {
+            depth++;
+            last = row;
+            row = row.Children.OfType<CvPropNestedRowVm>().SingleOrDefault();
+        }
+        Check(depth == 3 && last is { HasChildren: false },
+            $"a self-referencing expandable property stops at the nesting limit and leaves no half-drawn block (levels={depth})");
+    });
+
+    [Fact]
+    public void LongListsStopAtTheItemLimit() => RunSta(() =>
+    {
+        // 상한이 없으면 [Browsable(false)] 가 빠진 큰 배열이 닿는 순간 항목마다 한 줄이 되어 편집기를 여는 것만으로
+        // 화면이 굳는다. 끝까지 세지 않는 것이 핵심이다 — 지연 열거가 무한이면 세는 순간 갇힌다
+        // (그래서 이 절은 상한이 있는 판에서만 끝난다. 상한이 없으면 실패가 아니라 정지로 나타난다).
+        var ctrl = new CvPropEditCtrl { Source = new LongListSampleOpt() };
+        var rows = ctrl.Groups.SelectMany(g => g.Rows).OfType<CvPropListRowVm>().ToList();
+        string[] Lines(string label) => rows.Single(r => r.Label == label).Text.Split(Environment.NewLine);
+
+        var big = Lines("Big");
+        Check(big.Length == 21 && big[^1] == "… (+980)",
+            $"a 1000-item array is cut at the limit and says how many are left: {big.Length} lines, last='{big[^1]}'");
+
+        var endless = Lines("Endless");
+        Check(endless.Length == 21 && endless[^1] == "…",
+            $"an endless lazy sequence is cut without being counted to the end: {endless.Length} lines, last='{endless[^1]}'");
+
+        Check(Lines("Tiny").Length == 3, $"a list under the limit is still shown whole ({Lines("Tiny").Length} lines)");
+    });
+
+    /// <summary>중첩·나열 회귀용 표본 — 모드에 따라 세부 파라미터가 다른 타입의 인스턴스로 교체된다.</summary>
+    public sealed class NestSampleOpt : INotifyPropertyChanged
+    {
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public enum SampleMode { Box, Ring }
+
+        private SampleMode _mode = SampleMode.Box;
+        private object _detail = new BoxDetail();
+
+        [DisplayName("Mode")]
+        public SampleMode Mode
+        {
+            get => _mode;
+            set
+            {
+                _mode = value;
+                _detail = value == SampleMode.Box ? new BoxDetail() : new RingDetail();
+                // 교체를 알리는 통지는 바뀐 프로퍼티(Detail) 로 나간다 — 중첩 행이 그것을 보고 자식을 다시 세운다.
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Detail)));
+            }
+        }
+
+        [DisplayName("Detail")]
+        [TypeConverter(typeof(ExpandableObjectConverter))]
+        public object Detail => _detail;
+
+        [DisplayName("Ops")]
+        public string[] Ops { get; } = ["blur", "threshold"];
+
+        [DisplayName("Spare")]
+        public string[] Spare { get; } = [];
+
+        public sealed class BoxDetail
+        {
+            [DisplayName("Width")] public int Width { get; set; } = 10;
+        }
+
+        public sealed class RingDetail
+        {
+            [DisplayName("Radius")] public double Radius { get; set; } = 4.5;
+        }
+    }
+
+    [Fact]
+    public void APropertyThatThrowsWhenReadIsSkippedInsteadOfKillingTheEditor() => RunSta(() =>
+    {
+        // 나열 행이 생기면서 편집기는 지금까지 아무도 읽지 않던 getter 를 읽고 그 자리에서 열거한다.
+        // 가드가 없으면 그 예외가 Source 대입 밖으로 나가고, WPF 에서는 대개 잡는 사람이 없어 앱이 그대로 죽는다.
+        var warned = new List<string>();
+        var prev = CvLog.Sink;
+        CvLog.Sink = (lv, _, msg, _) => { if (lv == CvLogLevel.Warning) warned.Add(msg); };
+        warned.Clear();   // 붙는 순간 그동안 붙잡혀 있던 줄이 흘러든다
+        try
+        {
+            // 이 대입이 던지면 이 절은 예외로 끝난다 — 그 자체가 회귀 신호다.
+            var ctrl = new CvPropEditCtrl { Source = new ThrowingSampleOpt() };
+            var labels = ctrl.Groups.SelectMany(g => g.Rows).Select(r => r.Label).ToList();
+
+            Check(labels.Contains("Good"), $"the rows that can be read are still built: {string.Join(", ", labels)}");
+            Check(!labels.Contains("Bad") && !labels.Contains("Racing"),
+                $"a property that throws while being read is left out rather than shown with a value nobody read: {string.Join(", ", labels)}");
+            Check(warned.Count(m => m.Contains("Bad")) == 1 && warned.Count(m => m.Contains("Racing")) == 1,
+                $"each skipped row says which property failed and why — caught, not swallowed: [{string.Join(" | ", warned)}]");
+        }
+        finally
+        {
+            CvLog.Sink = prev;
+        }
+    });
+
+    /// <summary>읽기 가드 회귀용 표본 — 장치를 그때 읽다 실패하는 프로퍼티와, 열거 도중 깨지는 목록.</summary>
+    public sealed class ThrowingSampleOpt
+    {
+        [DisplayName("Good")] public int Good { get; set; } = 3;
+
+        [DisplayName("Bad")] public string[] Bad => throw new InvalidOperationException("device not ready");
+
+        [DisplayName("Racing")] public IEnumerable<int> Racing => Racy();
+
+        // 다른 스레드가 채우는 목록을 편집기가 여는 순간 열거하는 자리를 본뜬다.
+        private static IEnumerable<int> Racy()
+        {
+            yield return 1;
+            yield return 2;
+            throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+        }
+    }
+
+    /// <summary>나열 상한 회귀용 표본 — 상한을 넘는 배열과, 끝까지 세면 갇히는 무한 지연 열거.</summary>
+    public sealed class LongListSampleOpt
+    {
+        [DisplayName("Big")] public byte[] Big { get; } = new byte[1000];
+
+        [DisplayName("Endless")] public IEnumerable<int> Endless => Forever();
+
+        [DisplayName("Tiny")] public byte[] Tiny { get; } = new byte[3];
+
+        private static IEnumerable<int> Forever()
+        {
+            for (var i = 0; ; i++) yield return i;
+        }
+    }
+
+    /// <summary>자기 자신을 값으로 들고 있는 표본 — 깊이 한도가 없으면 편집기를 여는 것만으로 끝나지 않는다.</summary>
+    public sealed class SelfNestOpt
+    {
+        [DisplayName("Self")]
+        [TypeConverter(typeof(ExpandableObjectConverter))]
+        public object Self => this;
+    }
+
+    [Fact]
     public void DefaultRecipeMeasuresTheSyntheticPart()
     {
         // 예제 README 가 약속한 것: 기준 자세의 합성 판에서(픽스처 미학습이라 티칭 기하 그대로) 윗변은 수평(0°),

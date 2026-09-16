@@ -137,6 +137,36 @@
         <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
       </Grid>
     </DataTemplate>
+
+    <!-- 읽기 전용 나열 — 입력칸으로 그리지 않는다. 테두리가 있으면 고칠 수 있는 값으로 읽힌다. -->
+    <DataTemplate DataType="{x:Type local:CvPropListRowVm}">
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition MinHeight="26" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource PropRowLabel}" />
+        <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap"
+                   VerticalAlignment="Center" Padding="2,0" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+      </Grid>
+    </DataTemplate>
+
+    <!-- 중첩 객체 — 라벨을 소제목으로 세우고 자식 행을 들여 그린다. 자식들은 자기들끼리 라벨 폭을 맞춘다
+         (안쪽에 별도 SharedSize 범위): 들여쓴 블록을 바깥 그룹과 같은 폭에 맞추면 자식 값칸이 밀려 좁아진다.
+         펼칠 것이 없으면(값 null) 소제목만 남으므로 통째로 감춘다. -->
+    <DataTemplate DataType="{x:Type local:CvPropNestedRowVm}">
+      <StackPanel Margin="0,4,0,0" Visibility="{Binding HasChildren, Converter={StaticResource BoolToVis}}">
+        <TextBlock Text="{Binding Label}" FontWeight="SemiBold" Margin="0,0,0,1"
+                   TextTrimming="CharacterEllipsis" ToolTip="{StaticResource RowTip}" />
+        <TextBlock Text="{Binding InlineDesc}" Style="{StaticResource PropRowDesc}" />
+        <ItemsControl ItemsSource="{Binding Children}" Margin="12,0,0,0" Grid.IsSharedSizeScope="True" />
+      </StackPanel>
+    </DataTemplate>
   </UserControl.Resources>
 
   <!-- 우측 패딩 — 세로 스크롤바가 편집기에 바로 붙지 않게 -->

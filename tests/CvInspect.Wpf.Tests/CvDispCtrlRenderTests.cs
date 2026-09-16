@@ -163,6 +163,7 @@ public class CvDispCtrlRenderTests
         var warnings = new List<string>();
         var prev = CvLog.Sink;
         CvLog.Sink = (level, src, msg, ex) => { if (level == CvLogLevel.Warning) warnings.Add($"{src}: {msg}"); };
+        warnings.Clear();   // 붙는 순간 그동안 붙잡혀 있던 줄이 흘러든다 — 이 절이 세는 것은 그 뒤의 것이다
         try
         {
             var blank = Render(Ctrl());

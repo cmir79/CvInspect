@@ -3,6 +3,7 @@
 // 마킹의 유일한 채널이다(대상 POCO 대부분이 INotifyPropertyChanged 미구현).
 // 이 계층은 MVVM 라이브러리를 참조하지 않는다 — 통지와 커맨드는 이 파일 안에서 자족한다.
 
+using System.Collections;
 using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
@@ -83,11 +84,34 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
     private void OnSourceChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (!string.IsNullOrEmpty(e.PropertyName) && e.PropertyName != Prop.Name) return;
-        RefreshFromSource();
+        // 통지 경로에서 새면 소스가 PropertyChanged 를 낸 자리에서 터진다 — 편집기가 호스트 코드를 깨뜨리는 꼴이다.
+        // 여기서는 행을 뺄 수 없으니 마지막으로 읽은 값을 그대로 남긴다.
+        TryRefreshFromSource();
     }
 
     /// <summary>소스 현재 값 → 표시 필드 직접 대입(setter 미경유 — 커밋을 되쏘지 않는다) + 통지.</summary>
     internal abstract void RefreshFromSource();
+
+    /// <summary>
+    /// 읽기를 감싼다 — <b>프로퍼티 getter 는 남의 코드다.</b> 장치를 그때 읽는 지연 평가, 다른 스레드가 채우는
+    /// 컬렉션(열거 중 수정), 아직 배선되지 않은 참조 — 무엇이든 던질 수 있다. 새면 편집기를 세우는 대입
+    /// (<c>Source = opt</c>)이나 소스가 <c>PropertyChanged</c> 를 낸 자리에서 터지고, WPF 라 대개 잡는 사람이 없어
+    /// 앱이 그대로 종료된다. 잡되 삼키지 않는다 — 어느 프로퍼티가 무엇으로 실패했는지 경고로 남긴다
+    /// (실행 버튼 행과 같은 규율).
+    /// </summary>
+    internal bool TryRefreshFromSource()
+    {
+        try
+        {
+            RefreshFromSource();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            CvLog.Publish(CvLogLevel.Warning, nameof(CvPropRowVm), $"Property '{Prop.Name}' read failed: {ex.GetType().Name}", ex);
+            return false;
+        }
+    }
 
     /// <summary>backing 에 쓰고 커밋 통지 — 사용자 편집 setter 전용 경로.
     /// 떼어진 행(재구성 후 잔존 시각 트리)의 늦은 커밋은 폐기된 POCO 오염이라 하드 no-op.</summary>
@@ -241,5 +265,101 @@ public sealed class CvPropActionRowVm : CvPropRowVm
         public event EventHandler? CanExecuteChanged { add { } remove { } }
         public bool CanExecute(object? parameter) => true;
         public void Execute(object? parameter) => owner.Execute();
+    }
+}
+
+/// <summary>
+/// 읽기 전용 나열 — 항목을 줄바꿈으로 이어 붙여 그대로 보여 준다(문자열 배열 등).
+/// 편집하지 않는다: 이 자리에 오는 것은 도구가 지금 들고 있는 목록(등록된 연산자 등)이라
+/// 화면에서 고칠 값이 아니라 확인할 값이다. 목록이 비면 <c>(empty)</c> 로 적어 "빈 목록"과
+/// "아직 못 읽음"을 가른다.
+/// </summary>
+public sealed class CvPropListRowVm : CvPropRowVm
+{
+    private string _text = string.Empty;
+    public string Text
+    {
+        get => _text;
+        private set => SetProperty(ref _text, value);
+    }
+
+    /// <summary>한 번에 적는 항목 수 상한. 이 행은 확인용이라 전부 적을 값어치가 없고, 상한이 없으면
+    /// <c>[Browsable(false)]</c> 가 빠진 큰 배열(학습 템플릿 바이트 등)이 여기 닿는 순간 항목마다 한 줄을 만들어
+    /// <b>편집기를 여는 것만으로 화면이 굳는다.</b> 넘치면 남은 개수만 뒤에 덧붙인다 — 숫자라 번역이 필요 없다.</summary>
+    private const int MaxItems = 20;
+
+    internal override void RefreshFromSource() => Text = Format(Prop.GetValue(Source));
+
+    private static string Format(object? value)
+    {
+        if (value is not IEnumerable items || value is string) return value?.ToString() ?? string.Empty;
+
+        var parts = new List<string>();
+        var truncated = false;
+        foreach (var item in items)
+        {
+            // 상한에서 열거를 멈춘다 — 끝까지 세면 지연 열거(무한일 수도 있다)에서 그대로 갇힌다.
+            if (parts.Count == MaxItems) { truncated = true; break; }
+            parts.Add(item?.ToString() ?? string.Empty);
+        }
+
+        if (parts.Count == 0) return "(empty)";
+        // 남은 개수는 세지 않고 아는 경우(ICollection)에만 적는다.
+        if (truncated) parts.Add(items is ICollection col ? $"… (+{col.Count - MaxItems})" : "…");
+        return string.Join(Environment.NewLine, parts);
+    }
+}
+
+/// <summary>
+/// 중첩 객체 — 값이 들고 있는 인스턴스를 다시 펼쳐 자식 행으로 그린다.
+/// <see cref="System.ComponentModel.TypeConverterAttribute"/> 가
+/// <see cref="System.ComponentModel.ExpandableObjectConverter"/> 인 프로퍼티만 이 행이 된다.
+/// 선언 타입이 <c>object</c> 이고 실제 타입이 private 중첩 클래스인 관용구가 이 자리의 주 용도라,
+/// <b>선언 타입이 아니라 값의 런타임 타입으로 펼친다.</b>
+///
+/// 값이 <b>다른 인스턴스로 바뀌면 자식을 통째로 다시 세운다</b> — 모드 전환으로 어댑터가 교체되는
+/// 자리라(세그먼트 방식·연산자 선택 등) 자식의 구성 자체가 달라진다. 값만 갱신하면 옛 타입의
+/// 행이 새 인스턴스를 붙잡고 남아, 화면은 그대로인데 쓰기가 엉뚱한 곳으로 간다.
+/// 그래서 소스는 교체 시점에 그 프로퍼티로 변경 통지를 내야 한다.
+/// </summary>
+public sealed class CvPropNestedRowVm : CvPropRowVm
+{
+    private object? _current;
+    private IReadOnlyList<CvPropRowVm> _children = [];
+
+    /// <summary>자식 행을 세우는 방법 — 빌더가 주입한다(재귀 진입점). 순환 참조를 막기 위해 깊이는 빌더가 센다.</summary>
+    internal Func<object, IReadOnlyList<CvPropRowVm>>? ChildFactory { get; set; }
+
+    public IReadOnlyList<CvPropRowVm> Children
+    {
+        get => _children;
+        private set => SetProperty(ref _children, value);
+    }
+
+    /// <summary>펼칠 것이 없을 때(값이 null) 자리를 비워 두지 않도록 — 헤더만 남는 빈 블록을 감춘다.</summary>
+    public bool HasChildren => _children.Count > 0;
+
+    internal override void Detach()
+    {
+        foreach (var c in _children) c.Detach();
+        ChildFactory = null;
+        base.Detach();
+    }
+
+    internal override void RefreshFromSource()
+    {
+        var value = Prop.GetValue(Source);
+        if (ReferenceEquals(value, _current))
+        {
+            // 같은 인스턴스면 구성은 그대로다 — 자식들이 각자 자기 값만 다시 읽는다.
+            // 한 자식이 던져도 나머지는 갱신한다(감싼 호출) — 여기서 새면 소스의 통지 지점에서 터진다.
+            foreach (var c in _children) c.TryRefreshFromSource();
+            return;
+        }
+
+        foreach (var c in _children) c.Detach();
+        _current = value;
+        Children = value is null || ChildFactory is null ? [] : ChildFactory(value);
+        OnPropertyChanged(nameof(HasChildren));
     }
 }
