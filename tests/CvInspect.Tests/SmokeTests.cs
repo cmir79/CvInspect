@@ -129,6 +129,10 @@ public class SmokeTests
     var patJson = JsonSerializer.Serialize(new CvPatternOpt());
     Check(!patJson.Contains("Train\":") || !patJson.Contains("System.Action"), "CvPatternOpt serializes (Action ignored)");
     Check(!patJson.Contains("TemplatePng"), "TemplatePng [JsonIgnore]");
+    // 매 Run 대입되는 런타임 값이 레시피에 박히면 한 프레임의 값이 다음 런의 파라미터로 되먹여진다 —
+    // 실측으로 같은 장면의 판정이 뒤집혔다(score 1.0000 → 0.0893, 멀쩡한 부품이 미검출).
+    // README 가 소비자에게 "volatile runtime values are [JsonIgnore]" 라고 약속한 계약의 나머지 절반이다.
+    Check(!patJson.Contains("WrapPeriodX"), "WrapPeriodX is a per-Run runtime value and must not persist into a recipe");
     var segJson = JsonSerializer.Serialize(new CvColorSegmentOpt());
     Check(!segJson.Contains("\"Train\""), "CvColorSegmentOpt Action ignored");
     var round = JsonSerializer.Deserialize<CvPatternOpt>(patJson);

@@ -28,7 +28,10 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   Rectangular templates rotate the *scene* rather than the template, because masked matching
   measured 6× slower; circular templates keep the mask since it does real work there. A search
   region is the *allowed centre region*, so a target half outside the box is still found. Empty
-  scenes finish at the coarse stage and return early (measured 3.7 s → 0.05 s). Multiple hits come
+  scenes finish at the coarse stage and return early (measured 3.7 s → 0.05 s) — *early*, not empty:
+  a rectangle-trained template still returns its best candidate carrying a near-zero score, so
+  **judge on the score against `AcceptScore`, never on "a pose came back" or on the result count**.
+  Multiple hits come
   out non-overlapping with a suppression radius. The minimum reliable coarse size (`11 px`
   geometric-mean side) was derived from 80-trial-per-cell synthetic sweeps across aspect ratios,
   and the finder *reports* it rather than silently overriding your settings.

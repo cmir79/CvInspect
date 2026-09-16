@@ -181,8 +181,14 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     /// (실기 실측: 순환을 켜면 다른 결함 장면들은 복제 미접촉 통제군 값으로 정확히 내려오는데,
     /// 반 바퀴 결함만 안 내려온다 — 그 자리의 고득점은 가짜 내용이 아니라 정당한 회전 추종에서 온다).
     /// 판별식은 <b>템플릿 폭 ≈ 주기</b> 이고 영역 미사용. 그 조합이면 탐색 범위를 실제 회전 허용치만큼만
-    /// 열거나, 전 주기가 아닌 부분 구간 템플릿으로 학습하는 것이 답이다 — 레시피 쪽 축이다.</summary>
-    [Browsable(false)] public double WrapPeriodX { get; set; }
+    /// 열거나, 전 주기가 아닌 부분 구간 템플릿으로 학습하는 것이 답이다 — 레시피 쪽 축이다.
+    ///
+    /// <b>영속되지 않는다</b>(<see cref="JsonIgnoreAttribute"/>) — 매 Run 대입되는 값이라 저장할 것이 없고,
+    /// 저장하면 <b>한 프레임의 값이 레시피에 박혀 다음 런의 파라미터로 되먹여진다.</b> 실측: 같은 장면에서
+    /// 0 이면 score 1.0000 인데 스테일 값 200 이 복원되면 score 0.0893 — 멀쩡한 부품이 조용히 미검출이 된다.</summary>
+    [Browsable(false)]
+    [JsonIgnore]
+    public double WrapPeriodX { get; set; }
 
     /// <summary>학습된 템플릿 PNG — Save/Load 가 Template.png 로 별도 영속 (JSON 제외).</summary>
     [Browsable(false)]
