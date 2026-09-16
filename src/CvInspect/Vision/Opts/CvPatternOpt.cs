@@ -200,6 +200,22 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     [JsonIgnore]
     public Func<bool>? TrainHook { get; set; }
 
+    /// <summary>얕은 사본 — 한 런에서만 쓸 옵션(탐색 영역만 옮긴 판 등)을 만들 때 쓴다.
+    ///
+    /// <b>프로퍼티를 손으로 나열하지 않는다</b>(<c>MemberwiseClone</c>). 이 타입은 멤버가 많아서,
+    /// 손으로 베끼면 나중에 는 프로퍼티가 조용히 빠진다 — <see cref="TrainedShape"/> 를 빠뜨리면 원형으로
+    /// 학습한 템플릿이 사본에서는 마스크 없이 비교되는 식이라, 결과가 달라지는데 아무도 모른다.
+    ///
+    /// 얕은 사본이라 <see cref="TemplatePng"/> 바이트 배열과 <see cref="TrainHook"/> 은 원본과 <b>공유</b>한다
+    /// (템플릿은 학습 뒤 바뀌지 않으므로 공유가 맞다). 다만 <c>PropertyChanged</c> 구독자는 <b>물려주지 않는다</b> —
+    /// 물려주면 잠깐 쓰고 버릴 사본의 변경이 원본을 보고 있는 편집기로 흘러간다.</summary>
+    public CvPatternOpt Clone()
+    {
+        var copy = (CvPatternOpt)MemberwiseClone();
+        copy.PropertyChanged = null;
+        return copy;
+    }
+
     /// <summary>편집 도형 — 학습 영역(사각은 회전 그립, 원은 반경 그립) + 탐색 영역(UseSearchRegion 일 때).
     /// 탐색 영역은 학습 영역의 회전을 따라간다 — 특징과 그 주변은 같은 국소 좌표계에 있어 각도를 따로 둘 이유가 없고,
     /// 따로 두면 되돌리는 변환이 한 겹 더 는다. 그래서 회전 그립은 학습 영역에만 있고 탐색 영역은 그 각을 물려받는다.

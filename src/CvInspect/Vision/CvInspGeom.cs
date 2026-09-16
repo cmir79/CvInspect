@@ -30,6 +30,81 @@ public static class CvInspGeom
         return (p.FoundX + (dx * cos - dy * sin) * p.Scale, p.FoundY + (dx * sin + dy * cos) * p.Scale);
     }
 
+    /// <summary>
+    /// 픽스처 포즈 — 파인더가 낸 포즈에서 <b>학습각을 걷어</b>, <see cref="CvPose.Apply"/>·
+    /// <see cref="CvPose.Inverse"/>·<see cref="CvPose.Compose"/> 에 그대로 태울 수 있는 포즈로 만든다.
+    ///
+    /// 이 보정이 따로 필요한 이유: 파인더는 <see cref="CvPose.ThetaDeg"/> 에 <b>절대 발견각</b>을 담는다.
+    /// 티칭 기하를 옮기려면 학습각을 뺀 차를 써야 하는데(<see cref="XformByPose"/> 가 그 차를 쓴다),
+    /// 그 사실을 모르고 발견 포즈에 바로 <c>Apply</c> 를 태우면 학습각만큼 회전이 더 먹는다 —
+    /// 부품이 <b>움직이지 않았는데도</b> 25° 로 티칭한 패턴에서 43px 밀리는 식이다. 학습각이 0 이면 둘이
+    /// 같아서 안 드러나므로, 그 값이 이름을 갖고 한 곳에 있어야 같은 실수가 안 난다.
+    ///
+    /// <c>FixturePose(pat, p).Apply(x, y)</c> 는 <c>XformByPose(pat, p, x, y)</c> 와 같다 — 회귀가 그것을 못 박는다.
+    /// <paramref name="extraDeg"/> 는 후보 각도 가산분이다(대칭 접힘 스윕처럼 <b>호출자가 도는</b> 것 —
+    /// 툴킷은 대상의 대칭 차수를 모른다).
+    /// </summary>
+    public static CvPose FixturePose(CvPatternOpt pat, CvPose found, double extraDeg = 0)
+        => new(found.ThetaDeg + extraDeg - pat.TrainedAngleDeg,
+            pat.TrainedOriginX, pat.TrainedOriginY, found.FoundX, found.FoundY, found.Score, found.Scale);
+
+    /// <summary>
+    /// 정규화 창 — 발견 포즈를 걷어 <b>부품이 티칭 자세·티칭 크기로 선</b> 창 하나를 잘라 온다.
+    /// 그 창 안에서는 티칭 좌표가 그대로 통하므로, 티칭 때 잡아 둔 상대 위치(랜드마크·보조 특징·ROI)를
+    /// 그 자리에서 바로 찾을 수 있다.
+    ///
+    /// <b>전체 이미지를 돌리지 않는다</b> — 목적지 크기가 곧 계산 범위라 창 넓이만큼만 든다. 후보 각도를
+    /// 여러 개 도는 호출자에게는 그 차이가 접힘 수만큼 곱해진다.
+    ///
+    /// <b>돌아오는 길을 포즈로 돌려준다</b>(<c>WindowToImage</c>) — 창에서 찾은 좌표를 <c>Apply</c> 한 번으로
+    /// 입력 이미지 좌표로 되돌린다. 역변환 체인을 호출자가 손으로 짤 일이 없고, <b>반환 좌표의 공간이
+    /// 경로에 따라 갈리지 않는다</b>(창 좌표 아니면 이미지 좌표, 그 둘뿐이다).
+    ///
+    /// 창 크기는 <b>티칭 공간 픽셀</b>이다 — 부품이 크게 보여도 창에 담기는 티칭 범위는 그대로다.
+    /// 경계 밖은 <paramref name="border"/> 로 채워지므로 창이 이미지를 벗어나도 크기가 줄지 않는다
+    /// (잘린 창 때문에 좌표계가 바뀌는 일이 없다). 채운 자리와 진짜 어두운 자리를 가려야 하면
+    /// <paramref name="borderValue"/> 를 쓰거나 <see cref="BorderTypes.Replicate"/> 를 고른다.
+    ///
+    /// 못 쓰는 포즈(<see cref="CvPose.IsValid"/> 가 false)면 던진다. 이미지가 비었거나 크기가 0 이하면 null.
+    /// </summary>
+    public static (Mat Window, CvPose WindowToImage)? NormalizedWindow(
+        Mat img, CvPatternOpt pat, CvPose found,
+        double taughtX, double taughtY, int width, int height, double extraDeg = 0,
+        InterpolationFlags interp = InterpolationFlags.Linear,
+        BorderTypes border = BorderTypes.Constant, Scalar? borderValue = null)
+    {
+        if (img is null || img.Empty() || pat is null || width <= 0 || height <= 0) return null;
+
+        var fx = FixturePose(pat, found, extraDeg);
+        // 창 왼쪽 위 모서리가 놓일 티칭 좌표 — 창 중앙이 요청한 티칭 점에 오도록.
+        var (px, py) = fx.Apply(taughtX - width / 2.0, taughtY - height / 2.0);
+
+        // 창 좌표 → 이미지 좌표. 원점 0 이므로 Apply 는 "그 모서리에서 회전·스케일만큼 민다" 가 된다.
+        var windowToImage = new CvPose(fx.ThetaDeg, 0, 0, px, py, fx.Score, fx.Scale);
+
+        var window = new Mat();
+        using (var m = AffineOf(windowToImage.Inverse()))
+            Cv2.WarpAffine(img, window, m, new Size(width, height), interp, border, borderValue ?? Scalar.All(0));
+        return (window, windowToImage);
+    }
+
+    /// <summary>포즈를 warpAffine 용 2×3 행렬로. 포즈 대수와 한 곳에서 맞물리게 두어 각도 부호를 다시 정하지 않는다 —
+    /// warpAffine 은 양수각이 점을 반대로 옮기는 자리라 손으로 쓸 때 가장 잘 뒤집힌다.</summary>
+    private static Mat AffineOf(CvPose p)
+    {
+        var rad = p.ThetaDeg * Math.PI / 180.0;
+        var c = p.Scale * Math.Cos(rad);
+        var s = p.Scale * Math.Sin(rad);
+        var m = new Mat(2, 3, MatType.CV_64FC1);
+        m.Set(0, 0, c);
+        m.Set(0, 1, -s);
+        m.Set(0, 2, p.FoundX - (c * p.OriginX - s * p.OriginY));
+        m.Set(1, 0, s);
+        m.Set(1, 1, c);
+        m.Set(1, 2, p.FoundY - (s * p.OriginX + c * p.OriginY));
+        return m;
+    }
+
     /// <summary>패턴 템플릿 매칭 — 발견 여부/스코어/포즈/템플릿 크기. 입력 공간은 호출측 소관(축소/에지/언랩).
     /// 스코어는 미발견이어도 최고 후보 값 (진단·크롭 파일명 소비용).</summary>
     public static (bool Present, double Score, CvPose? Pose, (int W, int H) Templ) MatchPattern(Mat img, CvPatternOpt pat)
@@ -78,6 +153,10 @@ public static class CvInspGeom
     /// 반환 기대 좌표·검색된 템플릿 사각(매치 위치의 템플릿 박스)은 pre 공간 환산치(표시용) —
     /// 정규화/펴기 회전의 역변환 체인 적용.
     /// </summary>
+    [Obsolete("검증 정책은 호스트 몫이다 — 이 메서드가 하는 일은 툴킷 조각들의 조립이고, 그 조립이 " +
+        "툴킷의 매처보다 약하다(마스크·각도/스케일 탐색·게이트 없이 MatchTemplate 한 번). " +
+        "NormalizedWindow 로 창을 얻어 MatchPattern 으로 찾고 WindowToImage.Apply 로 좌표를 되돌리는 쪽으로 옮긴다 — " +
+        "그 길에서는 랜드마크 옵트의 TrainedShape(원형 마스크)와 탐색 설정이 실제로 먹는다. 다음 minor 에서 제거된다.")]
     public static (double Score, double ExpX, double ExpY, (double X, double Y)[] Found) VerifyLandmark(
         Mat pre, CvPatternOpt pat, CvPose p, double extraDeg, CvPatternOpt landmark, double searchPx)
     {

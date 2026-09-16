@@ -1035,6 +1035,102 @@ public class SmokeTests
             $"and the latency numbers stay sane instead of showing hours: {line8}");
     }
 
+    /// <summary>포즈 프리미티브 — 학습각 보정 포즈와 정규화 창.
+    /// <b>중립값(학습각 0·스케일 1)에서는 틀린 판과 맞는 판이 같은 값을 낸다</b> — 그래서 이 절은
+    /// 학습각 25°·스케일 1.2·가산각 90° 처럼 전부 중립이 아닌 값으로만 잰다. 중립값에서만 돌린 검증은
+    /// 그 파라미터를 검증하지 않는다.</summary>
+    [Fact]
+    public void PosePrimitivesCarryTheTrainedAngleAndScale()
+    {
+    // === 10-A) FixturePose 는 XformByPose 와 같은 답을 낸다 — 발견 포즈에 바로 Apply 하면 틀린다 ===
+    {
+        var pat = new CvPatternOpt { TrainedOriginX = 100, TrainedOriginY = 80, TrainedAngleDeg = 25 };
+        var found = new CvPose(40, pat.TrainedOriginX, pat.TrainedOriginY, 300, 220, 0.91, 1.2);
+
+        var (ex, ey) = CvInspGeom.XformByPose(pat, found, 160, 130);
+        var fx = CvInspGeom.FixturePose(pat, found).Apply(160, 130);
+        Check(Math.Abs(fx.X - ex) < 1e-9 && Math.Abs(fx.Y - ey) < 1e-9,
+            $"FixturePose(...).Apply == XformByPose — 학습각 보정이 포즈 안으로 들어갔다 ({fx} vs ({ex},{ey}))");
+
+        // 대조군: 보정 없이 발견 포즈에 바로 Apply 하면 학습각만큼 더 돈다. 이 차이가 0 이면 이 절은 아무것도 재지 않은 것이다.
+        var raw = found.Apply(160, 130);
+        Check(Math.Sqrt((raw.X - ex) * (raw.X - ex) + (raw.Y - ey) * (raw.Y - ey)) > 20,
+            $"the uncorrected pose is visibly wrong, which is why the corrected one needs a name (raw={raw} correct=({ex},{ey}))");
+
+        // 학습각 0 이면 둘이 같다 — 그래서 중립값으로만 검증하면 위 결함이 안 드러난다.
+        var flat = new CvPatternOpt { TrainedOriginX = 100, TrainedOriginY = 80 };
+        var flatFound = new CvPose(40, 100, 80, 300, 220, 0.91, 1.2);
+        var (fex, fey) = CvInspGeom.XformByPose(flat, flatFound, 160, 130);
+        var rawFlat = flatFound.Apply(160, 130);
+        Check(Math.Abs(rawFlat.X - fex) < 1e-9 && Math.Abs(rawFlat.Y - fey) < 1e-9,
+            "with a zero trained angle the wrong call and the right call agree — a regression that only runs here proves nothing");
+    }
+
+    // === 10-B) NormalizedWindow — 티칭 자리의 특징이 창 중앙에 서고, 좌표가 한 번에 되돌아온다 ===
+    using (var scene = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+    {
+        // 티칭: 앵커 원점 (150,120), 랜드마크는 거기서 (+90,-40) 자리. 학습각 25°.
+        var pat = new CvPatternOpt { TrainedOriginX = 150, TrainedOriginY = 120, TrainedAngleDeg = 25 };
+        const double lmX = 240, lmY = 80;
+
+        // 런: 앵커가 (300,230) 에서 각도 70°·스케일 1.2 로 발견됐다고 하자. 랜드마크의 실제 자리는 계약상 XformByPose 다.
+        var found = new CvPose(70, pat.TrainedOriginX, pat.TrainedOriginY, 300, 230, 0.95, 1.2);
+        var (trueX, trueY) = CvInspGeom.XformByPose(pat, found, lmX, lmY);
+        Cv2.Circle(scene, new OpenCvSharp.Point((int)Math.Round(trueX), (int)Math.Round(trueY)), 9, new Scalar(255), -1);
+
+        var got = CvInspGeom.NormalizedWindow(scene, pat, found, lmX, lmY, 60, 60);
+        Check(got is not null, "a window comes back");
+        using var win = got!.Value.Window;
+        Check(win.Width == 60 && win.Height == 60, $"the window is the requested size in taught pixels ({win.Width}x{win.Height})");
+
+        // 창 안에서 특징의 무게중심 — 티칭 자리를 요청했으니 창 중앙에 서야 한다.
+        var mo = Cv2.Moments(win, binaryImage: false);
+        Check(mo.M00 > 0, "the feature is inside the window at all");
+        var wcx = mo.M10 / mo.M00;
+        var wcy = mo.M01 / mo.M00;
+        Check(Math.Abs(wcx - 30) < 1.5 && Math.Abs(wcy - 30) < 1.5,
+            $"the taught point lands at the window centre even at 25 deg trained angle and 1.2 scale (found at {wcx:F2},{wcy:F2})");
+
+        // 되돌아오는 길은 포즈 하나 — 창 좌표를 Apply 하면 입력 이미지 좌표다.
+        var back = got.Value.WindowToImage.Apply(wcx, wcy);
+        Check(Math.Abs(back.X - trueX) < 1.5 && Math.Abs(back.Y - trueY) < 1.5,
+            $"WindowToImage.Apply maps straight back to the input image ({back.X:F2},{back.Y:F2} vs {trueX:F2},{trueY:F2})");
+
+        // 가산각을 주면 다른 자리를 본다 — 대칭 스윕이 호출자 쪽에서 도는 방식. 여기서 같은 자리가 나오면 extraDeg 가 안 먹는 것이다.
+        var turned = CvInspGeom.NormalizedWindow(scene, pat, found, lmX, lmY, 60, 60, extraDeg: 90);
+        using var turnedWin = turned!.Value.Window;
+        var mo2 = Cv2.Moments(turnedWin, binaryImage: false);
+        Check(mo2.M00 < mo.M00 * 0.2,
+            $"a candidate angle looks somewhere else — the sweep stays with the caller (mass {mo2.M00:F0} vs {mo.M00:F0})");
+
+        // 창이 이미지를 벗어나도 크기·좌표계는 그대로다 — 잘린 창이 다른 공간 값을 내놓던 것이 앞 판의 결함이었다.
+        var edge = CvInspGeom.NormalizedWindow(scene, pat, found, lmX, lmY, 60, 60, extraDeg: 180);
+        using var edgeWin = edge!.Value.Window;
+        Check(edgeWin.Width == 60 && edgeWin.Height == 60, "a window that falls outside the image keeps its size instead of shrinking");
+    }
+
+    // === 10-C) Clone — 프로퍼티를 손으로 베끼지 않으므로 빠지는 것이 없다 ===
+    {
+        var src = new CvPatternOpt
+        {
+            TrainShape = CvTrainShape.Circle, TrainedShape = CvTrainShape.Circle,
+            TrainedAngleDeg = 25, AcceptScore = 0.77, MaxCount = 3, TemplatePng = [1, 2, 3],
+        };
+        var notified = 0;
+        src.PropertyChanged += (_, _) => notified++;
+
+        var copy = src.Clone();
+        Check(copy.TrainedShape == CvTrainShape.Circle && Math.Abs(copy.AcceptScore - 0.77) < 1e-12
+              && copy.MaxCount == 3 && ReferenceEquals(copy.TemplatePng, src.TemplatePng),
+            "every value comes across, including the ones a hand-written copy forgets (TrainedShape drives the circular mask)");
+
+        copy.MaxCount = 9;
+        copy.AcceptScore = 0.1;
+        Check(src.MaxCount == 3 && Math.Abs(src.AcceptScore - 0.77) < 1e-12, "editing the copy leaves the original alone");
+        Check(notified == 0, "the copy does not report its edits to whoever is watching the original (a stale editor would react)");
+    }
+    }
+
     /// <summary>측정값이 "그럴싸하게 틀리는" 세 자리 — 못 쓰는 포즈, 증거 부족, 못 본 면적.
     /// 셋 다 조용히 답을 내놓던 것을 드러내게 고친 자리다.</summary>
     [Fact]
