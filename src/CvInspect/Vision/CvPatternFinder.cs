@@ -20,8 +20,11 @@ namespace CvInspect.Vision;
 /// 범위가 스케일 설정에 따라 흔들렸다(그린 사각보다 넓어졌다) — 지금은 유효 중심을 그린 사각 그대로
 /// 건다. 영역을 안 그렸으면(전 이미지) 이미지 전체가 허용 범위다.
 ///
-/// <b>비용 계약</b>: 대상이 없는(내용이 희소한) 장면은 코스 단계에서 유효 후보 없음으로 끝나고 즉시
-/// 빈 목록을 돌려준다 — 파인 단계를 아예 밟지 않으므로 <b>발견되는 장면보다 빠르다</b>. 원본 해상도
+/// <b>비용 계약</b>: 대상이 없는(내용이 희소한) 장면은 코스 단계에서 유효 후보 없음으로 끝난다 —
+/// 파인 단계를 아예 밟지 않으므로 <b>발견되는 장면보다 빠르다</b>.
+/// ⚠ <b>빠른 것이지 빈 목록이 오는 것이 아니다</b> — 실측(균일한 장면): 사각 학습 템플릿은 그래도
+/// <c>Count=1</c>(score 0.0000)을 돌려주고, 빈 목록이 오는 것은 원형 학습(마스크드 경로)일 때다.
+/// 곧 <c>Count</c> 로 판정하면 <b>같은 장면에서도 학습 모양에 따라 답이 갈린다</b>. 판정은 스코어로 한다. 원본 해상도
 /// 전면 스캔은 코스를 못 돌린 경우에만 쓰는 폴백이다(축소 후 치수 부족, 또는 후보가 단일이라
 /// 코스를 건너뛴 경우).
 ///
@@ -93,7 +96,14 @@ public static class CvPatternFinder
         return (eff * cs, need);
     }
 
-    /// <summary>최고 스코어 하나 — 종전 규약 그대로 (MaxCount 와 무관하게 1개만 계산한다).</summary>
+    /// <summary>최고 스코어 하나 — 종전 규약 그대로 (MaxCount 와 무관하게 1개만 계산한다).
+    ///
+    /// ⚠ <b><c>null</c> 이 아니라는 것은 "찾았다" 가 아니다.</b> 여기서 null 은 구조적 불능(무특징 템플릿·
+    /// 탐색 공간 부족)만 뜻하고, <b>대상이 없어도 낮은 스코어를 단 포즈가 돌아온다</b> — 실측: 부품이 없는
+    /// 장면에서 non-null, score 0.085(대조군 = 부품 있음 1.000). 이 메서드는 <see cref="CvPatternOpt.AcceptScore"/>
+    /// 를 읽지 않으므로 그 값을 아무리 올려도 결과는 그대로다. <b>판정은 반드시
+    /// <c>pose is not null &amp;&amp; pose.Value.Score &gt;= opt.AcceptScore</c> 로 한다</b>
+    /// (<see cref="CvInspGeom.MatchPattern"/> 이 그 판정을 이미 해 주는 파사드다).</summary>
     public static CvPose? Match(Mat filtered, Mat template, CvPatternOpt opt)
     {
         var one = MatchCore(filtered, template, opt, 1);
@@ -101,7 +111,14 @@ public static class CvPatternFinder
     }
 
     /// <summary>겹치지 않는 검출을 스코어 내림차순으로 최대 <see cref="CvPatternOpt.MaxCount"/> 개.
-    /// 빈 목록 = 구조적 불능 또는 유효 스코어 없음 (AcceptScore 판정은 호출자 몫).</summary>
+    ///
+    /// ⚠ <b><c>Count</c> 는 "찾은 개수" 가 아니다.</b> 0번 원소는 <see cref="CvPatternOpt.AcceptScore"/> 검사
+    /// <b>없이</b> 들어가고 문턱은 1번 이후에만 걸린다 — 즉 구조적으로 매칭이 가능한 장면이면
+    /// <c>Count &gt; 0</c> 은 <b>언제나 참</b>이다(실측: 부품이 없는 장면에서 AcceptScore 를 0.999999 로 올려도
+    /// Count=1, scores=[0.085]). 목록 안에서도 0번과 1번 이후의 뜻이 다르다. <b>원소마다
+    /// <c>Score &gt;= opt.AcceptScore</c> 로 직접 걸러야 한다</b>(<see cref="CvInspGeom.MatchPatternAll"/> 의
+    /// <c>Present</c> 가 그 판정을 해 주는 값이다 — 같은 튜플의 <c>All.Count</c> 로 판정하면 안 된다).
+    /// 빈 목록은 구조적 불능이다.</summary>
     public static IReadOnlyList<CvPose> MatchAll(Mat filtered, Mat template, CvPatternOpt opt)
         => MatchCore(filtered, template, opt, Math.Max(1, opt.MaxCount));
 

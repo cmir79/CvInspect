@@ -104,6 +104,13 @@ transitively); **the native OpenCV runtime is chosen by the consuming applicatio
 `VideoCaptureCam` additionally needs the `videoio` backend for your source type
 (the Windows runtime bundles it).
 
+## Versions
+
+The four CvInspect packages move together — upgrade them as a set. **This is a 0.x API: breaking
+changes happen, so pin versions.** What changed in each release is on the
+[Releases page](https://github.com/cmir79/CvInspect/releases), one entry per version; read the entries
+between the version you are on and the one you are moving to.
+
 ## License
 
 Apache-2.0. Not affiliated with OpenCV or OpenCvSharp.

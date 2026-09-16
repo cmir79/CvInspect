@@ -6,7 +6,7 @@
          오인되지 않게. 릴리스 PR 의 마지막 커밋에서 -dev 를 떼고, 쌓인 것에 API 추가가 있으면 minor, 문서·수정뿐이면
          patch 로 확정한다. 커밋마다 올리지 않는다. 불변인 것 하나: 이미 nuget.org 에 올린 번호는 다시 쓰지 않는다
          (지울 수도 덮어쓸 수도 없다). -->
-    <Version>0.23.0</Version>
+    <Version>0.24.0</Version>
 
     <Authors>kintaein</Authors>
 
@@ -18,6 +18,14 @@
     <PackageProjectUrl>https://github.com/cmir79/CvInspect</PackageProjectUrl>
     <RepositoryUrl>https://github.com/cmir79/CvInspect</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+
+    <!-- 노트 본문이 아니라 그 판의 릴리스 주소를 싣는다. 베껴 넣으면 사본이 갈리고 nupkg 는 불변이라 고칠 수도 없다 —
+         실제로 0.20.0 은 저자가 틀렸다고 정정한 문장이 그 판 페이지에 그대로 남아 있고, 정정은 릴리스 본문에만 있다.
+         포인터는 갈리지 않는다. 이 한 줄이 없으면 nuget.org 패키지 페이지에 릴리스 노트 탭 자체가 안 생겨서,
+         패키지만 보고 온 소비자가 판별 변경으로 건너갈 첫 링크가 없다(4패키지 중 안내가 실리는 것은 루트 README 를
+         싣는 코어 하나뿐이다). 소급은 안 된다 — 이미 올린 판에는 영원히 이 탭이 없다. -->
+    <!-- 프리릴리스(-dev)는 가리킬 태그가 없다. 조건 없이 두면 사설 피드에 올라간 개발 판이 죽은 링크를 달고 다닌다. -->
+    <PackageReleaseNotes Condition="!$(Version.Contains('-'))">https://github.com/cmir79/CvInspect/releases/tag/v$(Version)</PackageReleaseNotes>
   </PropertyGroup>
 
 </Project>

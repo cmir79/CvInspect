@@ -94,6 +94,21 @@ public sealed class CvFindCircleOpt : ICvShapeSource
     [CvDesc("cv:CircleMaxRmsPxDesc")]
     public double MaxRmsPx { get; set; } = 2.0;
 
+    /// <summary>피팅에 남아야 하는 최소 검출점 수. 0 = 끔(종전 동작 — 하한은 3점).
+    ///
+    /// <b>잔차 게이트만으로는 호 부족을 걸러내지 못한다 — 오히려 반대로 움직인다.</b> 짧은 호에 남은 몇 점은
+    /// 어떤 원에도 잘 맞아서 잔차가 <b>좋아진다.</b> 실측(캘리퍼 16개, 참값 r=60): 360° 는 16점·rms 0.136 에
+    /// 반경 오차 0.21px 인데, 60° 호는 <b>3점·rms 0.000 인데 반경 오차 3.47px·중심 오차 3.50px</b> 다 —
+    /// 잔차가 가장 좋은 쪽이 가장 틀렸다. 호가 얼마나 보였는지는 잔차가 아니라
+    /// <c>CvCircleFit.PointCount</c> 만 말해 준다.
+    ///
+    /// 0 이 기본인 이유는 가동 중인 설비의 판정을 말없이 바꾸지 않기 위해서다 — 켜는 순간 종전에 통과하던
+    /// 부분 검출이 미검출이 된다.</summary>
+    [CvCategory("cv:CatQuality", 5)]
+    [CvName("cv:MinPoints")]
+    [CvDesc("cv:CircleMinPointsDesc")]
+    public int MinPoints { get; set; }
+
     /// <summary>편집 도형 — 기대 원호(중심·반경·시작각·스팬). 코드 경로로 값을 고쳤을 때(스팬 전환 버튼 등)는
     /// <see cref="EditShapeSync"/> 가 도형을 다시 맞춘다 — Set 이 Changed 를 되쏴 되쓰기와 화면 갱신까지 이어진다.</summary>
     public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
@@ -117,7 +132,10 @@ public sealed class CvFindCircleOpt : ICvShapeSource
 /// <summary>원 피팅 결과 — 중심/반경(입력 이미지 공간)과 사용 점수.
 /// <paramref name="RmsPx"/> 는 아웃라이어 제외 후 최종 피팅의 반경 잔차
 /// RMS(|중심거리 − R|, 입력 이미지 픽셀) — 피팅 품질 지표다. 검출점이 한 원에 잘 놓였으면 작고,
-/// 캘리퍼가 다른 구조를 물거나 대상이 원이 아니면 커진다.</summary>
+/// 캘리퍼가 다른 구조를 물거나 대상이 원이 아니면 커진다.
+/// ⚠ <b>잔차만으로 판정하지 않는다 — 호가 짧을수록 잔차는 좋아진다.</b> 몇 점은 어떤 원에도 잘 맞기 때문이다
+/// (실측, 참값 r=60: 360° 는 16점·rms 0.136·반경오차 0.21px 인데 60° 호는 3점·<b>rms 0.000·반경오차 3.47px</b>).
+/// <b>반드시 <paramref name="PointCount"/> 와 함께 본다</b>(<see cref="CvFindCircleOpt.MinPoints"/> 로 걸 수 있다).</summary>
 public readonly record struct CvCircleFit(double CenterX, double CenterY, double Radius, int PointCount, double RmsPx);
 
 /// <summary>
@@ -206,6 +224,9 @@ public static class CvCircleFinder
         if (pts.Count < 3) return null;
         // NumToIgnore 미충족 = 검출 실패 — 조용한 미적용이 노이즈 낀 중심/반경을 내보내는 것 방지 (라인 파인더와 동일 규약)
         if (opt.NumToIgnore > 0 && pts.Count - opt.NumToIgnore < 3) return null;
+        // 호 부족도 잔차가 못 잡는다 — 짧은 호의 몇 점은 어떤 원에도 잘 맞아 잔차가 좋아진다
+        // (CvFindCircleOpt.MinPoints 주석에 실측). 남은 점 수를 따로 본다. (라인 파인더와 동일 규약)
+        if (opt.MinPoints > 0 && pts.Count - Math.Max(0, opt.NumToIgnore) < opt.MinPoints) return null;
 
         var fit = CvFit.Circle(pts);
         if (fit is null) return null;

@@ -6,9 +6,8 @@ namespace CvInspect.Vision;
 /// <summary>
 /// 극좌표 언랩 — 원형 부품의 회전을 가로 이동으로 바꾸는 공간과 그 공간의 기하.
 /// 밴드 전개(<see cref="Band"/>), 각도 환산의 분모(<see cref="W360"/>), 원본 좌표 복원
-/// (<see cref="ToSource"/>), 이음새 접기(<see cref="WrapPoseForLandmark"/>)가 한 체계다 —
-/// 식이 갈리면 각도가 조용히 어긋나므로 여기 한 곳에만 둔다. 밴드·오버랩 값은
-/// <see cref="CvUnwrapOpt"/> 가 갖는다.
+/// (<see cref="ToSource"/>)이 한 체계다 — 식이 갈리면 각도가 조용히 어긋나므로 여기 한 곳에만 둔다.
+/// 밴드·오버랩 값은 <see cref="CvUnwrapOpt"/> 가 갖는다.
 /// </summary>
 public static class CvUnwrapGeom
 {
@@ -115,52 +114,5 @@ public static class CvUnwrapGeom
         if (outline.Max(pt => pt.X) - outline.Min(pt => pt.X) >= w360) return [];
 
         return PolyToSource(outline, cx, cy, rMin, w360);
-    }
-
-    /// <summary>
-    /// 언랩 공간 랜드마크 대조용 자세 접기. 언랩은 가로가 주기(w360)인데
-    /// <see cref="CvInspGeom.VerifyLandmark"/> 의 기대 자리 이동은 선형이라, 기대 창이 이음새를
-    /// 넘으면 잘려서 마크가 실재해도 0점이 된다. 기대 창의 여유가 가장 큰 사본(자세 X 그대로 /
-    /// ±한 주기)을 골라 자세를 옮긴다. 세로(반경)는 주기가 없어 손대지 않는다.
-    /// 자세 X 를 옮겨도 안전한 것은 언랩 공간 매칭이 회전 탐색 없이 돌아 대조 회전각이 0 이기
-    /// 때문이다 — 회전이 있으면 회전 중심까지 함께 옮겨져 기하가 틀어진다.
-    /// </summary>
-    public static CvPose WrapPoseForLandmark(
-        CvPose p, CvPatternOpt pat, CvPatternOpt landmark, int stripCols, int w360, double searchPx)
-    {
-        // 기대 창의 중심 오프셋과 절반 폭 — VerifyLandmark 가 창을 세우는 규칙을 그대로 따른다.
-        var templHalfW = 0.0;
-        if (landmark.TemplatePng is not null)
-        {
-            using var t = Cv2.ImDecode(landmark.TemplatePng, ImreadModes.Grayscale);
-            if (!t.Empty()) templHalfW = t.Cols / 2.0;
-        }
-
-        double centerDx, halfW;
-        if (landmark.UseSearchRegion)
-        {
-            centerDx = landmark.SearchX + landmark.SearchW / 2.0 - pat.TrainedOriginX;
-            halfW = Math.Max(landmark.SearchW / 2.0, templHalfW);
-        }
-        else
-        {
-            centerDx = landmark.TrainedOriginX - pat.TrainedOriginX;
-            halfW = templHalfW + Math.Max(8, searchPx);
-        }
-
-        var bestShift = 0.0;
-        var bestMargin = double.NegativeInfinity;
-        foreach (var shift in new[] { 0.0, -w360, (double)w360 })
-        {
-            var cx = p.FoundX + shift + centerDx;
-            var margin = Math.Min(cx - halfW, stripCols - (cx + halfW));
-            if (margin > bestMargin)
-            {
-                bestMargin = margin;
-                bestShift = shift;
-            }
-        }
-
-        return bestShift == 0 ? p : p with { FoundX = p.FoundX + bestShift };
     }
 }

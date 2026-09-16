@@ -129,6 +129,10 @@ public class SmokeTests
     var patJson = JsonSerializer.Serialize(new CvPatternOpt());
     Check(!patJson.Contains("Train\":") || !patJson.Contains("System.Action"), "CvPatternOpt serializes (Action ignored)");
     Check(!patJson.Contains("TemplatePng"), "TemplatePng [JsonIgnore]");
+    // 매 Run 대입되는 런타임 값이 레시피에 박히면 한 프레임의 값이 다음 런의 파라미터로 되먹여진다 —
+    // 실측으로 같은 장면의 판정이 뒤집혔다(score 1.0000 → 0.0893, 멀쩡한 부품이 미검출).
+    // README 가 소비자에게 "volatile runtime values are [JsonIgnore]" 라고 약속한 계약의 나머지 절반이다.
+    Check(!patJson.Contains("WrapPeriodX"), "WrapPeriodX is a per-Run runtime value and must not persist into a recipe");
     var segJson = JsonSerializer.Serialize(new CvColorSegmentOpt());
     Check(!segJson.Contains("\"Train\""), "CvColorSegmentOpt Action ignored");
     var round = JsonSerializer.Deserialize<CvPatternOpt>(patJson);
@@ -1029,5 +1033,334 @@ public class SmokeTests
         var bad = System.Text.RegularExpressions.Regex.Match(line8!, @"([\d.]+)ms max above the best seen");
         Check(bad.Success && double.Parse(bad.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) < 1000,
             $"and the latency numbers stay sane instead of showing hours: {line8}");
+    }
+
+    /// <summary>포즈 프리미티브 — 학습각 보정 포즈와 정규화 창.
+    /// <b>중립값(학습각 0·스케일 1)에서는 틀린 판과 맞는 판이 같은 값을 낸다</b> — 그래서 이 절은
+    /// 학습각 25°·스케일 1.2·가산각 90° 처럼 전부 중립이 아닌 값으로만 잰다. 중립값에서만 돌린 검증은
+    /// 그 파라미터를 검증하지 않는다.</summary>
+    [Fact]
+    public void PosePrimitivesCarryTheTrainedAngleAndScale()
+    {
+    // === 10-A) FixturePose 는 XformByPose 와 같은 답을 낸다 — 발견 포즈에 바로 Apply 하면 틀린다 ===
+    {
+        var pat = new CvPatternOpt { TrainedOriginX = 100, TrainedOriginY = 80, TrainedAngleDeg = 25 };
+        var found = new CvPose(40, pat.TrainedOriginX, pat.TrainedOriginY, 300, 220, 0.91, 1.2);
+
+        var (ex, ey) = CvInspGeom.XformByPose(pat, found, 160, 130);
+        var fx = CvInspGeom.FixturePose(pat, found).Apply(160, 130);
+        Check(Math.Abs(fx.X - ex) < 1e-9 && Math.Abs(fx.Y - ey) < 1e-9,
+            $"FixturePose(...).Apply == XformByPose — 학습각 보정이 포즈 안으로 들어갔다 ({fx} vs ({ex},{ey}))");
+
+        // 대조군: 보정 없이 발견 포즈에 바로 Apply 하면 학습각만큼 더 돈다. 이 차이가 0 이면 이 절은 아무것도 재지 않은 것이다.
+        var raw = found.Apply(160, 130);
+        Check(Math.Sqrt((raw.X - ex) * (raw.X - ex) + (raw.Y - ey) * (raw.Y - ey)) > 20,
+            $"the uncorrected pose is visibly wrong, which is why the corrected one needs a name (raw={raw} correct=({ex},{ey}))");
+
+        // 학습각 0 이면 둘이 같다 — 그래서 중립값으로만 검증하면 위 결함이 안 드러난다.
+        var flat = new CvPatternOpt { TrainedOriginX = 100, TrainedOriginY = 80 };
+        var flatFound = new CvPose(40, 100, 80, 300, 220, 0.91, 1.2);
+        var (fex, fey) = CvInspGeom.XformByPose(flat, flatFound, 160, 130);
+        var rawFlat = flatFound.Apply(160, 130);
+        Check(Math.Abs(rawFlat.X - fex) < 1e-9 && Math.Abs(rawFlat.Y - fey) < 1e-9,
+            "with a zero trained angle the wrong call and the right call agree — a regression that only runs here proves nothing");
+    }
+
+    // === 10-B) NormalizedWindow — 티칭 자리의 특징이 창 중앙에 서고, 좌표가 한 번에 되돌아온다 ===
+    using (var scene = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+    {
+        // 티칭: 앵커 원점 (150,120), 랜드마크는 거기서 (+90,-40) 자리. 학습각 25°.
+        var pat = new CvPatternOpt { TrainedOriginX = 150, TrainedOriginY = 120, TrainedAngleDeg = 25 };
+        const double lmX = 240, lmY = 80;
+
+        // 런: 앵커가 (300,230) 에서 각도 70°·스케일 1.2 로 발견됐다고 하자. 랜드마크의 실제 자리는 계약상 XformByPose 다.
+        var found = new CvPose(70, pat.TrainedOriginX, pat.TrainedOriginY, 300, 230, 0.95, 1.2);
+        var (trueX, trueY) = CvInspGeom.XformByPose(pat, found, lmX, lmY);
+        Cv2.Circle(scene, new OpenCvSharp.Point((int)Math.Round(trueX), (int)Math.Round(trueY)), 9, new Scalar(255), -1);
+
+        var got = CvInspGeom.NormalizedWindow(scene, pat, found, lmX, lmY, 60, 60);
+        Check(got is not null, "a window comes back");
+        using var win = got!.Value.Window;
+        Check(win.Width == 60 && win.Height == 60, $"the window is the requested size in taught pixels ({win.Width}x{win.Height})");
+
+        // 창 안에서 특징의 무게중심 — 티칭 자리를 요청했으니 창 중앙에 서야 한다.
+        var mo = Cv2.Moments(win, binaryImage: false);
+        Check(mo.M00 > 0, "the feature is inside the window at all");
+        var wcx = mo.M10 / mo.M00;
+        var wcy = mo.M01 / mo.M00;
+        Check(Math.Abs(wcx - 30) < 1.5 && Math.Abs(wcy - 30) < 1.5,
+            $"the taught point lands at the window centre even at 25 deg trained angle and 1.2 scale (found at {wcx:F2},{wcy:F2})");
+
+        // 되돌아오는 길은 포즈 하나 — 창 좌표를 Apply 하면 입력 이미지 좌표다.
+        var back = got.Value.WindowToImage.Apply(wcx, wcy);
+        Check(Math.Abs(back.X - trueX) < 1.5 && Math.Abs(back.Y - trueY) < 1.5,
+            $"WindowToImage.Apply maps straight back to the input image ({back.X:F2},{back.Y:F2} vs {trueX:F2},{trueY:F2})");
+
+        // 가산각을 주면 다른 자리를 본다 — 대칭 스윕이 호출자 쪽에서 도는 방식. 여기서 같은 자리가 나오면 extraDeg 가 안 먹는 것이다.
+        var turned = CvInspGeom.NormalizedWindow(scene, pat, found, lmX, lmY, 60, 60, extraDeg: 90);
+        using var turnedWin = turned!.Value.Window;
+        var mo2 = Cv2.Moments(turnedWin, binaryImage: false);
+        Check(mo2.M00 < mo.M00 * 0.2,
+            $"a candidate angle looks somewhere else — the sweep stays with the caller (mass {mo2.M00:F0} vs {mo.M00:F0})");
+
+        // 창이 이미지를 벗어나도 크기·좌표계는 그대로다 — 잘린 창이 다른 공간 값을 내놓던 것이 앞 판의 결함이었다.
+        var edge = CvInspGeom.NormalizedWindow(scene, pat, found, lmX, lmY, 60, 60, extraDeg: 180);
+        using var edgeWin = edge!.Value.Window;
+        Check(edgeWin.Width == 60 && edgeWin.Height == 60, "a window that falls outside the image keeps its size instead of shrinking");
+    }
+
+    // === 10-B2) 기울여 티칭한 대상 — extraDeg 에 그 학습각을 더하면 창 안에서 템플릿 자세로 선다 ===
+    using (var scene = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+    {
+        // 창을 돌려 세우는 부호가 이 절의 전부다. 손으로 정하면 뒤집히는 자리라 실측으로 못 박는다 —
+        // 뒤집혀도 "점수가 좀 낮다" 로만 보여서 진짜 미검출과 구분되지 않는다.
+        var pat = new CvPatternOpt { TrainedOriginX = 150, TrainedOriginY = 120, TrainedAngleDeg = 25 };
+        var found = new CvPose(70, pat.TrainedOriginX, pat.TrainedOriginY, 300, 230, 0.95, 1.0);
+        const double lmTrainedAngle = 20;   // 랜드마크를 20° 기울여 티칭했다
+
+        // 티칭 공간에서 lmTrainedAngle 로 누운 막대 → 이미지에서는 그만큼 더 돌아 있다.
+        var barAngleInImage = (found.ThetaDeg - pat.TrainedAngleDeg) + lmTrainedAngle;
+        var (bx, by) = CvInspGeom.XformByPose(pat, found, 240, 80);
+        using (var bar = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+        {
+            Cv2.Rectangle(bar, new Rect(250 - 18, 200 - 4, 36, 8), new Scalar(255), -1);
+            using var rot = Cv2.GetRotationMatrix2D(new Point2f(250, 200), -barAngleInImage, 1.0);
+            using var spun = new Mat();
+            Cv2.WarpAffine(bar, spun, rot, bar.Size());
+            using var moved = new Mat();
+            using var shift = Cv2.GetRotationMatrix2D(new Point2f(250, 200), 0, 1.0);
+            shift.Set(0, 2, shift.At<double>(0, 2) + (bx - 250));
+            shift.Set(1, 2, shift.At<double>(1, 2) + (by - 200));
+            Cv2.WarpAffine(spun, moved, shift, bar.Size());
+            moved.CopyTo(scene);
+        }
+
+        static double OrientDeg(Mat m)
+        {
+            var mo = Cv2.Moments(m, binaryImage: false);
+            return 0.5 * Math.Atan2(2 * mo.Mu11, mo.Mu20 - mo.Mu02) * 180.0 / Math.PI;
+        }
+
+        var plain = CvInspGeom.NormalizedWindow(scene, pat, found, 240, 80, 70, 70);
+        using var plainWin = plain!.Value.Window;
+        Check(Math.Abs(OrientDeg(plainWin) - lmTrainedAngle) < 3.0,
+            $"in taught space the target still lies at its own trained angle ({OrientDeg(plainWin):F2} deg, expected {lmTrainedAngle})");
+
+        var aligned = CvInspGeom.NormalizedWindow(scene, pat, found, 240, 80, 70, 70, extraDeg: lmTrainedAngle);
+        using var alignedWin = aligned!.Value.Window;
+        Check(Math.Abs(OrientDeg(alignedWin)) < 3.0,
+            $"adding the target's trained angle to extraDeg stands it up in template orientation ({OrientDeg(alignedWin):F2} deg) — the sign is pinned here");
+
+        // 부호를 반대로 주면 두 배로 기운다 — 대조군이 없으면 위 단언이 우연히 통과할 수 있다.
+        var wrong = CvInspGeom.NormalizedWindow(scene, pat, found, 240, 80, 70, 70, extraDeg: -lmTrainedAngle);
+        using var wrongWin = wrong!.Value.Window;
+        Check(Math.Abs(OrientDeg(wrongWin)) > 30.0,
+            $"the opposite sign leans it twice as far, which is why this is measured and not reasoned ({OrientDeg(wrongWin):F2} deg)");
+
+        // 대상 옵트를 받는 오버로드는 그 덧셈을 대신한다 — 호출부가 학습각을 손으로 더할 일이 없다.
+        // 그 덧셈은 조작자가 학습 사각을 기울이는 순간에만 0 이 아니게 되므로, 손에 맡기면 평소 티칭에서는
+        // 드러나지 않다가 기울여 잡은 첫 티칭에서만 점수가 깎인다.
+        using (var templ = new Mat(30, 40, MatType.CV_8UC1, Scalar.Gray))
+        {
+            Cv2.ImEncode(".png", templ, out var png);
+            var target = new CvPatternOpt
+            {
+                TrainedOriginX = 240, TrainedOriginY = 80,
+                TrainedAngleDeg = lmTrainedAngle, TemplatePng = png,
+            };
+            var auto = CvInspGeom.NormalizedWindow(scene, pat, found, target, marginPx: 15);
+            using var autoWin = auto!.Value.Window;
+            Check(autoWin.Width == 40 + 30 && autoWin.Height == 30 + 30,
+                $"the window is sized from the target's own template plus the margin ({autoWin.Width}x{autoWin.Height})");
+            Check(Math.Abs(OrientDeg(autoWin)) < 3.0,
+                $"and it stands the target up without the caller adding the trained angle ({OrientDeg(autoWin):F2} deg)");
+
+            // 창이 세워 준 자세를 옵트가 모르면 파인더는 어긋난 한 자세만 본다 — 점수가 낮은 게 아니라 미검출이다.
+            var run = auto.Value.MatchOpt;
+            Check(run.TrainedAngleDeg == 0 && run.UseSearchRegion
+                  && Math.Abs(run.SearchW - 30) < 1e-9 && Math.Abs(run.SearchX - (35 - 15)) < 1e-9,
+                $"the window hands back the opt that matches in it: angle normalised, centre held to +-margin ({run.TrainedAngleDeg}, {run.SearchX},{run.SearchW})");
+            Check(Math.Abs(target.TrainedAngleDeg - lmTrainedAngle) < 1e-9 && !target.UseSearchRegion,
+                "and the caller's own opt is untouched");
+
+            // 대조군: 같은 창을 낮은 오버로드로 부르면서 학습각을 빠뜨리면 기울어진다 — 그게 옮길 때 밟는 자리다.
+            var byHand = CvInspGeom.NormalizedWindow(scene, pat, found,
+                target.TrainedOriginX, target.TrainedOriginY, 70, 60, extraDeg: 0);
+            using var byHandWin = byHand!.Value.Window;
+            Check(Math.Abs(OrientDeg(byHandWin) - lmTrainedAngle) < 3.0,
+                $"forgetting it leaves the target leaning by exactly its trained angle ({OrientDeg(byHandWin):F2} deg)");
+
+            Check(CvInspGeom.NormalizedWindow(scene, pat, found, new CvPatternOpt(), marginPx: 15) is null,
+                "a target with no template trained yet gives null instead of guessing a window size");
+        }
+    }
+
+    // === 10-B3) 끝까지 — 기울여 티칭한 대상을 창에서 실제로 찾는다. 준비 안 된 옵트는 못 찾는다 ===
+    using (var scene = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+    {
+        var pat = new CvPatternOpt { TrainedOriginX = 150, TrainedOriginY = 120, TrainedAngleDeg = 25 };
+        var found = new CvPose(70, pat.TrainedOriginX, pat.TrainedOriginY, 300, 230, 0.95, 1.0);
+        const double lmAngle = 20;
+
+        // 비대칭 템플릿(자세가 실제로 구별되게) — 학습각을 편 상태로 저장되는 규약 그대로.
+        using var templ = new Mat(34, 46, MatType.CV_8UC1, Scalar.All(40));
+        Cv2.Rectangle(templ, new Rect(4, 4, 30, 10), new Scalar(230), -1);
+        Cv2.Circle(templ, new OpenCvSharp.Point(38, 26), 5, new Scalar(230), -1);
+        Cv2.ImEncode(".png", templ, out var lmPng);
+
+        var lm = new CvPatternOpt
+        {
+            TrainedOriginX = 240, TrainedOriginY = 80, TrainedAngleDeg = lmAngle, TemplatePng = lmPng,
+            AcceptScore = 0.45,
+            // 각도 탐색을 끈 상태가 이 결함이 드러나는 조건이다 — 켜 두면 존이 어긋남을 덮어 가려진다.
+            UseAngleSearch = false,
+        };
+
+        // 런 장면에 그 템플릿을 실제 자세로 심는다: 티칭 공간 회전(발견각−앵커 학습각) + 대상 자신의 학습각.
+        var placeDeg = (found.ThetaDeg - pat.TrainedAngleDeg) + lmAngle;
+        var (tx, ty) = CvInspGeom.XformByPose(pat, found, lm.TrainedOriginX, lm.TrainedOriginY);
+        using (var stamp = new Mat(400, 500, MatType.CV_8UC1, Scalar.Black))
+        {
+            using var roi = new Mat(stamp, new Rect((int)tx - templ.Cols / 2, (int)ty - templ.Rows / 2, templ.Cols, templ.Rows));
+            templ.CopyTo(roi);
+            using var rot = Cv2.GetRotationMatrix2D(new Point2f((float)tx, (float)ty), -placeDeg, 1.0);
+            Cv2.WarpAffine(stamp, scene, rot, stamp.Size());
+        }
+
+        var got = CvInspGeom.NormalizedWindow(scene, pat, found, lm, marginPx: 12);
+        using var win = got!.Value.Window;
+
+        var ok = CvInspGeom.MatchPattern(win, got.Value.MatchOpt);
+
+        // 대조군 — 창은 그대로 두고 옵트만 준비 안 된 것(학습각이 그대로)으로 바꾼다.
+        var raw = lm.Clone();
+        raw.UseSearchRegion = false;
+        var missed = CvInspGeom.MatchPattern(win, raw);
+
+        // 단언은 **평가된 자세**로 한다. 점수 낙차로 재면 대상 나름이라 합성 장면에서는 작게 나오는데,
+        // 틀어진 사실 자체는 각도에 정확히 드러난다 — 창은 대상을 0° 로 세웠고, 준비 안 된 옵트는
+        // 학습각(20°) 한 자세만 평가한다(각도 탐색이 꺼져 존이 0 이라 그 하나뿐이다).
+        Check(ok.Pose is { } a && Math.Abs(a.ThetaDeg) < 1e-6,
+            $"the prepared opt evaluates the pose the window actually stood up (theta={ok.Pose?.ThetaDeg})");
+        Check(missed.Pose is { } b && Math.Abs(b.ThetaDeg - lmAngle) < 1e-6,
+            $"the unprepared one is pinned to the trained angle — a pose the window does not contain (theta={missed.Pose?.ThetaDeg})");
+        Check(ok.Score > missed.Score,
+            $"so it scores worse, and how much worse is the target's business (prepared={ok.Score:F4} unprepared={missed.Score:F4})");
+
+        // 탐색 사각이 실제로 걸렸는가 — 발견 중심이 창 중앙 ±마진 안에 있어야 한다. 안 걸면 파인더는
+        // 창 전체를 허용 범위로 잡아 실효 반경이 "마진 + 템플릿 절반" 으로 넓어진다(옆 후보가 미끄러져 들어온다).
+        // (창↔이미지 좌표 왕복 자체는 앞 절이 무게중심으로 못 박았다 — 여기서 다시 재지 않는다.)
+        Check(ok.Pose is { } c
+              && Math.Abs(c.FoundX - win.Width / 2.0) <= 12 + 1e-6
+              && Math.Abs(c.FoundY - win.Height / 2.0) <= 12 + 1e-6,
+            $"the centre stays inside the +-margin box the caller asked for ({ok.Pose?.FoundX:F1},{ok.Pose?.FoundY:F1} in a {win.Width}x{win.Height} window)");
+    }
+
+    // === 10-C) Clone — 프로퍼티를 손으로 베끼지 않으므로 빠지는 것이 없다 ===
+    {
+        var src = new CvPatternOpt
+        {
+            TrainShape = CvTrainShape.Circle, TrainedShape = CvTrainShape.Circle,
+            TrainedAngleDeg = 25, AcceptScore = 0.77, MaxCount = 3, TemplatePng = [1, 2, 3],
+        };
+        var notified = 0;
+        src.PropertyChanged += (_, _) => notified++;
+
+        var copy = src.Clone();
+        Check(copy.TrainedShape == CvTrainShape.Circle && Math.Abs(copy.AcceptScore - 0.77) < 1e-12
+              && copy.MaxCount == 3 && ReferenceEquals(copy.TemplatePng, src.TemplatePng),
+            "every value comes across, including the ones a hand-written copy forgets (TrainedShape drives the circular mask)");
+
+        copy.MaxCount = 9;
+        copy.AcceptScore = 0.1;
+        Check(src.MaxCount == 3 && Math.Abs(src.AcceptScore - 0.77) < 1e-12, "editing the copy leaves the original alone");
+        Check(notified == 0, "the copy does not report its edits to whoever is watching the original (a stale editor would react)");
+
+        // 템플릿 크기는 디코드 없이 머리글에서 — 창을 "템플릿 + 여유" 로 잡으려면 매칭 전에 알아야 한다.
+        using (var templ = new Mat(37, 52, MatType.CV_8UC1, Scalar.Gray))
+        {
+            Cv2.ImEncode(".png", templ, out var png);
+            var sized = new CvPatternOpt { TemplatePng = png };
+            Check(sized.TemplateSize() is { } sz && sz.W == 52 && sz.H == 37,
+                $"TemplateSize reads a real encoded PNG header without decoding it ({sized.TemplateSize()})");
+        }
+        Check(new CvPatternOpt().TemplateSize() is null, "no template trained yet — no size, and no exception");
+        Check(new CvPatternOpt { TemplatePng = [1, 2, 3] }.TemplateSize() is null, "bytes that are not a PNG give null instead of a wrong number");
+
+        // 재학습은 배열을 갈아 끼운다 — 사본이 들고 있던 템플릿은 그대로다(공유해도 안전한 이유).
+        var before = src.TemplatePng;
+        var held = src.Clone();
+        src.TemplatePng = [9, 9];
+        Check(ReferenceEquals(held.TemplatePng, before) && !ReferenceEquals(src.TemplatePng, before),
+            "re-training the original swaps its reference; the copy keeps the template it was cloned with");
+    }
+    }
+
+    /// <summary>측정값이 "그럴싸하게 틀리는" 세 자리 — 못 쓰는 포즈, 증거 부족, 못 본 면적.
+    /// 셋 다 조용히 답을 내놓던 것을 드러내게 고친 자리다.</summary>
+    [Fact]
+    public void PlausibleButWrongMeasurements()
+    {
+    // === 9-A) default(CvPose) 는 null 이 못 되고 Scale 이 0 이다 ===
+    {
+        // 빈 결과에 FirstOrDefault() 를 쓰면 "멀쩡해 보이는" 포즈가 손에 들어온다. 그것으로 티칭 기하를
+        // 옮기면 좌표가 전부 (0,0) 으로 접히는데, 화면에는 도형이 그려지고 검사도 돌아 틀렸다는 신호가 없다.
+        var empty = new List<CvPose>();
+        var fallback = empty.FirstOrDefault();
+        Check(fallback.Scale == 0 && !fallback.IsValid,
+            $"default(CvPose) is not an identity — Scale is 0, not the constructor's 1.0 (scale={fallback.Scale})");
+
+        var real = new CvPose(12, 100, 100, 250, 180, 0.93);
+        Check(real.IsValid && real.Apply(300, 200) is { } p && Math.Abs(p.X - 250) > 1,
+            "a real pose still transforms");
+        Check(Assert.Throws<InvalidOperationException>(() => fallback.Apply(300, 200)).Message.Contains("FirstOrDefault"),
+            "an unusable pose refuses to fold coordinates onto (0,0) and says where it came from");
+        Check(Assert.Throws<InvalidOperationException>(() => fallback.Inverse()) is not null,
+            "inverting it would give an infinite scale, which kills the process in native code — it throws instead");
+    }
+
+    // === 9-B) 증거가 줄면 잔차는 좋아진다 — 점 수로만 걸린다 ===
+    using (var img = new Mat(200, 400, MatType.CV_8UC1, Scalar.Black))
+    {
+        // 티칭 세그먼트는 가로 360px 인데 에지는 왼쪽 100px 에만 있다.
+        Cv2.Rectangle(img, new Rect(20, 100, 100, 100), new Scalar(255), -1);
+        Cv2.GaussianBlur(img, img, new OpenCvSharp.Size(3, 3), 0);
+
+        var opt = new CvFindLineOpt
+        {
+            StartX = 20, StartY = 100, EndX = 380, EndY = 100,
+            NumCalipers = 12, SearchLength = 40, ProjectionLength = 3,
+            Polarity = CvEdgePolarity.Either, ContrastThreshold = 10,
+            UseRmsGate = true, MaxRmsPx = 2.0,
+        };
+        var partial = CvLineFinder.Find(img, opt.StartX, opt.StartY, opt.EndX, opt.EndY, opt);
+        Check(partial is { } f && f.PointCount < 6 && f.RmsPx < 0.5,
+            $"a line seen over a fraction of the taught segment still passes the residual gate — the residual gets BETTER as evidence disappears: {partial}");
+
+        opt.MinPoints = 8;
+        Check(CvLineFinder.Find(img, opt.StartX, opt.StartY, opt.EndX, opt.EndY, opt) is null,
+            "MinPoints is the only gate that catches it — the residual never will");
+
+        opt.MinPoints = 0;
+        Check(CvLineFinder.Find(img, opt.StartX, opt.StartY, opt.EndX, opt.EndY, opt) is not null, "0 keeps the previous behaviour (nothing changes for a recipe that does not set it)");
+    }
+
+    // === 9-C) 못 본 면적을 분모에서 빼면 충전율이 올라간다 (거짓 OK) ===
+    using (var full = new Mat(300, 300, MatType.CV_8UC1, Scalar.Black))
+    {
+        Cv2.Circle(full, new OpenCvSharp.Point(150, 150), 90, new Scalar(255), -1);
+        var opt = new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, Threshold = 128, Polarity = CvBlobPolarity.Bright };
+
+        var inside = CvRingFill.Measure(full, 150, 150, opt);
+        Check(inside is { } a && a.OutsidePx == 0 && a.RatePct > 99.5,
+            $"a band fully inside the image is unchanged: {inside}");
+
+        // 같은 밴드를 화면 가장자리로 옮긴다 — 보이는 부분은 여전히 꽉 차 있다.
+        var clipped = CvRingFill.Measure(full, 20, 150, opt);
+        Check(clipped is { } b && b.OutsidePx > 0 && b.RatePct < 80,
+            $"the part that was never seen counts as unfilled instead of vanishing from the denominator: {clipped}");
+        Check(clipped is { } c && Math.Abs(c.TotalPx - inside!.Value.TotalPx) < inside.Value.TotalPx * 0.02,
+            $"the denominator is the whole band either way — that is what makes two runs comparable (in={inside!.Value.TotalPx} clipped={clipped!.Value.TotalPx})");
+    }
     }
 }

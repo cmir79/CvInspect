@@ -28,7 +28,10 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   Rectangular templates rotate the *scene* rather than the template, because masked matching
   measured 6× slower; circular templates keep the mask since it does real work there. A search
   region is the *allowed centre region*, so a target half outside the box is still found. Empty
-  scenes finish at the coarse stage and return early (measured 3.7 s → 0.05 s). Multiple hits come
+  scenes finish at the coarse stage and return early (measured 3.7 s → 0.05 s) — *early*, not empty:
+  a rectangle-trained template still returns its best candidate carrying a near-zero score, so
+  **judge on the score against `AcceptScore`, never on "a pose came back" or on the result count**.
+  Multiple hits come
   out non-overlapping with a suppression radius. The minimum reliable coarse size (`11 px`
   geometric-mean side) was derived from 80-trial-per-cell synthetic sweeps across aspect ratios,
   and the finder *reports* it rather than silently overriding your settings.
@@ -266,9 +269,11 @@ Read these before adopting — they are real, and they are not going away soon.
   pixel-to-millimetre calibration beyond scalar resolution fields; no lens distortion correction;
   no OCR, deep learning or 3D.
 - **0.x API.** Breaking changes have happened (the `CvDispCtrl.Frame` type changed in 0.16.0) and
-  will happen again before 1.0 — pin versions. `main` always holds the latest release and every release
-  is a `v*` tag on it; work happens on `dev` and reaches `main` through a release pull request whose
-  description is the change log.
+  will happen again before 1.0 — pin versions. **What changed in each release is on the
+  [Releases page](https://github.com/cmir79/CvInspect/releases)**, one entry per version; read the
+  entries between the version you are on and the one you are moving to. `main` always holds the latest
+  release and every release is a `v*` tag on it; work happens on `dev` and reaches `main` through a
+  release pull request.
 - **Tests are a regression harness, not coverage.** Each case pins a defect that was actually
   seen; accuracy figures quoted above come from synthetic scenes.
 - **Comments are Korean.** READMEs are English; XML documentation (what IntelliSense shows) is

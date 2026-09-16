@@ -30,6 +30,164 @@ public static class CvInspGeom
         return (p.FoundX + (dx * cos - dy * sin) * p.Scale, p.FoundY + (dx * sin + dy * cos) * p.Scale);
     }
 
+    /// <summary>
+    /// 픽스처 포즈 — 파인더가 낸 포즈에서 <b>학습각을 걷어</b>, <see cref="CvPose.Apply"/>·
+    /// <see cref="CvPose.Inverse"/>·<see cref="CvPose.Compose"/> 에 그대로 태울 수 있는 포즈로 만든다.
+    ///
+    /// 이 보정이 따로 필요한 이유: 파인더는 <see cref="CvPose.ThetaDeg"/> 에 <b>절대 발견각</b>을 담는다.
+    /// 티칭 기하를 옮기려면 학습각을 뺀 차를 써야 하는데(<see cref="XformByPose"/> 가 그 차를 쓴다),
+    /// 그 사실을 모르고 발견 포즈에 바로 <c>Apply</c> 를 태우면 학습각만큼 회전이 더 먹는다 —
+    /// 부품이 <b>움직이지 않았는데도</b> 25° 로 티칭한 패턴에서 43px 밀리는 식이다. 학습각이 0 이면 둘이
+    /// 같아서 안 드러나므로, 그 값이 이름을 갖고 한 곳에 있어야 같은 실수가 안 난다.
+    ///
+    /// <c>FixturePose(pat, p).Apply(x, y)</c> 는 <c>XformByPose(pat, p, x, y)</c> 와 같다 — 회귀가 그것을 못 박는다.
+    /// <paramref name="extraDeg"/> 는 후보 각도 가산분이다(대칭 접힘 스윕처럼 <b>호출자가 도는</b> 것 —
+    /// 툴킷은 대상의 대칭 차수를 모른다).
+    /// </summary>
+    public static CvPose FixturePose(CvPatternOpt pat, CvPose found, double extraDeg = 0)
+        => new(found.ThetaDeg + extraDeg - pat.TrainedAngleDeg,
+            pat.TrainedOriginX, pat.TrainedOriginY, found.FoundX, found.FoundY, found.Score, found.Scale);
+
+    /// <summary>
+    /// 정규화 창 — 발견 포즈를 걷어 <b>부품이 티칭 자세·티칭 크기로 선</b> 창 하나를 잘라 온다.
+    /// 그 창 안에서는 티칭 좌표가 그대로 통하므로, 티칭 때 잡아 둔 상대 위치(랜드마크·보조 특징·ROI)를
+    /// 그 자리에서 바로 찾을 수 있다.
+    ///
+    /// <b>전체 이미지를 돌리지 않는다</b> — 목적지 크기가 곧 계산 범위라 창 넓이만큼만 든다. 후보 각도를
+    /// 여러 개 도는 호출자에게는 그 차이가 접힘 수만큼 곱해진다.
+    ///
+    /// <b>돌아오는 길을 포즈로 돌려준다</b>(<c>WindowToImage</c>) — 창에서 찾은 좌표를 <c>Apply</c> 한 번으로
+    /// 입력 이미지 좌표로 되돌린다. 역변환 체인을 호출자가 손으로 짤 일이 없고, <b>반환 좌표의 공간이
+    /// 경로에 따라 갈리지 않는다</b>(창 좌표 아니면 이미지 좌표, 그 둘뿐이다).
+    ///
+    /// <b>돌려받은 <c>Window</c> 는 호출자 것이다</b> — 다 쓰면 <c>Dispose</c> 한다(후보 각도를 도는 루프라면
+    /// 루프 안에서 잡고 놓는다).
+    ///
+    /// <b>회전은 <paramref name="extraDeg"/> 하나로 다 준다.</b> 창은 <b>원본에서 한 번에</b> 최종 자세로
+    /// 떠 오므로, 잘라 놓고 다시 돌릴 때 필요하던 모서리 여유(회전 패딩)가 아예 필요 없다.
+    ///
+    /// ⚠ <b>대상 템플릿이 기울여 티칭됐다면 그 학습각도 여기에 실어야 한다</b> — 티칭 공간에서는 대상이
+    /// 자기 <see cref="CvPatternOpt.TrainedAngleDeg"/> 만큼 돌아 있으므로, <c>extraDeg</c> 에 그 값을
+    /// <b>더해야</b> 창 안에서 템플릿 자세로 선다(부호는 회귀가 실측으로 못 박는다).
+    /// 안 더하면 기울여 티칭한 대상에서만 점수가 깎이는데, 증상이 "좀 낮다" 라서 <b>진짜 미검출과 구분되지
+    /// 않는다.</b> 그 덧셈을 손으로 하지 않으려면 <b>대상 옵트를 받는 오버로드</b>를 쓴다 — 거기서는 이 함정이
+    /// 구조로 사라진다.
+    ///
+    /// 창 크기는 <b>티칭 공간 픽셀</b>이다 — 부품이 크게 보여도 창에 담기는 티칭 범위는 그대로다.
+    /// 이것이 의도다: 정규화가 발견 스케일을 나눠 없애므로 <b>대상도 티칭 크기로 돌아온다</b>. 그래서
+    /// 티칭 크기로 뜬 템플릿이 창에서 같은 화소 수를 차지하고, 크기를 맞출 일 없이 바로 비교된다.
+    /// 창을 발견 스케일만큼 키우면 오히려 티칭 때보다 넓은 범위가 들어와 엉뚱한 것을 물 여지가 는다.
+    /// 크기는 "템플릿 + 여유" 로 잡는 것이 보통이고, 템플릿 크기는 <see cref="CvPatternOpt.TemplateSize"/> 가
+    /// 디코드 없이 알려 준다.
+    /// 경계 밖은 <paramref name="border"/> 로 채워지므로 창이 이미지를 벗어나도 크기가 줄지 않는다
+    /// (잘린 창 때문에 좌표계가 바뀌는 일이 없다). 채운 자리와 진짜 어두운 자리를 가려야 하면
+    /// <paramref name="borderValue"/> 를 쓰거나 <see cref="BorderTypes.Replicate"/> 를 고른다.
+    ///
+    /// 못 쓰는 포즈(<see cref="CvPose.IsValid"/> 가 false)면 던진다. 이미지가 비었거나 크기가 0 이하면 null.
+    /// </summary>
+    public static (Mat Window, CvPose WindowToImage)? NormalizedWindow(
+        Mat img, CvPatternOpt pat, CvPose found,
+        double taughtX, double taughtY, int width, int height, double extraDeg = 0,
+        InterpolationFlags interp = InterpolationFlags.Linear,
+        BorderTypes border = BorderTypes.Constant, Scalar? borderValue = null)
+    {
+        if (img is null || img.Empty() || pat is null || width <= 0 || height <= 0) return null;
+
+        var fx = FixturePose(pat, found, extraDeg);
+        // 창 왼쪽 위 모서리가 놓일 티칭 좌표 — 창 중앙이 요청한 티칭 점에 오도록.
+        var (px, py) = fx.Apply(taughtX - width / 2.0, taughtY - height / 2.0);
+
+        // 창 좌표 → 이미지 좌표. 원점 0 이므로 Apply 는 "그 모서리에서 회전·스케일만큼 민다" 가 된다.
+        var windowToImage = new CvPose(fx.ThetaDeg, 0, 0, px, py, fx.Score, fx.Scale);
+
+        var window = new Mat();
+        using (var m = AffineOf(windowToImage.Inverse()))
+            Cv2.WarpAffine(img, window, m, new Size(width, height), interp, border, borderValue ?? Scalar.All(0));
+        return (window, windowToImage);
+    }
+
+    /// <summary>
+    /// 정규화 창 — <b>대상 패턴이 티칭된 자리를, 그 패턴의 템플릿 자세로</b> 잘라 온다.
+    /// 앵커(<paramref name="pat"/>)의 발견 포즈로 공간을 세우고, 창의 자리·크기·회전을
+    /// <paramref name="target"/> 이 스스로 말하게 하는 형태다.
+    ///
+    /// 자리는 <see cref="CvPatternOpt.TrainedOriginX"/>/<c>Y</c>, 크기는 학습 템플릿 크기
+    /// (<see cref="CvPatternOpt.TemplateSize"/>, 디코드 없음) + <paramref name="marginPx"/> 여유,
+    /// 회전은 <paramref name="extraDeg"/> 에 <b><paramref name="target"/> 의 학습각을 더한 값</b>이다.
+    ///
+    /// <b>그 덧셈이 이 오버로드의 존재 이유다.</b> 낮은 쪽 오버로드는 각도를 호출자가 합쳐 넘겨야 하는데,
+    /// 대상 학습각은 <b>조작자가 학습 사각을 기울이는 순간에만</b> 0 이 아니게 된다 — 원형으로 잡아도,
+    /// 사각을 반듯하게 잡아도 0 이라 테스트와 평소 티칭에서는 드러나지 않는다. 빠뜨리면 기울여 잡은
+    /// 첫 티칭에서만 점수가 깎이고, 그 증상이 진짜 미검출과 같은 모양이다. 손으로 더하게 두지 않는다.
+    ///
+    /// <paramref name="extraDeg"/> 는 후보 각도 가산분으로 남는다(대칭 접힘 스윕은 호출자가 돈다).
+    /// 대상이 아직 학습되지 않았으면(템플릿 없음) null.
+    ///
+    /// <b>창과 함께 그 창에서 쓸 옵트(<c>MatchOpt</c>)를 돌려준다</b> — 정규화가 무엇을 걷어냈는지 아는 곳은
+    /// 창을 만든 여기뿐이라서다. 원본 옵트를 그대로 <see cref="MatchPattern"/> 에 넣으면 <b>조용히 못 찾는다</b>:
+    /// 파인더는 각도 존의 중심을 <see cref="CvPatternOpt.TrainedAngleDeg"/> 로 잡는데(장면에서 대상이 그 자세로
+    /// 누워 있다는 전제), 이 창은 이미 그 각을 걷어 대상을 0° 로 세워 놓았다. 각도 탐색이 꺼져 있으면 존이 0 이라
+    /// <b>창에 없는 그 한 자세만</b> 평가한다(실측: 준비된 옵트는 <c>ThetaDeg 0</c>, 그대로 넣으면 <c>20</c> —
+    /// 학습각 그대로다). 점수가 얼마나 떨어지는지는 대상 나름이고, 자세가 뚜렷한 대상일수록 미검출로 간다.
+    /// 각도 탐색이 켜져 있으면 존이 그 어긋남을 덮어 가려지기도 한다 — <b>그래서 더 나쁘다.</b>
+    /// 편집기에서 스위치 하나를 끄는 순간 드러나는 결함이 된다.
+    /// 그래서 <c>MatchOpt</c> 는 사본에 두 가지를 맞춰 준다:
+    /// <list type="bullet">
+    /// <item><c>TrainedAngleDeg = 0</c> — 창이 이미 세워 두었다.</item>
+    /// <item><c>UseSearchRegion = true</c> + 창 중앙 ±<paramref name="marginPx"/> 사각 — 호출자가 말한 그 허용
+    /// 범위를 그대로 지킨다. 안 걸면 파인더는 <b>창 전체</b>를 중심 허용 범위로 잡아, 실효 반경이
+    /// <c>marginPx + 템플릿 절반</c> 쪽으로 넓어진다(옆 후보가 미끄러져 들어온다).</item>
+    /// </list>
+    /// 원본은 건드리지 않는다(<see cref="CvPatternOpt.Clone"/>).
+    ///
+    /// ⚠ <b><see cref="CvPatternOpt.UseAngleSearch"/>·<see cref="CvPatternOpt.UseScaleSearch"/> 는 그대로 둔다 —
+    /// 그것은 호출자의 판단이다.</b> 다만 이 창에서 뜻이 달라진다: 각도 탐색을 켜면 이제 <b>0° 중심</b>으로 돌므로
+    /// 자세가 흔들려도 잡히는데, 그 말은 <b>자세로 후보를 가르던 판별이 무력해진다</b>는 뜻이다(어느 후보각에서든
+    /// 돌려 맞출 수 있다). 스케일 탐색은 창이 이미 티칭 크기라 1.0 중심이 되어 대개 불필요하다.
+    /// 그래서 이 둘을 호스트가 <b>되돌려 끄기로 했다면, 조용히 끄지 않는다</b> — 편집기에서 켠 사람에게는
+    /// 스위치가 먹지 않는 것으로 보이고, 왜 안 먹는지는 현장에서 풀 수 없다. 껐다는 사실을 로그로 남긴다.
+    /// </summary>
+    public static (Mat Window, CvPose WindowToImage, CvPatternOpt MatchOpt)? NormalizedWindow(
+        Mat img, CvPatternOpt pat, CvPose found, CvPatternOpt target, int marginPx, double extraDeg = 0,
+        InterpolationFlags interp = InterpolationFlags.Linear,
+        BorderTypes border = BorderTypes.Constant, Scalar? borderValue = null)
+    {
+        if (target?.TemplateSize() is not { } t) return null;
+
+        var w = t.W + 2 * marginPx;
+        var h = t.H + 2 * marginPx;
+        var got = NormalizedWindow(img, pat, found,
+            target.TrainedOriginX, target.TrainedOriginY, w, h,
+            extraDeg + target.TrainedAngleDeg, interp, border, borderValue);
+        if (got is not { } g) return null;
+
+        var run = target.Clone();
+        run.TrainedAngleDeg = 0;
+        run.UseSearchRegion = true;
+        run.SearchX = w / 2.0 - marginPx;
+        run.SearchY = h / 2.0 - marginPx;
+        run.SearchW = 2 * marginPx;
+        run.SearchH = 2 * marginPx;
+        return (g.Window, g.WindowToImage, run);
+    }
+
+    /// <summary>포즈를 warpAffine 용 2×3 행렬로. 포즈 대수와 한 곳에서 맞물리게 두어 각도 부호를 다시 정하지 않는다 —
+    /// warpAffine 은 양수각이 점을 반대로 옮기는 자리라 손으로 쓸 때 가장 잘 뒤집힌다.</summary>
+    private static Mat AffineOf(CvPose p)
+    {
+        var rad = p.ThetaDeg * Math.PI / 180.0;
+        var c = p.Scale * Math.Cos(rad);
+        var s = p.Scale * Math.Sin(rad);
+        var m = new Mat(2, 3, MatType.CV_64FC1);
+        m.Set(0, 0, c);
+        m.Set(0, 1, -s);
+        m.Set(0, 2, p.FoundX - (c * p.OriginX - s * p.OriginY));
+        m.Set(1, 0, s);
+        m.Set(1, 1, c);
+        m.Set(1, 2, p.FoundY - (s * p.OriginX + c * p.OriginY));
+        return m;
+    }
+
     /// <summary>패턴 템플릿 매칭 — 발견 여부/스코어/포즈/템플릿 크기. 입력 공간은 호출측 소관(축소/에지/언랩).
     /// 스코어는 미발견이어도 최고 후보 값 (진단·크롭 파일명 소비용).</summary>
     public static (bool Present, double Score, CvPose? Pose, (int W, int H) Templ) MatchPattern(Mat img, CvPatternOpt pat)
@@ -78,6 +236,14 @@ public static class CvInspGeom
     /// 반환 기대 좌표·검색된 템플릿 사각(매치 위치의 템플릿 박스)은 pre 공간 환산치(표시용) —
     /// 정규화/펴기 회전의 역변환 체인 적용.
     /// </summary>
+    [Obsolete("검증 정책은 호스트 몫이다 — 이 메서드가 하는 일은 툴킷 조각들의 조립이고, 그 조립이 " +
+        "툴킷의 매처보다 약하다(마스크·각도/스케일 탐색·게이트 없이 MatchTemplate 한 번). " +
+        "NormalizedWindow(img, pat, found, target: 랜드마크옵트, marginPx: searchPx, extraDeg: 스윕각) 으로 창을 얻어 " +
+        "MatchPattern 으로 찾고 WindowToImage.Apply 로 좌표를 되돌린다 — 그 길에서는 랜드마크 옵트의 " +
+        "TrainedShape(원형 마스크)와 탐색 설정이 실제로 먹는다. " +
+        "⚠ 옮길 때 호출부 계약이 하나 바뀐다: 이 메서드는 랜드마크 자신의 TrainedAngleDeg 를 안에서 처리했지만, " +
+        "낮은 쪽 NormalizedWindow 오버로드는 그 각을 extraDeg 에 더해 넘겨야 한다(target 을 받는 오버로드는 대신 더해 준다). " +
+        "빠뜨리면 기울여 티칭한 대상에서만 점수가 깎이고 진짜 미검출과 구분되지 않는다. 다음 minor 에서 제거된다.")]
     public static (double Score, double ExpX, double ExpY, (double X, double Y)[] Found) VerifyLandmark(
         Mat pre, CvPatternOpt pat, CvPose p, double extraDeg, CvPatternOpt landmark, double searchPx)
     {
@@ -90,8 +256,14 @@ public static class CvInspGeom
         using (var m = Cv2.GetRotationMatrix2D(new Point2f((float)p.FoundX, (float)p.FoundY), dTheta, 1.0))
             Cv2.WarpAffine(pre, norm, m, pre.Size(), InterpolationFlags.Linear, BorderTypes.Constant, Scalar.Black);
 
-        var expX = p.FoundX + (landmark.TrainedOriginX - pat.TrainedOriginX);
-        var expY = p.FoundY + (landmark.TrainedOriginY - pat.TrainedOriginY);
+        // 티칭 오프셋은 발견 스케일만큼 늘어난다 — 부품이 크게 보이면 랜드마크도 그만큼 멀리 있다.
+        // (<see cref="XformByPose"/> 가 티칭 기하를 옮길 때 쓰는 것과 같은 규약이다. 여기서 빠져 있어서,
+        // 스케일 탐색을 켠 앵커에서는 기대 자리가 오프셋 거리 × |Scale−1| 만큼 밀렸다 — 실측: 오프셋 126px·
+        // Scale 1.15 에서 19px 밀려 <b>있는 랜드마크가 score 0.087</b>, 곧 "없음" 으로 보고됐다.)
+        // ⚠ 남은 한계: 창 위치만 맞추고 템플릿은 런 스케일로 비교한다(정규화 warp 는 배율 1.0 고정) —
+        // 스케일이 1 에서 많이 벗어나면 점수 자체가 낮아지는 것은 그대로다.
+        var expX = p.FoundX + (landmark.TrainedOriginX - pat.TrainedOriginX) * p.Scale;
+        var expY = p.FoundY + (landmark.TrainedOriginY - pat.TrainedOriginY) * p.Scale;
 
         // 회전 티칭 랜드마크 — 템플릿은 학습각을 편(unrotate) 내용으로 저장되므로 비교 창도 같은 각으로
         // 펴야 정합한다 (안 펴면 티칭 각도만큼 틀어져 스코어 폭락). 펴는 회전의 모서리 잘림 방지로
@@ -107,8 +279,8 @@ public static class CvInspGeom
         {
             // 티칭한 탐색 사각을 정규화 공간으로 옮긴다 — 학습 원점 대비 상대 위치가 그대로 유지되므로
             // 패턴 원점만큼 빼고 발견 위치를 더하면 된다.
-            var scx = p.FoundX + (landmark.SearchX + landmark.SearchW / 2.0 - pat.TrainedOriginX);
-            var scy = p.FoundY + (landmark.SearchY + landmark.SearchH / 2.0 - pat.TrainedOriginY);
+            var scx = p.FoundX + (landmark.SearchX + landmark.SearchW / 2.0 - pat.TrainedOriginX) * p.Scale;
+            var scy = p.FoundY + (landmark.SearchY + landmark.SearchH / 2.0 - pat.TrainedOriginY) * p.Scale;
 
             // 탐색 사각은 학습 영역의 회전을 함께 받는다. 잘라 오는 것은 축 정렬 상자라, 돌아간
             // 사각을 감싸도록 폭·높이를 키운다 — 창은 바로 아래에서 학습각만큼 다시 펴진다.
@@ -132,7 +304,18 @@ public static class CvInspGeom
         }
 
         if (roi is null || roi.Value.Width < templ.Cols || roi.Value.Height < templ.Rows)
-            return (0, expX, expY, []);
+        {
+            // 기대점은 pre 공간으로 돌려준다 — 이 반환도 문서가 약속한 "pre 공간 환산치(표시용)" 계약 안이다.
+            // norm 공간 값을 그대로 내보내면 창이 잘렸을 때, 즉 화면 마커가 가장 필요한 때 엉뚱한 자리에 찍힌다
+            // (실측: 248px 어긋남).
+            var radF = dTheta * Math.PI / 180.0;
+            var fdx = expX - p.FoundX;
+            var fdy = expY - p.FoundY;
+            return (0,
+                p.FoundX + fdx * Math.Cos(radF) - fdy * Math.Sin(radF),
+                p.FoundY + fdx * Math.Sin(radF) + fdy * Math.Cos(radF),
+                []);
+        }
 
         using var window = norm[roi.Value];
         Mat cmp = window;

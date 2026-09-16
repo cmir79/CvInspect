@@ -6,7 +6,11 @@ namespace CvInspect.Vision;
 /// <summary>라인 피팅 결과 — 각도(atan2, deg)와 오버레이용 피팅 세그먼트(입력 이미지 공간).
 /// <paramref name="RmsPx"/> 는 아웃라이어 제외 후 최종 피팅의 잔차 RMS(수직거리, 입력 이미지 픽셀) —
 /// 피팅 품질 지표다. 검출점이 한 직선에 잘 놓였으면 작고, 캘리퍼가 서로 다른 구조(꼭짓점 등)를
-/// 물면 커진다. 후보 라인이 여럿일 때 어느 쪽 데이터를 쓸지 고르는 근거로 쓴다.</summary>
+/// 물면 커진다. 후보 라인이 여럿일 때 어느 쪽 데이터를 쓸지 고르는 근거로 쓴다.
+/// ⚠ <b>잔차만으로 판정하지 않는다 — 증거가 줄면 잔차는 좋아진다.</b> 남은 점이 적을수록 그 점들은 거의
+/// 공선이라, 대상의 일부만 본 피팅이 오히려 rms 0 을 낸다(실측: 12개 중 3점만 잡힌 라인이 rms 0.000 인 채
+/// 각도 9.46° 틀어짐). <b>반드시 <paramref name="PointCount"/> 와 함께 본다</b> —
+/// 몇 개를 보고 잰 값인지는 그 값만 말해 준다(<see cref="CvFindLineOpt.MinPoints"/> 로 걸 수 있다).</summary>
 public readonly record struct CvLineFit(double AngleDeg, double StartX, double StartY, double EndX, double EndY, int PointCount, double RmsPx, double AngleDevDeg);
 
 /// <summary>
@@ -119,6 +123,9 @@ public static class CvLineFinder
         // 아웃라이어 제거 요청을 채울 수 없으면 검출 실패 — 조용한 미적용(노이즈 포함 피팅)이
         // 잘못된 각도를 OK 로 내보내는 것 방지.
         if (opt.NumToIgnore > 0 && pts.Count - opt.NumToIgnore < 3) return null;
+        // 증거 부족은 잔차 게이트가 못 잡는다 — 점이 줄수록 남은 점은 거의 공선이라 잔차가 오히려 좋아진다
+        // (CvFindLineOpt.MinPoints 주석에 실측). 그래서 "몇 개가 살아남았는가" 를 여기서 따로 본다.
+        if (opt.MinPoints > 0 && pts.Count - Math.Max(0, opt.NumToIgnore) < opt.MinPoints) return null;
 
         var (mx, my, ux, uy) = CvFit.Line(pts);
 

@@ -71,6 +71,21 @@ public sealed class CvFindLineOpt : ICvShapeSource
     [CvDesc("cv:MaxRmsPxDesc")]
     public double MaxRmsPx { get; set; } = 2.0;
 
+    /// <summary>피팅에 남아야 하는 최소 검출점 수. 0 = 끔(종전 동작 — 하한은 3점).
+    ///
+    /// <b>잔차 게이트만으로는 증거 부족을 걸러내지 못한다 — 오히려 반대로 움직인다.</b> 점이 줄수록 남은 점들은
+    /// 거의 공선이 되어 잔차가 <b>좋아지기</b> 때문이다. 실측(캘리퍼 12개, 티칭 세그먼트 360px): 에지가 전 구간에
+    /// 있으면 12점·rms 0.000, 100px 에만 있으면 <b>3점·rms 0.000 인데 각도가 9.46° 틀어진 채</b> 잔차·각도 게이트를
+    /// 둘 다 통과한다. 곧 "대상의 일부만 보고 잰 값" 과 "제대로 본 값" 이 품질 지표로 구별되지 않는다.
+    /// 그것을 가르는 값은 잔차가 아니라 <b>몇 개가 살아남았는가</b>(<c>CvLineFit.PointCount</c>)뿐이다.
+    ///
+    /// 0 이 기본인 이유는 가동 중인 설비의 판정을 말없이 바꾸지 않기 위해서다 — 켜는 순간 종전에 통과하던
+    /// 부분 검출이 미검출이 된다. 캘리퍼 수의 절반 남짓부터 시작해 현장 값으로 조인다.</summary>
+    [CvCategory("cv:CatQuality", 4)]
+    [CvName("cv:MinPoints")]
+    [CvDesc("cv:MinPointsDesc")]
+    public int MinPoints { get; set; }
+
     [CvCategory("cv:CatFit", 3)]
     [CvName("cv:NumToIgnore")]
     [CvDesc("cv:NumToIgnoreDesc")]
