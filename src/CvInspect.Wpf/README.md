@@ -74,6 +74,10 @@ from. So a core `Cv*Opt` needs nothing extra:
 | `Committed` | A row wrote a value into the POCO — the host's only dirty-marking signal, since most POCOs do not implement `INotifyPropertyChanged`. |
 | `ActionExecuting` / `ActionExecuted` / `ActionFailed` | Around an `Action` row's button. Failures are logged through `CvLog` and never escape to the dispatcher. |
 
+A list row prints at most the first 20 items and then stops enumerating — it appends `… (+N)` when
+the count is cheap to know and a bare `…` otherwise, so a large array or an endless lazy sequence
+cannot freeze the editor just by being shown.
+
 A property becomes a nested block only when it carries
 `[TypeConverter(typeof(ExpandableObjectConverter))]` — nothing else is walked into, so an option
 POCO never drags a whole object graph onto the screen. The block follows the **value's runtime

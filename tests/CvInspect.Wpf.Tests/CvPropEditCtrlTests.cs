@@ -170,6 +170,27 @@ public class CvPropEditCtrlTests
             $"a self-referencing expandable property stops at the nesting limit and leaves no half-drawn block (levels={depth})");
     });
 
+    [Fact]
+    public void LongListsStopAtTheItemLimit() => RunSta(() =>
+    {
+        // 상한이 없으면 [Browsable(false)] 가 빠진 큰 배열이 닿는 순간 항목마다 한 줄이 되어 편집기를 여는 것만으로
+        // 화면이 굳는다. 끝까지 세지 않는 것이 핵심이다 — 지연 열거가 무한이면 세는 순간 갇힌다
+        // (그래서 이 절은 상한이 있는 판에서만 끝난다. 상한이 없으면 실패가 아니라 정지로 나타난다).
+        var ctrl = new CvPropEditCtrl { Source = new LongListSampleOpt() };
+        var rows = ctrl.Groups.SelectMany(g => g.Rows).OfType<CvPropListRowVm>().ToList();
+        string[] Lines(string label) => rows.Single(r => r.Label == label).Text.Split(Environment.NewLine);
+
+        var big = Lines("Big");
+        Check(big.Length == 21 && big[^1] == "… (+980)",
+            $"a 1000-item array is cut at the limit and says how many are left: {big.Length} lines, last='{big[^1]}'");
+
+        var endless = Lines("Endless");
+        Check(endless.Length == 21 && endless[^1] == "…",
+            $"an endless lazy sequence is cut without being counted to the end: {endless.Length} lines, last='{endless[^1]}'");
+
+        Check(Lines("Tiny").Length == 3, $"a list under the limit is still shown whole ({Lines("Tiny").Length} lines)");
+    });
+
     /// <summary>중첩·나열 회귀용 표본 — 모드에 따라 세부 파라미터가 다른 타입의 인스턴스로 교체된다.</summary>
     public sealed class NestSampleOpt : INotifyPropertyChanged
     {
@@ -211,6 +232,21 @@ public class CvPropEditCtrlTests
         public sealed class RingDetail
         {
             [DisplayName("Radius")] public double Radius { get; set; } = 4.5;
+        }
+    }
+
+    /// <summary>나열 상한 회귀용 표본 — 상한을 넘는 배열과, 끝까지 세면 갇히는 무한 지연 열거.</summary>
+    public sealed class LongListSampleOpt
+    {
+        [DisplayName("Big")] public byte[] Big { get; } = new byte[1000];
+
+        [DisplayName("Endless")] public IEnumerable<int> Endless => Forever();
+
+        [DisplayName("Tiny")] public byte[] Tiny { get; } = new byte[3];
+
+        private static IEnumerable<int> Forever()
+        {
+            for (var i = 0; ; i++) yield return i;
         }
     }
 

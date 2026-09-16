@@ -260,6 +260,11 @@ public sealed class CvPropListRowVm : CvPropRowVm
         private set => SetProperty(ref _text, value);
     }
 
+    /// <summary>한 번에 적는 항목 수 상한. 이 행은 확인용이라 전부 적을 값어치가 없고, 상한이 없으면
+    /// <c>[Browsable(false)]</c> 가 빠진 큰 배열(학습 템플릿 바이트 등)이 여기 닿는 순간 항목마다 한 줄을 만들어
+    /// <b>편집기를 여는 것만으로 화면이 굳는다.</b> 넘치면 남은 개수만 뒤에 덧붙인다 — 숫자라 번역이 필요 없다.</summary>
+    private const int MaxItems = 20;
+
     internal override void RefreshFromSource() => Text = Format(Prop.GetValue(Source));
 
     private static string Format(object? value)
@@ -267,8 +272,18 @@ public sealed class CvPropListRowVm : CvPropRowVm
         if (value is not IEnumerable items || value is string) return value?.ToString() ?? string.Empty;
 
         var parts = new List<string>();
-        foreach (var item in items) parts.Add(item?.ToString() ?? string.Empty);
-        return parts.Count == 0 ? "(empty)" : string.Join(Environment.NewLine, parts);
+        var truncated = false;
+        foreach (var item in items)
+        {
+            // 상한에서 열거를 멈춘다 — 끝까지 세면 지연 열거(무한일 수도 있다)에서 그대로 갇힌다.
+            if (parts.Count == MaxItems) { truncated = true; break; }
+            parts.Add(item?.ToString() ?? string.Empty);
+        }
+
+        if (parts.Count == 0) return "(empty)";
+        // 남은 개수는 세지 않고 아는 경우(ICollection)에만 적는다.
+        if (truncated) parts.Add(items is ICollection col ? $"… (+{col.Count - MaxItems})" : "…");
+        return string.Join(Environment.NewLine, parts);
     }
 }
 
