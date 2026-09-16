@@ -50,6 +50,7 @@ public sealed class ReconnectingCam : ICam
     private Task? _reconnectTask;
     private CancellationTokenSource? _reconnectCts;
     private bool _reconnectPending;       // 루프가 물러나는 창에 도착한 요청 — 소실되면 영구 미연결이 된다
+    private object? _lostInner;           // 재연결을 이미 건 죽은 인스턴스 — 같은 죽음의 두 통지를 두 요청으로 세지 않게
 
     /// <param name="factory">내부 카메라 생성기. 재연결 때마다 <b>새 인스턴스</b>를 만들어 돌려줘야 한다.</param>
     /// <param name="opt">재시도 정책(생략 시 기본 사다리).</param>
@@ -298,6 +299,7 @@ public sealed class ReconnectingCam : ICam
         {
             cam = _inner;
             _inner = null;
+            _lostInner = null;   // 시체를 치웠다 — 다음 인스턴스의 죽음은 새 사건이다
             _connected = false;
             _grabbing = false;
         }
@@ -323,7 +325,15 @@ public sealed class ReconnectingCam : ICam
             if (!ReferenceEquals(_inner, sender)) return;        // 폐기된 인스턴스의 유령 통지
             if (_connected) { _connected = false; lostConn = true; }
             if (_grabbing) { _grabbing = false; lostGrab = true; }
-            ScheduleReconnectLocked();
+            // 같은 인스턴스가 죽는 사건 하나에 통지가 여러 번 올 수 있다(취득 정지 + 연결 상실). 요청을
+            // 그 수만큼 걸면 뒤엣것이 _reconnectPending 으로 남아, 첫 라운드가 세션을 되살린 직후 둘째
+            // 라운드가 그 멀쩡한 세션을 다시 뜯는다. 상위에는 false 없이 연결·취득이 두 번 오고 그사이
+            // 프레임이 끊긴다. 통지 순서는 구현마다 다를 수 있으므로 순서가 아니라 <b>죽은 인스턴스</b>로 센다.
+            if (!ReferenceEquals(_lostInner, sender))
+            {
+                _lostInner = sender;
+                ScheduleReconnectLocked();
+            }
         }
         if (lostGrab) GrabbingChanged?.Invoke(this, false);
         if (lostConn) ConnectionChanged?.Invoke(this, new ConnArgs(false));
@@ -352,6 +362,10 @@ public sealed class ReconnectingCam : ICam
         {
             if (_disposed || _closed) return;                    // 게이트 — 정비 중 부활 금지
             if (!ReferenceEquals(_inner, sender)) return;        // 폐기된 인스턴스의 유령 통지
+            // 연결까지 잃은 것이면 이 통지는 그 사건의 앞 줄일 뿐이다 — 되살리기는 연결 상실 경로가
+            // 맡는다(곧 이어 온다). 여기서 같이 나서면 요청이 두 건이 되어 방금 살아난 세션을 다시 뜯고,
+            // 로그에는 제어 상실이 "청하지도 않았는데 멈췄다" 로 남아 원인을 엉뚱한 데로 보낸다.
+            if (sender is ICam { IsConnected: false }) return;
             resume = _wantContinuous;
         }
         if (!resume)

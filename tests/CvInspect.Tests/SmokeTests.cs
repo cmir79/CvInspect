@@ -665,6 +665,51 @@ public class SmokeTests
                 $"subscribers see the stop before the resume: [{string.Join(",", grab)}]");
         }
 
+        // 10-10c) 제어 상실은 한 번만 되살린다 — 두 통지가 오지만 세션 교체는 한 번이다.
+        //         구현은 제어를 잃으면 GrabbingChanged(false) 와 ConnectionChanged(false) 를 잇달아 낸다.
+        //         둘을 각각 "되살려야 할 사건" 으로 읽으면 교체가 두 번 걸려, 방금 살아난 멀쩡한 세션을
+        //         다시 뜯는다(상위에는 false 없이 connected/grabbing 이 두 번 오고 그 사이 프레임이 끊긴다).
+        //         그리고 그 줄은 제어 상실이므로 "청하지도 않았는데 멈췄다" 로 남아서도 안 된다 — 원인을
+        //         엉뚱한 데로 보낸다.
+        {
+            // 사다리를 간격보다 길게 잡는 것이 이 항의 조건이다 — 둘째 통지가 첫 라운드의 백오프 대기 중에
+            // 닿아야 아직 교체 전이라 유령 통지로 걸러지지 않고, 그래야 '요청 두 건' 이 실제로 겹친다.
+            var made = new List<FakeCam>();
+            var slowLadder = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 200 }, ShutdownWaitMs = 1000 };
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slowLadder);
+            cam.Open();
+            cam.StartContinuous();
+
+            var lines = new List<string>();
+            var prevSink = CvLog.Sink;
+            try
+            {
+                CvLog.Sink = (_, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add(msg); };
+                made[0].LoseConnection(gapMs: 20);          // 실제 순서 그대로 — 취득 통지가 먼저, 연결 통지가 뒤
+                Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "control loss is recovered");
+                Thread.Sleep(600);                          // 두 번째 라운드가 걸렸다면 이 안에 돈다(백오프 200ms)
+                Check(made.Count == 2, $"one control loss rebuilds the session once (instances={made.Count})");
+                lock (lines) Check(!lines.Any(l => l.Contains("without being asked")),
+                    $"a control loss is not reported as an unrequested stop: [{string.Join(" / ", lines)}]");
+            }
+            finally { CvLog.Sink = prevSink; }
+        }
+
+        // 10-10d) 통지 순서가 달라도 교체는 한 번이다. 상태를 나중에 내리는 구현에서는 취득 통지 시점에
+        //         아직 연결이 살아 있어 보이므로 10-10c 의 가드가 듣지 않는다. 그때도 한 죽음은 한 사건이다 —
+        //         세는 기준을 통지 순서가 아니라 죽은 인스턴스로 두면 구현마다 갈리지 않는다.
+        {
+            var made = new List<FakeCam>();
+            var slowLadder = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 200 }, ShutdownWaitMs = 1000 };
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slowLadder);
+            cam.Open();
+            cam.StartContinuous();
+            made[0].LoseConnectionAnnouncingGrabFirst(gapMs: 20);
+            Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "recovered regardless of notification order");
+            Thread.Sleep(600);
+            Check(made.Count == 2, $"one death is one rebuild whatever the order (instances={made.Count})");
+        }
+
         // 10-10b) 대조군 — 사용자가 끈 취득은 되살아나지 않는다. 같은 통지가 오지만 의도가 내려가 있다.
         //         이것이 없으면 위 항은 "무슨 일이 있어도 다시 켠다" 와 구분되지 않는다.
         {

@@ -55,8 +55,14 @@ public interface ICam : IDisposable
     event EventHandler<ConnArgs>? ConnectionChanged;
 
     /// <summary><see cref="IsGrabbing"/> 변화 알림 (true: 연속 시작 / false: 정지).
-    /// 정지는 사용자가 시켜서만 나지 않는다 — <b>제어권을 잃어 취득이 끊긴 경우도 false 다.</b>
-    /// <b>전이일 때만 낸다</b>: 돌고 있지 않던 것이 멈췄다고 알리지 않는다.</summary>
+    /// 정지는 사용자가 시켜서만 나지 않는다 — <b>제어권을 잃어 취득이 끊긴 경우도, 수신이 접혀 취득만
+    /// 죽은 경우도 false 다.</b> <b>전이일 때만 낸다</b>: 돌고 있지 않던 것이 멈췄다고 알리지 않는다.
+    ///
+    /// 구현자에게 — <b>상태를 먼저 내리고 통지한다.</b> 한 번의 죽음에 이 통지와 <see cref="ConnectionChanged"/>
+    /// 가 함께 나가는 일이 흔한데, 받는 쪽은 둘을 갈라 읽어야 한다(취득만 죽은 것인가, 연결까지 잃은 것인가).
+    /// 통지 시점에 <see cref="IsConnected"/> 가 아직 참이면 그 구분이 불가능해져, 받는 쪽은 제어 상실을
+    /// "청하지도 않았는데 취득이 멈췄다" 로 읽는다. 순서가 갈려도 동작이 갈리지는 않지만(<c>ReconnectingCam</c>
+    /// 은 사건을 통지 수가 아니라 인스턴스로 센다) 진단 문구는 갈린다.</summary>
     event EventHandler<bool>? GrabbingChanged;
 
     /// <summary>연결. 이미 연결돼 있으면 아무 일도 하지 않는다.
