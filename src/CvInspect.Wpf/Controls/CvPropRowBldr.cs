@@ -136,8 +136,8 @@ public static class CvPropRowBldr
             nested.ChildFactory = value => BuildChildren(value, ctx, depth + 1);
 
         row.Attach();
-        // 읽지 못한 프로퍼티는 행으로 내지 않는다 — 빈 칸을 보여 주면 "값이 그렇다" 로 읽히고, 그 위에 편집하면
-        // 읽지도 못한 값을 덮어쓴다. 사라진 이유는 로그에 남는다(TryRefreshFromSource).
+        // 첫 읽기에서 던지는 프로퍼티는 그 행만 뺀다 — 빈 칸으로 그리면 "값이 그렇다" 로 읽히고, 사용자가 그 위에
+        // 편집하면 읽지도 못한 값을 덮어쓴다. 실패 이유는 행 VM 이 경고로 남긴다.
         if (!row.TryRefreshFromSource())
         {
             row.Detach();

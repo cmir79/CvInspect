@@ -201,16 +201,20 @@ public class SmokeTests
                   && seen[1] == "m6" && seen[^1] == $"m{CvLog.HoldCapacity + 5}",
                 $"the newest {CvLog.HoldCapacity} replay and the notice names the drop (first={seen.FirstOrDefault()} second={seen.Skip(1).FirstOrDefault()} last={seen.LastOrDefault()})");
 
-            // 아직 받을 준비가 안 된 로거에 먼저 붙인 경우 — 재생 중 싱크가 던진다. 대입문 밖으로 새면 기동이 깨지고,
-            // 큐는 재생 전에 비워지므로 못 보낸 줄이 영영 사라진다(지키려던 그 줄들이다).
-            // 이 대입이 던지면 이 절은 예외로 끝난다 — 그 자체가 회귀 신호다.
+            // 호스트 로거는 남의 코드다 — 배선도 발행도 그 자리에서 싱크를 부른다. 새면 배선은 평범한 프로퍼티
+            // 대입문에서, 발행은 취득 스레드·해제 경로 한복판에서 깨진다(종료 중 이미 정리된 로거가 흔한 경우다).
+            // 아래 대입이나 발행이 던지면 이 절은 예외로 끝난다 — 그 자체가 회귀 신호다.
             CvLog.Sink = null;
             var beforeThrow = CvLog.DroppedCount;
             CvLog.Publish(CvLogLevel.Info, "t", "held-a");
             CvLog.Publish(CvLogLevel.Info, "t", "held-b");
             CvLog.Sink = (_, _, msg, _) => { if (msg == "held-a") throw new InvalidOperationException("logger not ready"); };
-            Check(trace.Lines.Count(l => l.Contains("sink threw while replaying")) == 1,
-                $"a throwing replay is reported on the diagnostic trace instead of escaping to the caller: [{string.Join(" | ", trace.Lines)}]");
+            Check(trace.Lines.Count(l => l.Contains("line not delivered: Info t held-a")) == 1,
+                $"a throwing replay is reported on the diagnostic trace instead of escaping the assignment: [{string.Join(" | ", trace.Lines)}]");
+
+            CvLog.Publish(CvLogLevel.Info, "t", "held-a");
+            Check(trace.Lines.Count(l => l.Contains("line not delivered: Info t held-a")) == 2,
+                "a throwing sink is reported on publish too — it does not escape into the thread that logged");
 
             var recovered = new List<string>();
             CvLog.Sink = (_, _, msg, _) => recovered.Add(msg);

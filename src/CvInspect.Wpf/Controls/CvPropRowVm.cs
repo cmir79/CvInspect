@@ -85,19 +85,20 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
     {
         if (!string.IsNullOrEmpty(e.PropertyName) && e.PropertyName != Prop.Name) return;
         // 통지 경로에서 새면 소스가 PropertyChanged 를 낸 자리에서 터진다 — 편집기가 호스트 코드를 깨뜨리는 꼴이다.
-        // 못 읽었으면 마지막으로 읽은 값이 그대로 남는다(기본값으로 되돌리지 않는다 — 안 읽힌 것을 값으로 보이지 않게).
+        // 여기서는 행을 뺄 수 없으니 마지막으로 읽은 값을 그대로 남긴다.
         TryRefreshFromSource();
     }
 
     /// <summary>소스 현재 값 → 표시 필드 직접 대입(setter 미경유 — 커밋을 되쏘지 않는다) + 통지.</summary>
     internal abstract void RefreshFromSource();
 
-    /// <summary>읽기를 감싼 것 — 값 한 칸이 던진다고 편집기 전체가 무너지지 않게 한다.
-    /// 나열 행은 <b>지금까지 아무도 읽지 않던 getter 를 읽고 그 자리에서 열거</b>한다(장치를 그때 읽는 지연 평가
-    /// 프로퍼티, 다른 스레드가 채우는 목록). 막지 않으면 그 예외가 <c>Source</c> 대입이나 소스의 변경 통지를 타고
-    /// 밖으로 나가는데, WPF 에서는 대개 잡는 사람이 없어 앱이 그대로 종료된다.
-    /// 잡되 삼키지는 않는다 — 어느 프로퍼티가 왜 못 읽혔는지 로그에 남는다.</summary>
-    /// <returns>읽어서 표시를 갱신했으면 true, 소스가 던졌으면 false.</returns>
+    /// <summary>
+    /// 읽기를 감싼다 — <b>프로퍼티 getter 는 남의 코드다.</b> 장치를 그때 읽는 지연 평가, 다른 스레드가 채우는
+    /// 컬렉션(열거 중 수정), 아직 배선되지 않은 참조 — 무엇이든 던질 수 있다. 새면 편집기를 세우는 대입
+    /// (<c>Source = opt</c>)이나 소스가 <c>PropertyChanged</c> 를 낸 자리에서 터지고, WPF 라 대개 잡는 사람이 없어
+    /// 앱이 그대로 종료된다. 잡되 삼키지 않는다 — 어느 프로퍼티가 무엇으로 실패했는지 경고로 남긴다
+    /// (실행 버튼 행과 같은 규율).
+    /// </summary>
     internal bool TryRefreshFromSource()
     {
         try
@@ -107,8 +108,7 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            CvLog.Publish(CvLogLevel.Warning, nameof(CvPropRowVm),
-                $"Reading '{Prop.DeclaringType?.Name}.{Prop.Name}' failed: {ex.GetType().Name}", ex);
+            CvLog.Publish(CvLogLevel.Warning, nameof(CvPropRowVm), $"Property '{Prop.Name}' read failed: {ex.GetType().Name}", ex);
             return false;
         }
     }
@@ -352,7 +352,7 @@ public sealed class CvPropNestedRowVm : CvPropRowVm
         if (ReferenceEquals(value, _current))
         {
             // 같은 인스턴스면 구성은 그대로다 — 자식들이 각자 자기 값만 다시 읽는다.
-            // 한 자식이 던져도 나머지는 갱신된다(읽기 가드 경유) — 못 읽은 칸 하나가 블록 전체를 멈추지 않게.
+            // 한 자식이 던져도 나머지는 갱신한다(감싼 호출) — 여기서 새면 소스의 통지 지점에서 터진다.
             foreach (var c in _children) c.TryRefreshFromSource();
             return;
         }

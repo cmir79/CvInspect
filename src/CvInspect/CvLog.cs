@@ -72,31 +72,56 @@ public static class CvLog
             // 락 밖에서 부른다 — 호스트 싱크가 이 안에서 다시 Publish 해도 맞물리지 않는다. 안내 줄이 앞서므로
             // 호스트 로거가 찍는 시각이 지금이어도 재생분이 "지금 난 일" 로 읽히지 않는다.
             var sent = 0;
-            try
-            {
-                value(CvLogLevel.Info, nameof(CvLog),
+            if (TrySend(value, CvLogLevel.Info, nameof(CvLog),
                     $"replaying {replay.Length} lines held before a sink was attached" +
-                    (dropped > 0 ? $"; {dropped} older lines were dropped" : "") + ".", null);
-                for (; sent < replay.Length; sent++)
-                {
-                    var e = replay[sent];
-                    value(e.Level, e.Source, e.Message, e.Exception);
-                }
-            }
-            catch (Exception ex)
+                    (dropped > 0 ? $"; {dropped} older lines were dropped" : "") + ".", null))
             {
-                // 여기서 잡지 않으면 예외가 프로퍼티 대입문에서 튀어나온다 — 붙이는 쪽에는 try 를 둘 이유가 없던
-                // 자리라 기동이 그대로 깨진다. 진단을 지키려던 기능이 진단을 붙이는 행위를 위험하게 만드는 꼴이다.
-                // 못 보낸 줄은 버리지 않고 도로 붙잡는다: 이 싱크가 못 받은 것이지 없어도 되는 줄이 아니다.
-                // 잡되 삼키지 않는다 — 이 실패는 싱크로 알릴 수 없으므로(던진 쪽이 그 싱크다) 미배선 경고와 같은
-                // 통로인 진단 추적으로 낸다.
-                lock (_gate)
-                    for (var i = sent; i < replay.Length; i++) HoldLocked(replay[i]);
-                System.Diagnostics.Trace.TraceWarning(
-                    "CvInspect: the CvLog sink threw while replaying held diagnostics (" +
-                    ex.GetType().Name + ": " + ex.Message + "). " + (replay.Length - sent) +
-                    " lines were put back and will replay when a sink is attached again. " +
-                    "Attach the sink after the host logger can receive.");
+                while (sent < replay.Length
+                       && TrySend(value, replay[sent].Level, replay[sent].Source, replay[sent].Message, replay[sent].Exception))
+                    sent++;
+            }
+            // 재생 중에 싱크가 던졌다면 못 보낸 줄을 도로 붙잡는다 — 여기서 버리면 "줄을 잃지 않는다" 는 이 클래스의
+            // 약속이 깨진다. 첫 실패에서 멈추는 것은, 던지는 싱크에 나머지를 계속 들이밀어도 같은 예외만 쌓이기 때문이다.
+            if (sent < replay.Length) Rehold(replay, sent);
+        }
+    }
+
+    /// <summary>
+    /// 싱크 호출을 감싼다 — <b>호스트 로거는 남의 코드다.</b> 던지면 부른 쪽이 그 자리에서 깨진다:
+    /// 배선은 <c>Sink = ...</c> 대입문에서, 발행은 취득 스레드·해제 경로 한복판에서(종료 중 이미 정리된 로거가
+    /// 흔한 경우다). 잡되 삼키지 않는다 — 못 보낸 줄을 진단 추적에 그대로 적는다.
+    /// </summary>
+    private static bool TrySend(Action<CvLogLevel, string, string, Exception?> sink,
+        CvLogLevel level, string source, string message, Exception? exception)
+    {
+        try
+        {
+            sink(level, source, message, exception);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning(
+                $"CvInspect: the attached CvLog sink threw ({ex.GetType().Name}); line not delivered: {level} {source} {message}");
+            return false;
+        }
+    }
+
+    /// <summary>재생에 실패한 줄을 다시 붙잡는다 — 재생 중 들어온 줄보다 오래된 것이므로 앞에 놓고,
+    /// 용량을 넘긴 만큼은 평소와 같이 오래된 쪽부터 밀어내며 센다.</summary>
+    private static void Rehold((CvLogLevel Level, string Source, string Message, Exception? Exception)[] replay, int from)
+    {
+        lock (_gate)
+        {
+            var newer = _held.ToArray();
+            _held.Clear();
+            for (var i = from; i < replay.Length; i++) _held.Enqueue(replay[i]);
+            foreach (var e in newer) _held.Enqueue(e);
+            while (_held.Count > HoldCapacity)
+            {
+                _held.Dequeue();
+                Interlocked.Increment(ref _dropped);
+                _heldDropped++;
             }
         }
     }
@@ -117,13 +142,19 @@ public static class CvLog
             sink = _sink;
             if (sink is null)
             {
-                HoldLocked((level, source, message, exception));
+                if (_held.Count >= HoldCapacity)
+                {
+                    _held.Dequeue();
+                    Interlocked.Increment(ref _dropped);
+                    _heldDropped++;
+                }
+                _held.Enqueue((level, source, message, exception));
                 if (!_noticed) { _noticed = true; first = true; }
             }
         }
         if (sink is not null)
         {
-            sink(level, source, message, exception);
+            TrySend(sink, level, source, message, exception);
             return;
         }
         // 미연결 구간의 첫 줄에 한 번 — 이 라이브러리의 로그 자체가 배선을 기다리는 쪽이라 진단 추적으로 낸다.
@@ -132,19 +163,6 @@ public static class CvLog
                 "CvInspect: CvLog.Sink is not set. Library diagnostics are being held (last " + HoldCapacity +
                 " lines) and will replay when a sink is attached; older lines are counted in CvLog.DroppedCount. " +
                 "Attach a sink at startup and assert CvLog.IsAttached.");
-    }
-
-    /// <summary>붙잡아 두기 — 호출자가 <c>_gate</c> 를 잡고 있어야 한다. 한도를 넘으면 오래된 것부터 밀어내고 센다.
-    /// 발행 경로와 재생 실패 시 되돌리는 경로가 같은 셈법을 쓰도록 한곳에 둔다.</summary>
-    private static void HoldLocked((CvLogLevel Level, string Source, string Message, Exception? Exception) entry)
-    {
-        if (_held.Count >= HoldCapacity)
-        {
-            _held.Dequeue();
-            Interlocked.Increment(ref _dropped);
-            _heldDropped++;
-        }
-        _held.Enqueue(entry);
     }
 
     internal static void Warn(string source, string message) => Publish(CvLogLevel.Warning, source, message);

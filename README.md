@@ -183,9 +183,11 @@ line saying so), anything older is counted in `CvLog.DroppedCount`, and the firs
 one `System.Diagnostics.Trace` warning. Because of the replay, order the startup as *logger ready →
 `CvLog.Sink` → cameras*: attaching after the logger is up loses nothing, while a sink attached
 before the logger can write hands the replay to a logger that is not listening yet — those lines go
-to a logger that discards them, and nothing counts them. If that logger *throws* instead, the assignment
-still does not throw: the exception is reported on the diagnostic trace, and every line the sink did not
-receive is put back and replays when a sink is attached again. The attach itself is one line:
+to a logger that discards them, and nothing counts them. **A sink that throws never takes the caller
+with it** — neither the attach (a plain property assignment) nor a publish, which runs on acquisition
+threads and teardown paths where an already-disposed logger is a common way to throw. The undelivered
+line goes to the diagnostic trace instead, and lines a throwing sink did not receive during replay are
+put back and replay when a sink is attached again. The attach itself is one line:
 
 ```csharp
 CvLog.Sink = (level, source, message, ex) => myLogger.Log(level, source, message, ex);
