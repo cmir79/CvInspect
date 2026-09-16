@@ -108,7 +108,11 @@ public static class CvLog
     }
 
     /// <summary>재생에 실패한 줄을 다시 붙잡는다 — 재생 중 들어온 줄보다 오래된 것이므로 앞에 놓고,
-    /// 용량을 넘긴 만큼은 평소와 같이 오래된 쪽부터 밀어내며 센다.</summary>
+    /// 용량을 넘긴 만큼은 평소와 같이 오래된 쪽부터 밀어내며 센다.
+    /// <b>재생 중에 큐에 줄이 쌓일 수 있는가</b>가 이 순서의 전부다: 재생하는 동안 <c>_sink</c> 는 이미 세워져 있어
+    /// 새 줄은 큐를 거치지 않지만, <b>재생 도중 싱크가 다시 떼이면</b> 그때부터 들어온 줄이 큐에 쌓인다 — 그 줄들은
+    /// 재생하려던 줄보다 나중이다. 뒤에 붙이면 그 경우에만 시간 순서가 조용히 뒤집히고, 평소에는 큐가 비어 있어
+    /// 증상이 안 보인다.</summary>
     private static void Rehold((CvLogLevel Level, string Source, string Message, Exception? Exception)[] replay, int from)
     {
         lock (_gate)
