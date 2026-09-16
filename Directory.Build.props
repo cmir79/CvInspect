@@ -24,7 +24,8 @@
          포인터는 갈리지 않는다. 이 한 줄이 없으면 nuget.org 패키지 페이지에 릴리스 노트 탭 자체가 안 생겨서,
          패키지만 보고 온 소비자가 판별 변경으로 건너갈 첫 링크가 없다(4패키지 중 안내가 실리는 것은 루트 README 를
          싣는 코어 하나뿐이다). 소급은 안 된다 — 이미 올린 판에는 영원히 이 탭이 없다. -->
-    <PackageReleaseNotes>https://github.com/cmir79/CvInspect/releases/tag/v$(Version)</PackageReleaseNotes>
+    <!-- 프리릴리스(-dev)는 가리킬 태그가 없다. 조건 없이 두면 사설 피드에 올라간 개발 판이 죽은 링크를 달고 다닌다. -->
+    <PackageReleaseNotes Condition="!$(Version.Contains('-'))">https://github.com/cmir79/CvInspect/releases/tag/v$(Version)</PackageReleaseNotes>
   </PropertyGroup>
 
 </Project>
