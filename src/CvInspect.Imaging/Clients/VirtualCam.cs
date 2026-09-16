@@ -33,6 +33,7 @@ public sealed class VirtualCam : ICam
     private Timer? _timer;
     private int _frameCounter;
     private int _emitBusy;   // 라이브 틱 재진입 방지 — 이미지 로드가 주기보다 느릴 때 틱 스킵
+    private int _emitThreadId;   // 지금 틱을 도는 스레드 — 그 스레드가 부른 정지는 자기를 기다리면 안 된다
     private bool _disposed;
 
     // 이미지 폴더 파일 목록 캐시 — 경로 또는 폴더 LastWriteTime(파일 추가/삭제) 변경 시에만 재열거
@@ -86,13 +87,15 @@ public sealed class VirtualCam : ICam
     {
         bool wasGrabbing = false;
         bool wasConnected = false;
+        WaitHandle? drain = null;
         lock (_sync)
         {
             if (_disposed) return;
-            wasGrabbing = StopContinuousCore();
+            (wasGrabbing, drain) = StopContinuousCore();
             wasConnected = IsConnected;
             IsConnected = false;
         }
+        DrainOutsideLock(drain);
         if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
         if (wasConnected) ConnectionChanged?.Invoke(this, new ConnArgs(false));
         WriteLog(CvLogLevel.Info, "Virtual camera closed.");
@@ -134,10 +137,12 @@ public sealed class VirtualCam : ICam
     public void StopContinuous()
     {
         bool stopped;
+        WaitHandle? drain = null;
         lock (_sync)
         {
-            stopped = StopContinuousCore();
+            (stopped, drain) = StopContinuousCore();
         }
+        DrainOutsideLock(drain);
         if (stopped)
         {
             WriteLog(CvLogLevel.Info, "Virtual camera continuous grab stopped.");
@@ -154,30 +159,67 @@ public sealed class VirtualCam : ICam
     public void Dispose()
     {
         bool wasGrabbing = false;
+        WaitHandle? drain = null;
         lock (_sync)
         {
             if (_disposed) return;
-            wasGrabbing = StopContinuousCore();
+            (wasGrabbing, drain) = StopContinuousCore();
             _disposed = true;
         }
+        DrainOutsideLock(drain);
         IsConnected = false;
         if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
         WriteLog(CvLogLevel.Info, "Virtual camera disposed.");
     }
 
-    /// <summary>Timer 정지. 반환값: 호출 전에 grab 중이었으면 true.</summary>
-    private bool StopContinuousCore()
+    /// <summary>Timer 정지. 반환값: 호출 전에 grab 중이었으면 true, 그리고 <b>진행 중인 틱이 끝나기를
+    /// 기다릴 손잡이</b>(기다릴 것이 없으면 null).
+    ///
+    /// <see cref="ICam.StopContinuous"/> 는 "남아 있는 프레임을 버린다 — 다음 GrabOne 이 그것을 집어 가지
+    /// 않게" 를 계약으로 적어 두었는데, 종전에는 <b>기다리는 코드가 아예 없었다</b>(인자 없는
+    /// <c>Timer.Dispose()</c> 는 진행 중인 콜백을 기다리지 않는다). 그래서 정지가 돌아온 뒤 한 장이 더
+    /// 발행되어 <b>이어지는 단발 그랩의 답으로 읽혔다</b>.
+    ///
+    /// ⚠ <b>기다리는 것은 반드시 락 밖이다</b> — 기다리는 대상이 구독자의 프레임 핸들러이고, 그 핸들러가
+    /// 이 카메라를 다시 부르면 락을 쥔 채 자기를 기다리는 꼴이 된다. 그래서 손잡이만 돌려주고 대기는
+    /// 호출자가 <see cref="DrainOutsideLock"/> 로 한다.
+    /// ⚠ <b>발행 스레드 자신이 부른 정지는 기다리지 않는다</b>(핸들러 안에서 부른 경우) — 자기가 끝나기를
+    /// 기다리는 것이라 시한을 통째로 쓴다.</summary>
+    private (bool WasGrabbing, WaitHandle? Drain) StopContinuousCore()
     {
-        if (_timer is null) return false;
-        _timer.Dispose();
+        if (_timer is null) return (false, null);
+        var timer = _timer;
         _timer = null;
-        return true;
+
+        if (Volatile.Read(ref _emitThreadId) == Environment.CurrentManagedThreadId)
+        {
+            timer.Dispose();
+            return (true, null);
+        }
+
+        var drain = new ManualResetEvent(false);
+        if (timer.Dispose(drain)) return (true, drain);
+
+        // 이미 폐기된 타이머면 신호가 오지 않는다 — 기다릴 것이 없다.
+        drain.Dispose();
+        return (true, null);
+    }
+
+    /// <summary>진행 중인 틱이 끝나기를 <b>락 밖에서</b> 기다린다.
+    /// 시한 안에 안 끝나면 <b>손잡이를 놓지 않는다</b> — 나중에 타이머가 그 손잡이에 신호를 보내는데
+    /// 이미 폐기돼 있으면 프로세스가 죽는다. 손잡이 하나를 흘리는 편이 싸다.</summary>
+    private static void DrainOutsideLock(WaitHandle? drain)
+    {
+        if (drain is null) return;
+        if (drain.WaitOne(1000)) drain.Dispose();
     }
 
     private void SafeEmit()
     {
         // 이미지 파일 로드가 라이브 주기보다 느리면 틱을 스킵해 재진입/적체 방지
         if (Interlocked.Exchange(ref _emitBusy, 1) == 1) return;
+        // 이 틱이 도는 스레드를 남긴다 — 구독자 핸들러가 여기서 정지를 부르면 자기를 기다리면 안 된다.
+        Volatile.Write(ref _emitThreadId, Environment.CurrentManagedThreadId);
         try
         {
             Emit();
@@ -188,6 +230,7 @@ public sealed class VirtualCam : ICam
         }
         finally
         {
+            Volatile.Write(ref _emitThreadId, 0);
             Volatile.Write(ref _emitBusy, 0);
         }
     }

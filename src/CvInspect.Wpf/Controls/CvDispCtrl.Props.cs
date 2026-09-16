@@ -63,7 +63,15 @@ public sealed partial class CvDispCtrl
         nameof(Shapes), typeof(object), typeof(CvDispCtrl),
         new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d)._surface.SetShapes(e.NewValue as IReadOnlyList<CvEditShape>)));
 
-    /// <summary>편집 도형 목록 — IReadOnlyList&lt;CvEditShape&gt;. 드래그 편집이 도형 값에 즉시 반영(Changed 발화).</summary>
+    /// <summary>편집 도형 목록 — IReadOnlyList&lt;CvEditShape&gt;. 드래그 편집이 도형 값에 즉시 반영(Changed 발화).
+    ///
+    /// <b>컨트롤은 각 도형의 <c>Changed</c> 를 구독한다</b>(그려야 하니까). 도형 목록은 대개 호스트가 들고
+    /// 있어서 컨트롤보다 오래 사는데, 그 구독이 남아 있으면 <b>버려진 컨트롤이 수집되지 않는다</b> —
+    /// 컨트롤 하나가 백버퍼·픽셀 배열·비주얼 트리를 통째로 끌고 간다. 그래서 구독은 <b>화면에 올라와 있는
+    /// 동안만</b> 유지한다 — <c>Loaded</c> 에 걸고 <c>Unloaded</c> 에 놓으며, 내려가 있는 사이에 이 값을
+    /// 갈아끼워도 그때는 걸지 않는다(다시 올라올 때 걸린다). 호스트가 따로 해 줄 일은 없다.
+    /// 뒤집어 말하면 <b>한 번도 화면에 올린 적 없는</b> 컨트롤은 구독하지 않으므로, 도형 값을 밖에서 바꿔도
+    /// 다시 그리지 않는다(그런 컨트롤은 애초에 그릴 화면이 없다).</summary>
     public object? Shapes
     {
         get => GetValue(ShapesProperty);

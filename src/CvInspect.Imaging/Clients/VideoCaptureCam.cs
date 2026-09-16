@@ -29,6 +29,7 @@ public sealed class VideoCaptureCam : ICam
     private Thread? _liveThread;
     private CancellationTokenSource? _liveCts;
     private bool _disposed;
+    private double? _setExposureUs;   // SetExposureTimeUs 로 받은 마지막 값 — 열 때 다시 넣는다(ICam 계약)
 
     public VideoCaptureCam(CamOpt opt)
     {
@@ -79,6 +80,9 @@ public sealed class VideoCaptureCam : ICam
             _cap = cap;
             IsConnected = true;
             _openedAs = src;
+            // 열기 전에 받아 둔 노출을 지금 넣는다. 다시 열 때도 같은 자리에서 복원된다 — 소스를 새로 열면
+            // 속성은 기본값으로 돌아가므로, 여기서 넣지 않으면 운전 중에 맞춘 노출이 조용히 사라진다.
+            if (_setExposureUs is { } exposure) ApplyExposureWhileLocked(exposure);
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
         WriteLog(CvLogLevel.Info, $"video source opened: {_openedAs} (file={_isFileSource})");
@@ -114,7 +118,11 @@ public sealed class VideoCaptureCam : ICam
                 throw new InvalidOperationException(
                     "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
                     "stream's. Call StopContinuous() first.");
-            TryReadFrame(out frame);
+            // 읽기 실패를 삼키지 않는다 — 사람이 부른 한 장이다. 종전에는 프레임도 예외도 로그도 없이
+            // 돌아와서, 부른 쪽에서 성공과 구분되지 않았다(구독자가 아무것도 못 받은 것이 유일한 단서인데
+            // 그것을 이유와 함께 설명해 주는 곳이 없었다). 연속 취득 루프는 같은 실패를 이미 남긴다.
+            if (!TryReadFrame(out frame))
+                WriteLog(CvLogLevel.Warning, "frame read failed — the single grab produced no frame.");
         }
         if (frame != null) FrameAcquired?.Invoke(this, frame);
     }
@@ -152,14 +160,26 @@ public sealed class VideoCaptureCam : ICam
         }
     }
 
+    /// <summary>노출 적용 — 아직 열지 않았으면 들고 있다가 <see cref="Open"/> 이 넣는다(ICam 계약).
+    /// 소스가 없을 때 그냥 흘리면 "applied=False" 한 줄만 남고 값은 사라지는데, 그 줄은 미지원 소스와
+    /// 구분되지 않아 부른 쪽은 들어간 줄 안다.</summary>
     public void SetExposureTimeUs(double timeUs)
     {
         lock (_sync)
         {
-            // 노출 단위는 백엔드마다 다르다(초·log2초 등) — 초 단위 전달의 best-effort 이며 미지원 소스는 무시된다.
-            var ok = _cap?.Set(VideoCaptureProperties.Exposure, timeUs / 1_000_000.0) ?? false;
-            WriteLog(CvLogLevel.Debug, $"SetExposureTimeUs best-effort: value={timeUs}us applied={ok}");
+            // 0 이하는 "건드리지 않는다" 는 뜻이라 기억하지 않는다 — 다시 열 때 그것을 되넣으면
+            // CamOpt 값으로 돌아갈 길까지 막힌다. 지금 이 호출은 종전대로 그대로 넘긴다.
+            if (timeUs > 0) _setExposureUs = timeUs;
+            ApplyExposureWhileLocked(timeUs);
         }
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제.</summary>
+    private void ApplyExposureWhileLocked(double timeUs)
+    {
+        // 노출 단위는 백엔드마다 다르다(초·log2초 등) — 초 단위 전달의 best-effort 이며 미지원 소스는 무시된다.
+        var ok = _cap?.Set(VideoCaptureProperties.Exposure, timeUs / 1_000_000.0) ?? false;
+        WriteLog(CvLogLevel.Debug, $"SetExposureTimeUs best-effort: value={timeUs}us applied={ok}");
     }
 
     public void Dispose()
@@ -181,25 +201,51 @@ public sealed class VideoCaptureCam : ICam
     }
 
     /// <summary>라이브 정지 요청 + 스레드 종료 대기. 반환값: 호출 전에 grab 중이었으면 true.
-    /// 프레임 이벤트 안(라이브 스레드 자신)에서 불리면 Join 을 생략한다 — 자기 대기 교착 방지.</summary>
+    /// 프레임 이벤트 안(라이브 스레드 자신)에서 불리면 Join 을 생략한다 — 자기 대기 교착 방지.
+    ///
+    /// ⚠ <b>이 호출이 돌아왔다고 루프가 끝난 것은 아니다.</b> 락을 쥔 채 기다릴 수 없어 시한이 짧고,
+    /// 장치 읽기가 길어지거나 파일 소스의 페이싱 대기가 걸려 있으면 그 시한 안에 못 빠진다. 그때는
+    /// <b>정지 뒤에 프레임이 한 장 더 발행될 수 있다</b> — 계약은 "요청했고 잠깐 기다렸다" 까지다.</summary>
     private bool StopContinuousCore()
     {
         if (_liveThread is null) return false;
         var thread = _liveThread;
         _liveCts?.Cancel();
         _liveThread = null;
-        if (!ReferenceEquals(Thread.CurrentThread, thread))
-        {
-            // 락을 쥔 채 Join 하면 루프의 lock 획득과 교착한다 — 락 밖에서 기다리는 대신
-            // 루프가 토큰만 보고 빠지도록 짧게만 기다린다 (배경 스레드라 방치돼도 무해).
-            thread.Join(100);
-        }
-        _liveCts?.Dispose();
+
+        // 락을 쥔 채 Join 하면 루프의 lock 획득과 교착한다 — 락 밖에서 기다리는 대신
+        // 루프가 토큰만 보고 빠지도록 짧게만 기다린다.
+        var exited = !ReferenceEquals(Thread.CurrentThread, thread) && thread.Join(100);
+
+        // 루프가 실제로 빠져나온 것을 확인했을 때만 CTS 를 놓는다. 시한을 넘겼거나 이 호출이 루프
+        // 자신에게서 온 것이면 워커가 아직 살아 있고, 그 워커는 곧 token.WaitHandle 을 만진다 —
+        // Dispose 된 CTS 의 토큰을 만지면 ObjectDisposedException 이고, 배경 스레드의 미처리 예외는
+        // 프로세스를 통째로 내린다. <b>흘리는 CTS 한 개가 죽은 프로세스보다 싸다.</b>
+        // (형제 ReconnectingCam 은 같은 함정을 Cancel 쪽에서 catch 로 막고 있다 — 여기만 빠져 있었다.)
+        if (exited) _liveCts?.Dispose();
         _liveCts = null;
         return true;
     }
 
     private void LiveLoop(CancellationToken token)
+    {
+        // 배경 스레드의 미처리 예외는 프로세스를 내린다 — 취득 루프 하나가 호스트를 통째로 데려갈 수는 없다.
+        // (형제 GevCam.PumpLoop·ReconnectingCam.ReconnectLoop 도 같은 이유로 감싸져 있다.)
+        try
+        {
+            LiveLoopCore(token);
+        }
+        catch (ObjectDisposedException)
+        {
+            // 정지와의 경합 — 토큰이 우리 발밑에서 놓였다. 정지하려던 참이므로 조용히 물러난다.
+        }
+        catch (Exception ex)
+        {
+            WriteLog(CvLogLevel.Error, $"the live loop stopped on an unexpected error: {ex.GetType().Name}", ex);
+        }
+    }
+
+    private void LiveLoopCore(CancellationToken token)
     {
         var failStreak = 0;
         var sw = new System.Diagnostics.Stopwatch();

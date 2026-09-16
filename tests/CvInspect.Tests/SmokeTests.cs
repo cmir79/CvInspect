@@ -1035,6 +1035,57 @@ public class SmokeTests
             $"and the latency numbers stay sane instead of showing hours: {line8}");
     }
 
+    /// <summary>취득 계약 — "발행되는 프레임에는 CamOpt.Flip/Rotation 이 이미 적용돼 있다"(Imaging README).
+    /// 그 계약을 GigE 백엔드만 안 지키고 있었다 — USB·파일·가상 카메라는 CamXform 을 부르는데 여기만 안 불러,
+    /// 같은 레시피로 백엔드를 갈아 끼우면 화면 방향이 말없이 달라졌다.</summary>
+    [Fact]
+    public void GigEFramesCarryTheMountTransform()
+    {
+        // 비대칭 패턴이어야 뒤집힘이 실제로 드러난다 — 대칭이면 뒤집어도 같은 그림이라 아무것도 검증 못 한다.
+        using var src = new Mat(40, 60, MatType.CV_8UC1, Scalar.Black);
+        Cv2.Rectangle(src, new Rect(2, 2, 14, 8), new Scalar(255), -1);   // 왼쪽 위에만 표식
+        var input = CvInspect.Imaging.CamFrame.FromMat(src, TimeSpan.FromSeconds(1.25));
+
+        static (int X, int Y) Mark(CvInspect.Imaging.CamFrame f)
+        {
+            using var m = CvInspect.Imaging.CamFrameMatExt.AsMat(f);
+            using var nz = new Mat();
+            Cv2.FindNonZero(m, nz);
+            var p = nz.At<Point>(0);
+            return (p.X, p.Y);
+        }
+        Check(Mark(input) is (2, 2), $"the marker starts at the top-left ({Mark(input)})");
+
+        // 끔 — 같은 인스턴스를 그대로 돌려준다. 안 쓰는 설비에 비용이 0 이라는 주장이 이것이다.
+        using (var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" }))
+            Check(ReferenceEquals(cam.ApplyMountXform(input), input),
+                "with no flip or rotation the frame passes through untouched — the default costs nothing");
+
+        // 좌우 반전 — 표식이 오른쪽으로 간다.
+        using (var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt
+        {
+            SerialNumber = "x", Flip = CvInspect.Imaging.FlipMode.Horizontal,
+        }))
+        {
+            var got = cam.ApplyMountXform(input);
+            Check(!ReferenceEquals(got, input) && Mark(got).X > 40,
+                $"a horizontal flip actually reaches the published frame on the GigE backend too ({Mark(got)})");
+            Check(got.DeviceTimestamp == TimeSpan.FromSeconds(1.25),
+                $"and the device timestamp survives the transform — the pump statistics read it ({got.DeviceTimestamp})");
+        }
+
+        // 90° 회전 — 치수가 바뀐다(변환 경로를 실제로 탔다는 증거이기도 하다).
+        using (var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt
+        {
+            SerialNumber = "x", Rotation = CvInspect.Imaging.RotateMode.Rotate90,
+        }))
+        {
+            var got = cam.ApplyMountXform(input);
+            Check(got.Width == input.Height && got.Height == input.Width,
+                $"a 90 degree rotation swaps the dimensions ({got.Width}x{got.Height} from {input.Width}x{input.Height})");
+        }
+    }
+
     /// <summary>포즈 프리미티브 — 학습각 보정 포즈와 정규화 창.
     /// <b>중립값(학습각 0·스케일 1)에서는 틀린 판과 맞는 판이 같은 값을 낸다</b> — 그래서 이 절은
     /// 학습각 25°·스케일 1.2·가산각 90° 처럼 전부 중립이 아닌 값으로만 잰다. 중립값에서만 돌린 검증은

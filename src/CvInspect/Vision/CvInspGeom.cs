@@ -4,8 +4,15 @@ using CvInspect.Vision.Opts;
 namespace CvInspect.Vision;
 
 /// <summary>
-/// 검사 공통 순수 기하 — 각도 정규화 · 포즈 강체 변환 · 템플릿 매칭 · 랜드마크 국소 검증 · 극좌표 언랩.
-/// 검사들이 공유하는 수치 산출 경로 — 각 검사 파일에는 그 검사 고유 로직만 남긴다.
+/// 검사 공통 순수 기하 — 각도 정규화(<see cref="Mod360"/>·<see cref="Wrap180"/>) · 발견 포즈로 티칭 기하를
+/// 옮기기(<see cref="XformByPose"/>·<see cref="FixturePose"/>) · 정규화 창(<c>NormalizedWindow</c>) ·
+/// 템플릿 매칭(<see cref="MatchPattern"/>·<see cref="MatchPatternAll"/>).
+///
+/// <b>여기 있는 것은 어느 응용에서나 같은 뜻인 계산뿐이다.</b> 무엇을 무엇으로 검증할지, 어느 점수부터
+/// 합격으로 볼지, 후보 각도를 몇 개 돌지는 호스트가 정한다 — 이 파일은 그 판단에 쓸 값을 줄 뿐이다.
+/// (0.25.0 에서 <c>VerifyLandmark</c> 를 걷어내며 그 선을 분명히 했다. 그 메서드는 "랜드마크가 맞는가" 라는
+/// 응용 판정을 들고 있었고, 그러느라 티칭 관계까지 전제하고 있었다. 지금은 그 밑에 깔려 있던 기하만 남았다.)
+/// 극좌표 언랩은 <see cref="CvUnwrapGeom"/> 에 있다.
 /// </summary>
 public static class CvInspGeom
 {
@@ -221,158 +228,6 @@ public static class CvInspGeom
         var best = all.Count > 0 ? all[0] : (CvPose?)null;
         var score = best?.Score ?? 0;
         return (best is not null && score >= pat.AcceptScore, score, best, all, (template.Cols, template.Rows));
-    }
-
-    /// <summary>
-    /// 정규화 국소 검증 — 발견 포즈(+extraDeg 후보 가산)로 역회전한 이미지에서 랜드마크 템플릿이
-    /// 티칭 상대 오프셋 위치에 있는지 국소 매칭(NCC 최대값). 준대칭 후보 판별과
-    /// 미러(대칭 반전) 검출에 공용 — 미러/오포즈 제품은 랜드마크가 기대 위치에 없어 스코어가 폭락한다.
-    ///
-    /// 뒤지는 범위는 두 갈래다. 랜드마크가 <see cref="CvPatternOpt.UseSearchRegion"/> 을 켜 두면
-    /// 티칭한 탐색 사각을 포즈로 따라 옮겨 그 안을 뒤지고, 안 켜면 기대 위치 ±<paramref name="searchPx"/>
-    /// 정사각 창을 뒤진다. 대칭으로 자리가 갈리는 특징은 사각을 길쭉하게 잡아 두 자리를 한 번에
-    /// 덮는 편이 낫다 — 반경으로 같은 폭을 얻으려면 원이 훨씬 넓어져 엉뚱한 곳에 맞을 여지가 는다.
-    ///
-    /// 반환 기대 좌표·검색된 템플릿 사각(매치 위치의 템플릿 박스)은 pre 공간 환산치(표시용) —
-    /// 정규화/펴기 회전의 역변환 체인 적용.
-    /// </summary>
-    [Obsolete("검증 정책은 호스트 몫이다 — 이 메서드가 하는 일은 툴킷 조각들의 조립이고, 그 조립이 " +
-        "툴킷의 매처보다 약하다(마스크·각도/스케일 탐색·게이트 없이 MatchTemplate 한 번). " +
-        "NormalizedWindow(img, pat, found, target: 랜드마크옵트, marginPx: searchPx, extraDeg: 스윕각) 으로 창을 얻어 " +
-        "MatchPattern 으로 찾고 WindowToImage.Apply 로 좌표를 되돌린다 — 그 길에서는 랜드마크 옵트의 " +
-        "TrainedShape(원형 마스크)와 탐색 설정이 실제로 먹는다. " +
-        "⚠ 옮길 때 호출부 계약이 하나 바뀐다: 이 메서드는 랜드마크 자신의 TrainedAngleDeg 를 안에서 처리했지만, " +
-        "낮은 쪽 NormalizedWindow 오버로드는 그 각을 extraDeg 에 더해 넘겨야 한다(target 을 받는 오버로드는 대신 더해 준다). " +
-        "빠뜨리면 기울여 티칭한 대상에서만 점수가 깎이고 진짜 미검출과 구분되지 않는다. 다음 minor 에서 제거된다.")]
-    public static (double Score, double ExpX, double ExpY, (double X, double Y)[] Found) VerifyLandmark(
-        Mat pre, CvPatternOpt pat, CvPose p, double extraDeg, CvPatternOpt landmark, double searchPx)
-    {
-        using var templ = Cv2.ImDecode(landmark.TemplatePng!, ImreadModes.Grayscale);
-        if (templ.Empty()) return (0, p.FoundX, p.FoundY, []);
-
-        // 발견 포즈(+후보 가산각) 역회전 — 정규화 공간에서는 모든 티칭 특징이 티칭 상대 오프셋 그대로.
-        var dTheta = p.ThetaDeg + extraDeg - pat.TrainedAngleDeg;
-        using var norm = new Mat();
-        using (var m = Cv2.GetRotationMatrix2D(new Point2f((float)p.FoundX, (float)p.FoundY), dTheta, 1.0))
-            Cv2.WarpAffine(pre, norm, m, pre.Size(), InterpolationFlags.Linear, BorderTypes.Constant, Scalar.Black);
-
-        // 티칭 오프셋은 발견 스케일만큼 늘어난다 — 부품이 크게 보이면 랜드마크도 그만큼 멀리 있다.
-        // (<see cref="XformByPose"/> 가 티칭 기하를 옮길 때 쓰는 것과 같은 규약이다. 여기서 빠져 있어서,
-        // 스케일 탐색을 켠 앵커에서는 기대 자리가 오프셋 거리 × |Scale−1| 만큼 밀렸다 — 실측: 오프셋 126px·
-        // Scale 1.15 에서 19px 밀려 <b>있는 랜드마크가 score 0.087</b>, 곧 "없음" 으로 보고됐다.)
-        // ⚠ 남은 한계: 창 위치만 맞추고 템플릿은 런 스케일로 비교한다(정규화 warp 는 배율 1.0 고정) —
-        // 스케일이 1 에서 많이 벗어나면 점수 자체가 낮아지는 것은 그대로다.
-        var expX = p.FoundX + (landmark.TrainedOriginX - pat.TrainedOriginX) * p.Scale;
-        var expY = p.FoundY + (landmark.TrainedOriginY - pat.TrainedOriginY) * p.Scale;
-
-        // 회전 티칭 랜드마크 — 템플릿은 학습각을 편(unrotate) 내용으로 저장되므로 비교 창도 같은 각으로
-        // 펴야 정합한다 (안 펴면 티칭 각도만큼 틀어져 스코어 폭락). 펴는 회전의 모서리 잘림 방지로
-        // 창 여유를 템플릿 대각선분만큼 확장.
-        var rotated = Math.Abs(landmark.TrainedAngleDeg) > 1e-6;
-        var rotPad = rotated
-            ? (int)Math.Ceiling((Math.Sqrt((double)templ.Cols * templ.Cols + templ.Rows * templ.Rows)
-                                 - Math.Min(templ.Cols, templ.Rows)) / 2.0) + 2
-            : 0;
-
-        Rect? roi;
-        if (landmark.UseSearchRegion)
-        {
-            // 티칭한 탐색 사각을 정규화 공간으로 옮긴다 — 학습 원점 대비 상대 위치가 그대로 유지되므로
-            // 패턴 원점만큼 빼고 발견 위치를 더하면 된다.
-            var scx = p.FoundX + (landmark.SearchX + landmark.SearchW / 2.0 - pat.TrainedOriginX) * p.Scale;
-            var scy = p.FoundY + (landmark.SearchY + landmark.SearchH / 2.0 - pat.TrainedOriginY) * p.Scale;
-
-            // 탐색 사각은 학습 영역의 회전을 함께 받는다. 잘라 오는 것은 축 정렬 상자라, 돌아간
-            // 사각을 감싸도록 폭·높이를 키운다 — 창은 바로 아래에서 학습각만큼 다시 펴진다.
-            var radS = landmark.TrainedAngleDeg * Math.PI / 180.0;
-            var absCos = Math.Abs(Math.Cos(radS));
-            var absSin = Math.Abs(Math.Sin(radS));
-            var boundW = landmark.SearchW * absCos + landmark.SearchH * absSin;
-            var boundH = landmark.SearchW * absSin + landmark.SearchH * absCos;
-
-            // 템플릿보다 작으면 매칭이 성립하지 않아 최소한 템플릿 크기는 확보한다.
-            var w = Math.Max(boundW, templ.Cols + rotPad * 2.0);
-            var h = Math.Max(boundH, templ.Rows + rotPad * 2.0);
-            roi = CvImageOps.ClipRect(scx - w / 2.0, scy - h / 2.0, w, h, norm.Cols, norm.Rows);
-        }
-        else
-        {
-            var margin = (int)Math.Max(8, searchPx) + rotPad;
-            roi = CvImageOps.ClipRect(
-                expX - templ.Cols / 2.0 - margin, expY - templ.Rows / 2.0 - margin,
-                templ.Cols + margin * 2.0, templ.Rows + margin * 2.0, norm.Cols, norm.Rows);
-        }
-
-        if (roi is null || roi.Value.Width < templ.Cols || roi.Value.Height < templ.Rows)
-        {
-            // 기대점은 pre 공간으로 돌려준다 — 이 반환도 문서가 약속한 "pre 공간 환산치(표시용)" 계약 안이다.
-            // norm 공간 값을 그대로 내보내면 창이 잘렸을 때, 즉 화면 마커가 가장 필요한 때 엉뚱한 자리에 찍힌다
-            // (실측: 248px 어긋남).
-            var radF = dTheta * Math.PI / 180.0;
-            var fdx = expX - p.FoundX;
-            var fdy = expY - p.FoundY;
-            return (0,
-                p.FoundX + fdx * Math.Cos(radF) - fdy * Math.Sin(radF),
-                p.FoundY + fdx * Math.Sin(radF) + fdy * Math.Cos(radF),
-                []);
-        }
-
-        using var window = norm[roi.Value];
-        Mat cmp = window;
-        Mat? unrot = null;
-        if (rotated)
-        {
-            unrot = new Mat();
-            var rcx = expX - roi.Value.X;   // 기대점의 창 내 좌표 — 회전 중심 (기대 위치 불변 유지)
-            var rcy = expY - roi.Value.Y;
-            using var wm = Cv2.GetRotationMatrix2D(new Point2f((float)rcx, (float)rcy), landmark.TrainedAngleDeg, 1.0);
-            Cv2.WarpAffine(window, unrot, wm, window.Size(), InterpolationFlags.Linear, BorderTypes.Constant, Scalar.Black);
-            cmp = unrot;
-        }
-
-        double maxVal;
-        Point maxLoc;
-        try
-        {
-            using var result = new Mat();
-            Cv2.MatchTemplate(cmp, templ, result, TemplateMatchModes.CCoeffNormed);
-            Cv2.MinMaxLoc(result, out _, out maxVal, out _, out maxLoc);
-        }
-        finally
-        {
-            unrot?.Dispose();
-        }
-
-        // 표시용 역변환 — 기대점은 norm→pre(발견 위치 중심 +dθ 회전), 검색된 템플릿 박스는
-        // cmp(펴진 창)→창(+τ랜드마크 재회전, 기대점 중심)→norm(roi 오프셋)→pre 체인.
-        var rad = dTheta * Math.PI / 180.0;
-        var cos = Math.Cos(rad);
-        var sin = Math.Sin(rad);
-        var radL = (rotated ? landmark.TrainedAngleDeg : 0) * Math.PI / 180.0;
-        var cosL = Math.Cos(radL);
-        var sinL = Math.Sin(radL);
-        var rcx0 = expX - roi.Value.X;
-        var rcy0 = expY - roi.Value.Y;
-
-        (double X, double Y) CmpToPre(double x, double y)
-        {
-            var wx = rcx0 + (x - rcx0) * cosL - (y - rcy0) * sinL;
-            var wy = rcy0 + (x - rcx0) * sinL + (y - rcy0) * cosL;
-            var dx = roi.Value.X + wx - p.FoundX;
-            var dy = roi.Value.Y + wy - p.FoundY;
-            return (p.FoundX + dx * cos - dy * sin, p.FoundY + dx * sin + dy * cos);
-        }
-
-        var found = new[]
-        {
-            CmpToPre(maxLoc.X, maxLoc.Y),
-            CmpToPre(maxLoc.X + templ.Cols, maxLoc.Y),
-            CmpToPre(maxLoc.X + templ.Cols, maxLoc.Y + templ.Rows),
-            CmpToPre(maxLoc.X, maxLoc.Y + templ.Rows),
-        };
-        var ddx = expX - p.FoundX;
-        var ddy = expY - p.FoundY;
-        return (maxVal, p.FoundX + ddx * cos - ddy * sin, p.FoundY + ddx * sin + ddy * cos, found);
     }
 
 }
