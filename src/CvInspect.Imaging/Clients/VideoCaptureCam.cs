@@ -124,7 +124,17 @@ public sealed class VideoCaptureCam : ICam
             if (!TryReadFrame(out frame))
                 WriteLog(CvLogLevel.Warning, "frame read failed — the single grab produced no frame.");
         }
-        if (frame != null) FrameAcquired?.Invoke(this, frame);
+        if (frame != null) Publish(frame);
+    }
+
+    /// <summary>구독자에게 프레임을 넘긴다 — <b>구독자가 던져도 우리가 하는 일은 달라지지 않는다</b>(ICam 계약).
+    /// 감싸지 않으면 라이브 루프에서는 예외가 루프 테두리까지 올라가 <b>취득이 통째로 끝난다</b>. 로그에는
+    /// 루프가 죽었다고만 남아, 원인이 호스트 핸들러라는 것이 보이지 않는다.
+    /// 삼키지는 않는다 — 남의 결함이지만 흔적은 우리 쪽에만 남는다.</summary>
+    private void Publish(CamFrame frame)
+    {
+        try { FrameAcquired?.Invoke(this, frame); }
+        catch (Exception ex) { WriteLog(CvLogLevel.Error, "a FrameAcquired subscriber threw.", ex); }
     }
 
     public void StartContinuous()
@@ -259,7 +269,7 @@ public sealed class VideoCaptureCam : ICam
                 if (token.IsCancellationRequested || _cap is null) break;
                 emitted = TryReadFrame(out frame);
             }
-            if (frame != null) FrameAcquired?.Invoke(this, frame);
+            if (frame != null) Publish(frame);
 
             if (!emitted)
             {

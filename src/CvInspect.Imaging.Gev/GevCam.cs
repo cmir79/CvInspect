@@ -747,7 +747,12 @@ public sealed class GevCam : ICam
 
         var cam = Convert(frame);
         if (cam is null) return;
-        FrameAcquired?.Invoke(this, ApplyMountXform(cam));
+        var ready = ApplyMountXform(cam);
+        // 발행은 변환과 갈라서 감싼다. 안 가르면 구독자가 던진 것이 부르는 쪽 catch 에서 "frame conversion
+        // failed" 로 적힌다 — 우리 변환은 멀쩡한데 남의 핸들러가 원인이라는 사실이 로그에서 지워진다.
+        // 그리고 구독자 예외가 카메라가 하는 일을 바꾸지 않는다(ICam 계약).
+        try { FrameAcquired?.Invoke(this, ready); }
+        catch (Exception ex) { WriteLog(CvLogLevel.Error, "a FrameAcquired subscriber threw.", ex); }
     }
 
     /// <summary>장착 방향 보정(<see cref="CamOpt.Flip"/>·<see cref="CamOpt.Rotation"/>) — 취득 계약이

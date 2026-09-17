@@ -710,6 +710,34 @@ public class SmokeTests
             Check(made.Count == 2, $"one death is one rebuild whatever the order (instances={made.Count})");
         }
 
+        // 10-10e) 구독자가 던져도 카메라가 하는 일은 달라지지 않는다.
+        //         재연결 성공 뒤의 연결 통지는 재연결 루프에서 나간다. 감싸지 않으면 구독자 예외가 루프
+        //         바깥 catch 까지 올라가 "재연결이 실패했다" 로 읽히고(실제로는 성공했는데), 그 길에
+        //         연속취득 재개가 통째로 건너뛰어진다 — 연결은 살아났는데 취득은 안 돈다. 그리고 로그에는
+        //         호스트 핸들러가 원인이라는 흔적이 없다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            cam.Open();
+            cam.StartContinuous();
+            cam.ConnectionChanged += (_, e) => { if (e.IsConnected) throw new InvalidOperationException("subscriber blew up"); };
+
+            var lines = new List<string>();
+            var prevSink = CvLog.Sink;
+            try
+            {
+                CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add($"{lvl}|{msg}"); };
+                made[0].LoseConnection();
+                Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
+                    $"continuous grab still resumes when a ConnectionChanged subscriber throws (grabbing={made.ElementAtOrDefault(1)?.IsGrabbing})");
+                lock (lines) Check(lines.Any(l => l.Contains("subscriber threw")),
+                    $"the throwing subscriber is named in the log: [{string.Join(" / ", lines)}]");
+                lock (lines) Check(!lines.Any(l => l.Contains("reconnect loop failed")),
+                    $"a subscriber fault is not reported as our own reconnect failure: [{string.Join(" / ", lines)}]");
+            }
+            finally { CvLog.Sink = prevSink; }
+        }
+
         // 10-10b) 대조군 — 사용자가 끈 취득은 되살아나지 않는다. 같은 통지가 오지만 의도가 내려가 있다.
         //         이것이 없으면 위 항은 "무슨 일이 있어도 다시 켠다" 와 구분되지 않는다.
         {

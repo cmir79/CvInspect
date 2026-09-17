@@ -58,7 +58,9 @@ public sealed class ReconnectingCam : ICam
     {
         _factory = factory ?? throw new ArgumentNullException(nameof(factory));
         _opt = opt ?? new CamReconnectOpt();
-        _onInnerFrame = (s, f) => { if (IsCurrent(s)) FrameAcquired?.Invoke(this, f); };
+        // 프레임 중계도 감싼다 — 여기는 안쪽 구현의 발행 스레드다. 구독자가 던지면 그 예외가 안쪽으로
+        // 돌아가고, 안쪽은 그것을 자기 실패로 읽는다(실제로 GevCam 은 "frame conversion failed" 로 적었다).
+        _onInnerFrame = (s, f) => { if (IsCurrent(s)) SafeRaise(() => FrameAcquired?.Invoke(this, f), nameof(FrameAcquired)); };
         _onInnerConnection = (s, e) => { if (!e.IsConnected) OnInnerLost(s); };
         // 시작 통지는 중계하지 않는다 — 시작은 우리가 부른 자리에서 이미 낸다. 여기서 한 번 더 받으면
         // 재개 도중 들어온 정지를 "나중에 온 명령이 이긴다" 로 처리하는 길에 켜짐/꺼짐 한 쌍이 덧난다.
@@ -335,8 +337,8 @@ public sealed class ReconnectingCam : ICam
                 ScheduleReconnectLocked();
             }
         }
-        if (lostGrab) GrabbingChanged?.Invoke(this, false);
-        if (lostConn) ConnectionChanged?.Invoke(this, new ConnArgs(false));
+        if (lostGrab) SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
+        if (lostConn) SafeRaise(() => ConnectionChanged?.Invoke(this, new ConnArgs(false)), nameof(ConnectionChanged));
     }
 
     /// <summary>
@@ -540,7 +542,7 @@ public sealed class ReconnectingCam : ICam
             if (_connected == connected) return;
             _connected = connected;
         }
-        ConnectionChanged?.Invoke(this, new ConnArgs(connected));
+        SafeRaise(() => ConnectionChanged?.Invoke(this, new ConnArgs(connected)), nameof(ConnectionChanged));
     }
 
     private void RaiseGrabbing(bool grabbing)
@@ -550,7 +552,27 @@ public sealed class ReconnectingCam : ICam
             if (_grabbing == grabbing) return;
             _grabbing = grabbing;
         }
-        GrabbingChanged?.Invoke(this, grabbing);
+        SafeRaise(() => GrabbingChanged?.Invoke(this, grabbing), nameof(GrabbingChanged));
+    }
+
+    /// <summary>
+    /// 구독자에게 통지한다 — <b>구독자가 던져도 우리가 하는 일은 달라지지 않는다.</b>
+    ///
+    /// 감싸지 않으면 두 가지로 샌다. 통지가 <b>재연결 루프</b>에서 나가는 자리가 있어서(재연결 성공 뒤의
+    /// 연결·취득 통지), 구독자 예외가 루프 바깥 catch 까지 올라가 <b>"재연결이 실패했다" 로 읽힌다</b> —
+    /// 실제로는 성공했는데. 그리고 그 예외가 올라가는 길에 <b>연속취득 재개가 통째로 건너뛰어진다</b>:
+    /// 연결은 살아났는데 취득은 안 돌고, 로그에는 호스트 핸들러가 원인이라는 흔적이 없다.
+    ///
+    /// 예외를 받을 사람이 없는 스레드도 있고(안쪽 구현의 배경 스레드), 받을 사람은 있는데 <b>오해하는</b>
+    /// 자리도 있다. 뒤엣것이 더 안 보인다 — catch 가 있으니 훑을 때 그냥 지나가고, 그 catch 가 <b>무엇으로
+    /// 읽는지</b>까지 봐야 나온다.
+    ///
+    /// 삼키지는 않는다 — 남의 결함이지만 흔적은 우리 쪽에만 남는다.
+    /// </summary>
+    private void SafeRaise(Action raise, string what)
+    {
+        try { raise(); }
+        catch (Exception ex) { CvLog.Publish(CvLogLevel.Error, LogSource, $"[{Name}] a {what} subscriber threw.", ex); }
     }
 
     private void ThrowIfDisposed()
