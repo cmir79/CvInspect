@@ -239,7 +239,11 @@ public sealed class VirtualCam : ICam
     {
         // 합성/파일 공급 모두 실 카메라와 동일 파이프라인 유지 — Flip/Rotation 적용 포함
         using var mat = TryLoadFolderFrame() ?? GenerateFrame();
-        FrameAcquired?.Invoke(this, Materialize(mat));
+        var frame = Materialize(mat);
+        // 발행은 생성과 갈라서 감싼다 — 안 가르면 구독자가 던진 것이 부르는 쪽 catch 에서 "emit failed" 로
+        // 적혀, 우리 생성은 멀쩡한데 남의 핸들러가 원인이라는 사실이 로그에서 지워진다(ICam 계약).
+        try { FrameAcquired?.Invoke(this, frame); }
+        catch (Exception ex) { WriteLog(CvLogLevel.Error, "a FrameAcquired subscriber threw.", ex); }
     }
 
     /// <summary>방향 보정 적용 후 GC 소유 <see cref="CamFrame"/> 으로 실체화 — 발행 프레임은 수명 계약이 없다.</summary>

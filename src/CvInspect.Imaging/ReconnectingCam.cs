@@ -8,6 +8,9 @@ namespace CvInspect.Imaging;
 /// 계속 발행하므로 한 번만 구독하면 된다.
 ///
 /// 되살리는 것 — 연결, 끊기기 전의 <b>연속취득 의도</b>, 런타임에 지정한 <b>노출 시간</b>.
+/// 되살리는 계기도 둘이다: 연결 상실과, <b>연결은 멀쩡한데 취득만 죽은 경우</b>(수신 스트림이 접히는 길).
+/// 뒤엣것을 안 들으면 의도만 true 로 남아 아무도 다시 켜지 않는다 — 연결은 정상이라고 답하는데 프레임이
+/// 영영 오지 않는다.
 /// 되살리지 않는 것 — 사용자가 <see cref="Close"/> 나 <see cref="StopContinuous"/> 로 청산한 의도.
 /// <see cref="Close"/> 이후에는 늦게 도착한 상실 통지도, 이미 예약된 백오프 만료도 카메라를 다시 열지 못한다
 /// (정비하려고 끈 장치가 저절로 살아나면 안 된다). 게이트는 <see cref="Open"/> 만 푼다.
@@ -33,6 +36,7 @@ public sealed class ReconnectingCam : ICam
     // 내부 인스턴스 이벤트 중계 — 구독과 해제가 같은 델리게이트 참조여야 하므로 생성자에서 한 번만 만든다.
     private readonly EventHandler<CamFrame> _onInnerFrame;
     private readonly EventHandler<ConnArgs> _onInnerConnection;
+    private readonly EventHandler<bool> _onInnerGrabbing;
 
     private ICam? _inner;
     private bool _closed = true;          // 명시적 Close 게이트 (최초 Open 전에도 닫힘)
@@ -46,6 +50,7 @@ public sealed class ReconnectingCam : ICam
     private Task? _reconnectTask;
     private CancellationTokenSource? _reconnectCts;
     private bool _reconnectPending;       // 루프가 물러나는 창에 도착한 요청 — 소실되면 영구 미연결이 된다
+    private object? _lostInner;           // 재연결을 이미 건 죽은 인스턴스 — 같은 죽음의 두 통지를 두 요청으로 세지 않게
 
     /// <param name="factory">내부 카메라 생성기. 재연결 때마다 <b>새 인스턴스</b>를 만들어 돌려줘야 한다.</param>
     /// <param name="opt">재시도 정책(생략 시 기본 사다리).</param>
@@ -53,8 +58,13 @@ public sealed class ReconnectingCam : ICam
     {
         _factory = factory ?? throw new ArgumentNullException(nameof(factory));
         _opt = opt ?? new CamReconnectOpt();
-        _onInnerFrame = (s, f) => { if (IsCurrent(s)) FrameAcquired?.Invoke(this, f); };
+        // 프레임 중계도 감싼다 — 여기는 안쪽 구현의 발행 스레드다. 구독자가 던지면 그 예외가 안쪽으로
+        // 돌아가고, 안쪽은 그것을 자기 실패로 읽는다(실제로 GevCam 은 "frame conversion failed" 로 적었다).
+        _onInnerFrame = (s, f) => { if (IsCurrent(s)) SafeRaise(() => FrameAcquired?.Invoke(this, f), nameof(FrameAcquired)); };
         _onInnerConnection = (s, e) => { if (!e.IsConnected) OnInnerLost(s); };
+        // 시작 통지는 중계하지 않는다 — 시작은 우리가 부른 자리에서 이미 낸다. 여기서 한 번 더 받으면
+        // 재개 도중 들어온 정지를 "나중에 온 명령이 이긴다" 로 처리하는 길에 켜짐/꺼짐 한 쌍이 덧난다.
+        _onInnerGrabbing = (s, on) => { if (!on) OnInnerGrabStopped(s); };
     }
 
     /// <summary>표시 이름 — 내부 인스턴스가 없는 구간에서도 답해야 하므로 마지막 값을 기억한다.</summary>
@@ -251,6 +261,7 @@ public sealed class ReconnectingCam : ICam
             cam = _factory() ?? throw new InvalidOperationException("Camera factory returned null.");
             cam.FrameAcquired += _onInnerFrame;
             cam.ConnectionChanged += _onInnerConnection;
+            cam.GrabbingChanged += _onInnerGrabbing;
             cam.Open();
 
             double? exposure;
@@ -272,6 +283,7 @@ public sealed class ReconnectingCam : ICam
             {
                 cam.FrameAcquired -= _onInnerFrame;
                 cam.ConnectionChanged -= _onInnerConnection;
+                cam.GrabbingChanged -= _onInnerGrabbing;
                 Try(() => cam.Close());
                 Try(() => cam.Dispose());     // 반쯤 열린 인스턴스가 장치를 점유하면 이후 재시도가 전부 실패한다
             }
@@ -289,6 +301,7 @@ public sealed class ReconnectingCam : ICam
         {
             cam = _inner;
             _inner = null;
+            _lostInner = null;   // 시체를 치웠다 — 다음 인스턴스의 죽음은 새 사건이다
             _connected = false;
             _grabbing = false;
         }
@@ -296,6 +309,7 @@ public sealed class ReconnectingCam : ICam
 
         cam.FrameAcquired -= _onInnerFrame;
         cam.ConnectionChanged -= _onInnerConnection;
+        cam.GrabbingChanged -= _onInnerGrabbing;   // 바로 밑에서 우리가 세우는 것이 '스스로 멈췄다' 로 되읽히지 않게
         Try(() => cam.StopContinuous());
         Try(() => cam.Close());
         Try(() => cam.Dispose());
@@ -313,10 +327,58 @@ public sealed class ReconnectingCam : ICam
             if (!ReferenceEquals(_inner, sender)) return;        // 폐기된 인스턴스의 유령 통지
             if (_connected) { _connected = false; lostConn = true; }
             if (_grabbing) { _grabbing = false; lostGrab = true; }
-            ScheduleReconnectLocked();
+            // 같은 인스턴스가 죽는 사건 하나에 통지가 여러 번 올 수 있다(취득 정지 + 연결 상실). 요청을
+            // 그 수만큼 걸면 뒤엣것이 _reconnectPending 으로 남아, 첫 라운드가 세션을 되살린 직후 둘째
+            // 라운드가 그 멀쩡한 세션을 다시 뜯는다. 상위에는 false 없이 연결·취득이 두 번 오고 그사이
+            // 프레임이 끊긴다. 통지 순서는 구현마다 다를 수 있으므로 순서가 아니라 <b>죽은 인스턴스</b>로 센다.
+            if (!ReferenceEquals(_lostInner, sender))
+            {
+                _lostInner = sender;
+                ScheduleReconnectLocked();
+            }
         }
-        if (lostGrab) GrabbingChanged?.Invoke(this, false);
-        if (lostConn) ConnectionChanged?.Invoke(this, new ConnArgs(false));
+        if (lostGrab) SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
+        if (lostConn) SafeRaise(() => ConnectionChanged?.Invoke(this, new ConnArgs(false)), nameof(ConnectionChanged));
+    }
+
+    /// <summary>
+    /// 내부에서 온 "연속 취득이 멈췄다" 통지.
+    ///
+    /// <b>연결이 살아 있는데 취득만 죽는 길이 있다</b> — 수신 스트림이 닫히거나 수신이 실패하면 구현은
+    /// 연결을 잃지 않은 채 취득을 접고 이 통지를 낸다(<see cref="ICam.GrabbingChanged"/> 가 "사용자가
+    /// 시켜서만 나지 않는다" 고 적어 둔 그 경우다). 그 신호를 안 들으면 <b>우리 의도만 true 로 남아
+    /// 아무도 다시 켜지 않는다</b> — 데코레이터는 연결이 멀쩡하다고 답하고, 프레임은 영영 오지 않으며,
+    /// 상위는 기다리는 것 말고 할 수 있는 일이 없다. 연결 상실만 듣던 때의 구멍이다.
+    ///
+    /// 되살리는 방법은 <b>세션 교체</b>다(<see cref="OnInnerLost"/> 에 위임). 취득만 다시 걸지 않는 이유는
+    /// 둘이다 — ① 취득이 스스로 죽은 인스턴스가 성하다는 보장이 없다 ② 교체 경로에는 백오프 사다리와
+    /// 청산·재장착·의도 복원이 이미 다 들어 있다. 교체 구간에는 연결도 실제로 끊기므로 통지도 그대로 정직하다.
+    ///
+    /// <b>우리가 멈춘 것이면 표시만 맞춘다.</b> 의도가 이미 내려가 있으면(사용자의 <see cref="StopContinuous"/>)
+    /// 되살릴 것이 없다 — 그때 되살리면 사용자가 끈 취득이 부활한다.
+    /// </summary>
+    private void OnInnerGrabStopped(object? sender)
+    {
+        bool resume;
+        lock (_sync)
+        {
+            if (_disposed || _closed) return;                    // 게이트 — 정비 중 부활 금지
+            if (!ReferenceEquals(_inner, sender)) return;        // 폐기된 인스턴스의 유령 통지
+            // 연결까지 잃은 것이면 이 통지는 그 사건의 앞 줄일 뿐이다 — 되살리기는 연결 상실 경로가
+            // 맡는다(곧 이어 온다). 여기서 같이 나서면 요청이 두 건이 되어 방금 살아난 세션을 다시 뜯고,
+            // 로그에는 제어 상실이 "청하지도 않았는데 멈췄다" 로 남아 원인을 엉뚱한 데로 보낸다.
+            if (sender is ICam { IsConnected: false }) return;
+            resume = _wantContinuous;
+        }
+        if (!resume)
+        {
+            // 전이에서만 나가므로 StopContinuous 가 이미 낸 통지와 겹치지 않는다.
+            RaiseGrabbing(false);
+            return;
+        }
+        CvLog.Publish(CvLogLevel.Warning, LogSource,
+            $"[{Name}] the camera stopped grabbing without being asked — rebuilding the session to resume it.");
+        OnInnerLost(sender);
     }
 
     /// <summary>재연결 루프 기동. 이미 도는 루프가 있으면 새로 만들지 않고 그 루프에 위임한다.
@@ -480,7 +542,7 @@ public sealed class ReconnectingCam : ICam
             if (_connected == connected) return;
             _connected = connected;
         }
-        ConnectionChanged?.Invoke(this, new ConnArgs(connected));
+        SafeRaise(() => ConnectionChanged?.Invoke(this, new ConnArgs(connected)), nameof(ConnectionChanged));
     }
 
     private void RaiseGrabbing(bool grabbing)
@@ -490,7 +552,27 @@ public sealed class ReconnectingCam : ICam
             if (_grabbing == grabbing) return;
             _grabbing = grabbing;
         }
-        GrabbingChanged?.Invoke(this, grabbing);
+        SafeRaise(() => GrabbingChanged?.Invoke(this, grabbing), nameof(GrabbingChanged));
+    }
+
+    /// <summary>
+    /// 구독자에게 통지한다 — <b>구독자가 던져도 우리가 하는 일은 달라지지 않는다.</b>
+    ///
+    /// 감싸지 않으면 두 가지로 샌다. 통지가 <b>재연결 루프</b>에서 나가는 자리가 있어서(재연결 성공 뒤의
+    /// 연결·취득 통지), 구독자 예외가 루프 바깥 catch 까지 올라가 <b>"재연결이 실패했다" 로 읽힌다</b> —
+    /// 실제로는 성공했는데. 그리고 그 예외가 올라가는 길에 <b>연속취득 재개가 통째로 건너뛰어진다</b>:
+    /// 연결은 살아났는데 취득은 안 돌고, 로그에는 호스트 핸들러가 원인이라는 흔적이 없다.
+    ///
+    /// 예외를 받을 사람이 없는 스레드도 있고(안쪽 구현의 배경 스레드), 받을 사람은 있는데 <b>오해하는</b>
+    /// 자리도 있다. 뒤엣것이 더 안 보인다 — catch 가 있으니 훑을 때 그냥 지나가고, 그 catch 가 <b>무엇으로
+    /// 읽는지</b>까지 봐야 나온다.
+    ///
+    /// 삼키지는 않는다 — 남의 결함이지만 흔적은 우리 쪽에만 남는다.
+    /// </summary>
+    private void SafeRaise(Action raise, string what)
+    {
+        try { raise(); }
+        catch (Exception ex) { CvLog.Publish(CvLogLevel.Error, LogSource, $"[{Name}] a {what} subscriber threw.", ex); }
     }
 
     private void ThrowIfDisposed()

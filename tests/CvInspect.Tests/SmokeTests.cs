@@ -643,6 +643,113 @@ public class SmokeTests
             try { cam.Open(); } catch (ObjectDisposedException) { disposedThrew = true; }
             Check(disposedThrew, "disposed decorator rejects further use");
         }
+
+        // 10-10) 연결은 멀쩡한데 취득만 죽으면 세션을 갈아 끼워 되살린다.
+        //        안쪽 구현은 수신 스트림이 접히면 연결을 잃지 않은 채 취득만 접고 GrabbingChanged(false) 만 낸다.
+        //        그 신호를 안 들으면 의도만 true 로 남아 아무도 다시 켜지 않는다 — 연결은 정상이라고 답하는데
+        //        프레임이 영영 안 온다. 상위가 기다리는 것 말고 할 수 있는 일이 없는 상태다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var grab = new List<bool>();
+            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+            cam.Open();
+            cam.StartContinuous();
+            Check(cam.IsGrabbing && made.Count == 1, "grabbing before the stream dies");
+
+            made[0].StopGrabbingOnItsOwn();                       // 연결 상실은 없다 — 취득만 접혔다
+            Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
+                $"acquisition that dies on its own is resumed on a fresh session (instances={made.Count}, grabbing={made.ElementAtOrDefault(1)?.IsGrabbing})");
+            Check(Wait(() => cam.IsGrabbing), "the decorator reports grabbing again after the rebuild");
+            lock (grab) Check(grab.Count >= 3 && grab[0] && !grab[1] && grab[^1],
+                $"subscribers see the stop before the resume: [{string.Join(",", grab)}]");
+        }
+
+        // 10-10c) 제어 상실은 한 번만 되살린다 — 두 통지가 오지만 세션 교체는 한 번이다.
+        //         구현은 제어를 잃으면 GrabbingChanged(false) 와 ConnectionChanged(false) 를 잇달아 낸다.
+        //         둘을 각각 "되살려야 할 사건" 으로 읽으면 교체가 두 번 걸려, 방금 살아난 멀쩡한 세션을
+        //         다시 뜯는다(상위에는 false 없이 connected/grabbing 이 두 번 오고 그 사이 프레임이 끊긴다).
+        //         그리고 그 줄은 제어 상실이므로 "청하지도 않았는데 멈췄다" 로 남아서도 안 된다 — 원인을
+        //         엉뚱한 데로 보낸다.
+        {
+            // 사다리를 간격보다 길게 잡는 것이 이 항의 조건이다 — 둘째 통지가 첫 라운드의 백오프 대기 중에
+            // 닿아야 아직 교체 전이라 유령 통지로 걸러지지 않고, 그래야 '요청 두 건' 이 실제로 겹친다.
+            var made = new List<FakeCam>();
+            var slowLadder = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 200 }, ShutdownWaitMs = 1000 };
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slowLadder);
+            cam.Open();
+            cam.StartContinuous();
+
+            var lines = new List<string>();
+            var prevSink = CvLog.Sink;
+            try
+            {
+                CvLog.Sink = (_, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add(msg); };
+                made[0].LoseConnection(gapMs: 20);          // 실제 순서 그대로 — 취득 통지가 먼저, 연결 통지가 뒤
+                Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "control loss is recovered");
+                Thread.Sleep(600);                          // 두 번째 라운드가 걸렸다면 이 안에 돈다(백오프 200ms)
+                Check(made.Count == 2, $"one control loss rebuilds the session once (instances={made.Count})");
+                lock (lines) Check(!lines.Any(l => l.Contains("without being asked")),
+                    $"a control loss is not reported as an unrequested stop: [{string.Join(" / ", lines)}]");
+            }
+            finally { CvLog.Sink = prevSink; }
+        }
+
+        // 10-10d) 통지 순서가 달라도 교체는 한 번이다. 상태를 나중에 내리는 구현에서는 취득 통지 시점에
+        //         아직 연결이 살아 있어 보이므로 10-10c 의 가드가 듣지 않는다. 그때도 한 죽음은 한 사건이다 —
+        //         세는 기준을 통지 순서가 아니라 죽은 인스턴스로 두면 구현마다 갈리지 않는다.
+        {
+            var made = new List<FakeCam>();
+            var slowLadder = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 200 }, ShutdownWaitMs = 1000 };
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slowLadder);
+            cam.Open();
+            cam.StartContinuous();
+            made[0].LoseConnectionAnnouncingGrabFirst(gapMs: 20);
+            Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "recovered regardless of notification order");
+            Thread.Sleep(600);
+            Check(made.Count == 2, $"one death is one rebuild whatever the order (instances={made.Count})");
+        }
+
+        // 10-10e) 구독자가 던져도 카메라가 하는 일은 달라지지 않는다.
+        //         재연결 성공 뒤의 연결 통지는 재연결 루프에서 나간다. 감싸지 않으면 구독자 예외가 루프
+        //         바깥 catch 까지 올라가 "재연결이 실패했다" 로 읽히고(실제로는 성공했는데), 그 길에
+        //         연속취득 재개가 통째로 건너뛰어진다 — 연결은 살아났는데 취득은 안 돈다. 그리고 로그에는
+        //         호스트 핸들러가 원인이라는 흔적이 없다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            cam.Open();
+            cam.StartContinuous();
+            cam.ConnectionChanged += (_, e) => { if (e.IsConnected) throw new InvalidOperationException("subscriber blew up"); };
+
+            var lines = new List<string>();
+            var prevSink = CvLog.Sink;
+            try
+            {
+                CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add($"{lvl}|{msg}"); };
+                made[0].LoseConnection();
+                Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
+                    $"continuous grab still resumes when a ConnectionChanged subscriber throws (grabbing={made.ElementAtOrDefault(1)?.IsGrabbing})");
+                lock (lines) Check(lines.Any(l => l.Contains("subscriber threw")),
+                    $"the throwing subscriber is named in the log: [{string.Join(" / ", lines)}]");
+                lock (lines) Check(!lines.Any(l => l.Contains("reconnect loop failed")),
+                    $"a subscriber fault is not reported as our own reconnect failure: [{string.Join(" / ", lines)}]");
+            }
+            finally { CvLog.Sink = prevSink; }
+        }
+
+        // 10-10b) 대조군 — 사용자가 끈 취득은 되살아나지 않는다. 같은 통지가 오지만 의도가 내려가 있다.
+        //         이것이 없으면 위 항은 "무슨 일이 있어도 다시 켠다" 와 구분되지 않는다.
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            cam.Open();
+            cam.StartContinuous();
+            cam.StopContinuous();                                 // 의도를 내린다 — 안쪽도 멈추며 같은 통지를 낸다
+            Thread.Sleep(80);
+            Check(made.Count == 1 && !cam.IsGrabbing,
+                $"a stop the user asked for is not undone (instances={made.Count}, grabbing={cam.IsGrabbing})");
+        }
     }
     }
 
