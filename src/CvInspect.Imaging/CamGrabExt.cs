@@ -40,6 +40,8 @@ public static class CamGrabExt
             // 그대로 부르면 이 메서드가 비동기인 의미가 없으므로 풀 스레드로 옮긴다. 옮기는 김에
             // "UI 스레드에서 부르면 동기 마샬링이 영영 안 돌아온다" 는 그쪽 주의도 함께 비켜간다.
             var grab = Task.Run(cam.GrabOne, ct);
+            // 시한 시계는 **여기서** 출발한다. 그랩이 끝난 뒤부터 다시 세면 부른 쪽이 준 상한이 실제로는
+            // "그랩 시간 + 시한" 이 되어 약속을 말없이 넘는다 — 아래 둘째 대기도 이 같은 객체를 다시 쓴다.
             var deadline = Task.Delay(timeout, ct);
 
             var first = await Task.WhenAny(tcs.Task, grab, deadline).ConfigureAwait(false);

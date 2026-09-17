@@ -63,8 +63,12 @@ if (frame is null) { /* nothing arrived in time */ }
 else using (var mat = frame.AsMat()) { /* inspect */ }
 ```
 
+`GrabFrameAsync` is an extension method, so it only appears on `ICam` when `CvInspect.Imaging` is
+imported — code that spells every type out in full will not see it without a `using`.
+
 The frame **also goes out on `FrameAcquired`** — it is the same acquisition, and a display already
-subscribed should not miss this one frame.
+subscribed should not miss this one frame. What you get back is that very instance, not merely
+some frame that arrived around the same time.
 
 **`null` versus an exception is the contract here.** `null` means *no frame, and no reason to give*:
 the timeout expired, or the implementation can never answer and has already logged why (`DeadCam`).

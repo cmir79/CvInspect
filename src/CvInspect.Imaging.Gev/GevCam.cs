@@ -527,6 +527,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
         var nodes = _nodes!;
 
         // 새로 찍기 전에 남은 것을 버린다 — 안 버리면 이 그랩이 옛 프레임을 가져간다.
+        // ⚠ **이 줄은 청소가 아니라 하중을 받는다.** 아래 번호 검사와 함께 "늦게 도착한 옛 장" 을 막는
+        // 두 겹 중 앞쪽이고, 실제로는 이쪽이 대부분을 막는다. 형제 저장소가 같은 구조에서 실측했다 —
+        // 시한이 만료된 취득이 살아 있다가(만료 직후 대기 1건) 다음 그랩의 비우기를 지나며 사라졌고,
+        // 그래서 뒤쪽 검사가 걸린 횟수가 0 이었다. 성능을 이유로 걷어내면 뒤쪽 검사만 남는다.
         if (DrainStream(stream, out var drainedUpTo) is var dropped and > 0)
             WriteLog(CvLogLevel.Debug,
                 $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");

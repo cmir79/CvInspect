@@ -767,9 +767,13 @@ public class SmokeTests
             using var cam = new FakeCam();
             cam.Open();
             var alsoPublished = 0;
-            cam.FrameAcquired += (_, _) => Interlocked.Increment(ref alsoPublished);
+            CvInspect.Imaging.CamFrame? published = null;
+            cam.FrameAcquired += (_, f) => { published = f; Interlocked.Increment(ref alsoPublished); };
             var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
-            Check(frame is not null, "the default path returns the frame the grab published");
+            // ⚠ "null 이 아니다" 로는 부족하다 — "아무 장이나 하나 받았다" 와 안 갈린다. 돌려받은 것이
+            //   그 호출 동안 발행된 **바로 그 인스턴스**인지를 본다(형제 저장소가 쓴 기준을 가져왔다).
+            Check(ReferenceEquals(frame, published),
+                "the returned frame is the very instance the grab published, not merely some frame");
             Check(alsoPublished == 1, $"the frame still goes out on FrameAcquired (count={alsoPublished})");
             Check(cam.GrabCalls == 1, $"exactly one GrabOne per call (calls={cam.GrabCalls})");
         }
@@ -825,6 +829,20 @@ public class SmokeTests
             sw.Stop();
             Check(frame is null, "DeadCam yields null rather than throwing (same reason GrabOne does not throw)");
             Check(sw.ElapsedMilliseconds < 1000, $"and it answers at once instead of burning the timeout ({sw.ElapsedMilliseconds}ms)");
+        }
+
+        // 10-G-3d) **시한은 부른 순간부터 센다** — 그랩이 끝난 뒤부터 다시 세면 부른 쪽이 준 상한이
+        //          실제로는 "그랩 시간 + 시한" 이 되어 약속을 말없이 넘는다. 형제 저장소가 자기 구현에서
+        //          그 자리를 잡아 알려 왔고, 이쪽은 맞게 되어 있었다 — 리팩터가 조용히 깨뜨릴 자리라 못 박는다.
+        {
+            using var cam = new FakeCam { GrabDelayMs = 150, GrabPublishesNothing = true };
+            cam.Open();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(250));
+            sw.Stop();
+            Check(sw.ElapsedMilliseconds < 350,
+                $"the deadline runs from the call, not from when the grab returned ({sw.ElapsedMilliseconds}ms; " +
+                "a restarted clock would take grab 150ms + timeout 250ms)");
         }
 
         // 10-G-4) 시한 만료도 null 이다 — 사유 없이 장이 없었다는 뜻으로 같다.
