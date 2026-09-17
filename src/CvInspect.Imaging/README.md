@@ -49,6 +49,39 @@ cam.Open();
 cam.StartContinuous();
 ```
 
+## One frame, awaited
+
+`GrabOne()` publishes through `FrameAcquired` and nothing else, so taking a single frame means
+subscribing, calling, waiting and unsubscribing. Every consumer wrote that by hand, which is a sign
+the library was missing something. `GrabFrameAsync` does it for you:
+
+```csharp
+using CvInspect.Imaging;
+
+var frame = await cam.GrabFrameAsync(TimeSpan.FromSeconds(2));
+if (frame is null) { /* nothing arrived in time */ }
+else using (var mat = frame.AsMat()) { /* inspect */ }
+```
+
+The frame **also goes out on `FrameAcquired`** — it is the same acquisition, and a display already
+subscribed should not miss this one frame.
+
+**`null` versus an exception is the contract here.** `null` means *no frame, and no reason to give*:
+the timeout expired, or the implementation can never answer and has already logged why (`DeadCam`).
+Anything that *should* be able to answer but cannot — closed, disposed, control lost, continuous
+acquisition running, another grab already waiting — **throws**, exactly as `GrabOne` does. Folding
+those into `null` would collapse the reason channel and leave the caller waiting for a frame that is
+never coming.
+
+The `timeout` argument wins over whatever the implementation has configured, because the call site
+knows more than the configuration did. Pass `Timeout.InfiniteTimeSpan` to defer to the
+implementation's own deadline.
+
+Backends where a frame arrives on someone else's thread should implement **`ICamGrabAsync`**; the
+extension then calls that instead of the generic path. The generic path cannot tell *this* grab's
+frame from one that merely arrived at the same moment — only the implementation, holding the device's
+own pairing evidence (frame id, ticket), can. `GevCam` and `ReconnectingCam` implement it.
+
 ## Frame lifetime
 
 `CamFrame` is a GC-owned `byte[]` holder — **there is no lifetime contract**: keep it,

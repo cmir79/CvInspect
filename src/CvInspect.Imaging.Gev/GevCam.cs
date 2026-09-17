@@ -16,7 +16,7 @@ namespace CvInspect.Imaging.Gev;
 /// 라이브러리가 모든 await 를 컨텍스트 없이 이어 붙이므로 UI 스레드에서 불러도 교착하지 않지만, 그 스레드를
 /// 붙잡기는 하므로 호스트는 취득 조작을 UI 스레드에서 하지 않는 편이 낫다.
 /// </summary>
-public sealed class GevCam : ICam
+public sealed class GevCam : ICam, ICamGrabAsync
 {
     private const string LogSource = nameof(GevCam);
 
@@ -445,7 +445,22 @@ public sealed class GevCam : ICam
 
     // === 조작 ===
 
-    public void GrabOne()
+    public void GrabOne() => RunGrab(null, CancellationToken.None);
+
+    /// <summary>한 장을 찍어 돌려준다 — <see cref="ICamGrabAsync"/>. 발행은 그대로 일어나므로
+    /// <see cref="FrameAcquired"/> 구독자도 이 장을 받는다(같은 취득이다).
+    ///
+    /// <b>이 백엔드가 표식을 다는 이유</b>: 프레임이 취득 계층의 다른 스레드로 들어오므로 "이 그랩의 장" 과
+    /// "때마침 온 장" 을 밖에서는 가릴 수 없다. 여기서는 가른다 — 찍기 전에 대기열을 비우고, 받은 장의
+    /// 번호를 마지막으로 내보낸 번호와 <b>16비트 거리</b>로 대 본다(되돌이를 도는 번호라 크기 비교는
+    /// 한 바퀴 뒤 프레임을 전부 옛것으로 기각한다).</summary>
+    public Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default)
+        => Task.Run(() => RunGrab(timeout, ct), ct);
+
+    /// <summary>단발 그랩 한 번 — <see cref="GrabOne"/> 과 <see cref="GrabFrameAsync"/> 의 공통 몸통.
+    /// 가드·취소원 수명·끊긴 그랩의 사유 변환이 한 자리에 있어야 둘이 갈리지 않는다.</summary>
+    /// <param name="timeout">null 이면 <see cref="GevCamOpt.GrabTimeoutMs"/> 를 쓴다.</param>
+    private CamFrame? RunGrab(TimeSpan? timeout, CancellationToken ct)
     {
         GevStream stream;
         CancellationTokenSource cts;
@@ -471,9 +486,14 @@ public sealed class GevCam : ICam
         // 아래에서 나가 구독자가 이 카메라를 되부르는 순간 서로를 붙잡는다 — 그랩의 시한은 프레임을 이미
         // 받은 뒤라 그것을 풀지 못한다. 락이 지키던 것은 위에서 확보한 상태뿐이고, 그 뒤 스트림이 닫히면
         // 취득 계층이 던져서 알린다.
+        // 부른 쪽의 취소도 이 그랩을 끊는다 — 없으면 비동기로 불러 놓고 취소해도 시한을 다 채운다.
+        using var linked = ct.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(cts.Token, ct)
+            : null;
+        var grabToken = linked?.Token ?? cts.Token;
         try
         {
-            Run(ct => GrabOnceAsync(stream, ct), cts.Token);
+            return Run(token => GrabOnceAsync(stream, timeout, token), grabToken);
         }
         catch (Exception ex) when (cts.IsCancellationRequested)
         {
@@ -502,7 +522,7 @@ public sealed class GevCam : ICam
         try { _grabCts.Cancel(); } catch (ObjectDisposedException) { }
     }
 
-    private async Task GrabOnceAsync(GevStream stream, CancellationToken ct)
+    private async Task<CamFrame?> GrabOnceAsync(GevStream stream, TimeSpan? timeout, CancellationToken ct)
     {
         var nodes = _nodes!;
 
@@ -514,15 +534,21 @@ public sealed class GevCam : ICam
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
         await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
 
+        // 호출이 준 시한이 설정값을 이긴다 — 호출 자리의 사정이 더 최신이다. 안 주면 설정값을 쓴다.
+        // InfiniteTimeSpan 은 "내 시한을 걸지 말라" 는 뜻이라 수신 대기에 상한을 두지 않는다.
+        var budgetMs = timeout is { } want
+            ? (want == Timeout.InfiniteTimeSpan ? Timeout.Infinite : (int)Math.Max(1, want.TotalMilliseconds))
+            : Math.Max(1, _gev.GrabTimeoutMs);
+
         // 수신은 반드시 자기 토큰으로 끊는다 — 밖에서 시한을 씌우면 버려진 대기자가 다음 프레임을
         // 삼키고 그 버퍼가 영영 풀로 돌아오지 않는다.
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(Math.Max(1, _gev.GrabTimeoutMs));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(budgetMs);
 
         GevFrame? frame = null;
         try
         {
-            frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+            frame = await stream.ReceiveAsync(deadline.Token).ConfigureAwait(false);
 
             // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 번호로 걸러 낸다.
             // 번호는 되돌이를 도므로 크기가 아니라 16비트 안의 거리로 본다. 기준이 0 이면 아직 아무것도
@@ -531,16 +557,16 @@ public sealed class GevCam : ICam
                    && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId, frame.IsExtendedId))
             {
                 frame.Dispose();
-                frame = await stream.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+                frame = await stream.ReceiveAsync(deadline.Token).ConfigureAwait(false);
             }
 
-            Emit(frame);
+            return Emit(frame);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             // 시한 초과의 원인은 대개 카메라 상태다 — 열 때 남긴 'camera state' 줄을 함께 보게 한다.
             throw new TimeoutException(
-                $"No frame within {_gev.GrabTimeoutMs} ms. Check the 'camera state' line logged at open: " +
+                $"No frame within {budgetMs} ms. Check the 'camera state' line logged at open: " +
                 "TriggerMode On means the camera waits for its trigger, and ChunkModeActive On means frames are dropped.");
         }
         finally
@@ -741,8 +767,9 @@ public sealed class GevCam : ICam
     // === 프레임 변환 ===
 
     /// <summary>취득 프레임을 <see cref="CamFrame"/> 으로 옮겨 발행한다. 프레임 버퍼는 호출이 끝나면
-    /// 반납되므로 반드시 이 안에서 복사를 마친다.</summary>
-    private void Emit(GevFrame frame)
+    /// 반납되므로 반드시 이 안에서 복사를 마친다. <b>발행한 장을 돌려준다</b> — 단발 그랩이 그것을
+    /// 부른 쪽에 넘긴다(변환에 실패했으면 null, 그때도 번호 기준은 갱신된 뒤다).</summary>
+    private CamFrame? Emit(GevFrame frame)
     {
         // 무엇을 내보냈는지 여기 한 자리에서 기억한다 — 단발 그랩의 "새 프레임" 판정 기준이다.
         // 변환에 실패해 발행하지 못한 것도 이미 지나간 프레임이므로 기준에 넣는다.
@@ -761,13 +788,14 @@ public sealed class GevCam : ICam
         }
 
         var cam = Convert(frame);
-        if (cam is null) return;
+        if (cam is null) return null;
         var ready = ApplyMountXform(cam);
         // 발행은 변환과 갈라서 감싼다. 안 가르면 구독자가 던진 것이 부르는 쪽 catch 에서 "frame conversion
         // failed" 로 적힌다 — 우리 변환은 멀쩡한데 남의 핸들러가 원인이라는 사실이 로그에서 지워진다.
         // 그리고 구독자 예외가 카메라가 하는 일을 바꾸지 않는다(ICam 계약).
         try { FrameAcquired?.Invoke(this, ready); }
         catch (Exception ex) { WriteLog(CvLogLevel.Error, "a FrameAcquired subscriber threw.", ex); }
+        return ready;
     }
 
     /// <summary>장착 방향 보정(<see cref="CamOpt.Flip"/>·<see cref="CamOpt.Rotation"/>) — 취득 계약이
@@ -1432,6 +1460,9 @@ public sealed class GevCam : ICam
 
     /// <summary>비동기 호출을 동기 경계로 넘긴다. 라이브러리가 컨텍스트를 잡지 않으므로 교착하지 않는다.</summary>
     private static void Run(Func<CancellationToken, Task> body, CancellationToken ct = default)
+        => Task.Run(() => body(ct), ct).GetAwaiter().GetResult();
+
+    private static T Run<T>(Func<CancellationToken, Task<T>> body, CancellationToken ct = default)
         => Task.Run(() => body(ct), ct).GetAwaiter().GetResult();
 
     private static async Task SwallowAsync(Func<Task> body)
