@@ -547,6 +547,15 @@ public sealed class GevCam : ICam
         {
             // 취소가 이겨도 프레임이 손에 들어올 수 있다 — 무엇이 오든 반납한다.
             frame?.Dispose();
+
+            // 찍었으면 멈춘다. AcquisitionStart 는 표준상 AcquisitionMode 를 잠그고 그 잠금은
+            // AcquisitionStop 까지 안 풀린다 — 안 멈추면 세션의 첫 그랩 뒤로 모드 쓰기가 전부 거절되어
+            // 그랩마다 경고가 한 줄씩 쌓이고(현장 실측: 하루 258줄 = 그랩 260회 − 카메라별 최초 1회,
+            // 검사 호스트 로그의 69%), 더 나쁘게는 그다음 StartContinuous 의 Continuous 전환까지 막힌다.
+            // 그러면 장치는 SingleFrame 그대로라 한 장만 보내고, 수신 대기에는 시한이 없어 펌프가
+            // 로그 한 줄 없이 영영 선다.
+            // 취소 토큰을 쓰지 않는다 — 시한 초과나 중단으로 끊긴 그랩일수록 장치를 멈춰 두어야 한다.
+            await TryExecuteAsync(nodes, "AcquisitionStop", CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -564,7 +573,13 @@ public sealed class GevCam : ICam
 
             Run(async ct =>
             {
-                await TrySetEnumAsync(_nodes!, "AcquisitionMode", "Continuous", ct).ConfigureAwait(false);
+                // 모드 전환이 거절되면 그것을 여기서 말해야 한다 — 삼키면 장치는 옛 모드(대개 SingleFrame)
+                // 그대로라 한 장만 보내고, 수신 대기에는 시한이 없어 펌프가 로그 한 줄 없이 영영 선다.
+                // IsGrabbing 은 true 로 남고 프레임만 안 온다 — 밖에서 가를 단서가 아무것도 없는 상태다.
+                if (!await TrySetEnumAsync(_nodes!, "AcquisitionMode", "Continuous", ct).ConfigureAwait(false))
+                    WriteLog(CvLogLevel.Warning,
+                        "the camera kept its previous acquisition mode, so continuous acquisition may deliver one " +
+                        "frame and then wait forever. Close and reopen the camera to clear the acquisition lock.");
                 await TryExecuteAsync(_nodes!, "AcquisitionStart", ct).ConfigureAwait(false);
             });
 
@@ -1352,20 +1367,24 @@ public sealed class GevCam : ICam
         catch (GenApiException) { return null; }
     }
 
-    private async Task TrySetEnumAsync(GenApiNodeMap nodes, string name, string symbolic, CancellationToken ct)
+    /// <returns>장치가 우리가 바라는 값으로 돈다고 볼 수 있으면 <c>true</c>. <b>쓰기를 시도했는데 거절당한
+    /// 경우에만 <c>false</c></b> — 노드나 항목이 없는 장치는 "그 개념이 없다" 는 뜻이라 참으로 둔다.
+    /// 부르는 쪽이 이 값을 봐야 하는 이유는, 거절을 삼키면 <b>장치가 옛 모드 그대로 도는데 우리는 바꾼 줄
+    /// 아는</b> 상태가 되기 때문이다.</returns>
+    private async Task<bool> TrySetEnumAsync(GenApiNodeMap nodes, string name, string symbolic, CancellationToken ct)
     {
         if (nodes.GetNode(name) is not IEnumeration e)
         {
             WriteLog(CvLogLevel.Info, $"camera has no {name} node — leaving acquisition mode as the camera has it");
-            return;
+            return true;
         }
         if (e.GetEntry(symbolic) is null)
         {
             WriteLog(CvLogLevel.Info, $"{name} has no '{symbolic}' entry — leaving it as the camera has it");
-            return;
+            return true;
         }
-        try { await e.SetAsync(symbolic, ct).ConfigureAwait(false); }
-        catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to set {name}={symbolic}", ex); }
+        try { await e.SetAsync(symbolic, ct).ConfigureAwait(false); return true; }
+        catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to set {name}={symbolic}", ex); return false; }
     }
 
     /// <summary>명령 실행. <b>없는 명령을 조용히 넘기지 않는다</b> — AcquisitionStart 가 없으면 스트림은 서는데
