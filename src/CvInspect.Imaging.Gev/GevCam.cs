@@ -615,7 +615,26 @@ public sealed class GevCam : ICam
         return true;
     }
 
+    /// <summary>수신 스레드의 바깥 테두리 — <b>취득 루프가 호스트를 데려가지 않는다.</b> 이 스레드는 우리가
+    /// 만든 배경 스레드라 위에 아무도 없고, 미처리 예외 하나가 프로세스를 통째로 내린다. 안쪽에 단계별
+    /// try 가 있어도 테두리가 필요하다 — 루프 뼈대와 <see cref="PumpEndedBySelf"/> 가 그 밖에 있고,
+    /// 뒤엣것은 <b>호스트 핸들러로 들어가는 자리</b>다(구독자가 던지면 그 예외가 이 스레드로 돌아온다).</summary>
     private void PumpLoop(GevStream stream, CancellationToken ct)
+    {
+        try
+        {
+            PumpLoopCore(stream, ct);
+        }
+        catch (Exception ex)
+        {
+            WriteLog(CvLogLevel.Error, "receive pump stopped on an unhandled error.", ex);
+            // 테두리로 떨어졌어도 정리는 해야 한다 — 안 하면 펌프 참조가 남아 IsGrabbing 이 true 로 굳고
+            // 다음 StartContinuous 가 조용히 돌아간다(그 결함을 고치려고 둔 경로다).
+            if (!ct.IsCancellationRequested) PumpEndedBySelf();
+        }
+    }
+
+    private void PumpLoopCore(GevStream stream, CancellationToken ct)
     {
         var stats = new GevPumpStats(_gev.PumpStatsIntervalMs);
         while (!ct.IsCancellationRequested)
@@ -679,7 +698,10 @@ public sealed class GevCam : ICam
         WriteLog(CvLogLevel.Warning,
             "the receive loop ended without a stop request — continuous grab is no longer running. " +
             "Check the connection and call StartContinuous again.");
-        GrabbingChanged?.Invoke(this, false);
+        // 구독자 예외를 여기서 받는다 — 정리는 위에서 이미 끝났으므로, 핸들러 하나가 던졌다고 이 스레드가
+        // 죽을 이유가 없다. 삼키지는 않는다: 남의 결함을 우리 로그에 사유까지 실어 남긴다.
+        try { GrabbingChanged?.Invoke(this, false); }
+        catch (Exception ex) { WriteLog(CvLogLevel.Error, "a GrabbingChanged subscriber threw.", ex); }
     }
 
     /// <summary>노출 시간(마이크로초) 적용. <b>언제 불러도 된다</b> — 아직 열지 않았으면 들고 있다가
