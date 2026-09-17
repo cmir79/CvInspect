@@ -21,8 +21,10 @@ public static class CamGrabExt
     /// 없다. 시한이 다하면 여기서는 <c>null</c> 로 돌아가지만 그랩은 계속 돌고, 늦게 도착한 장은
     /// <b>카메라의 다른 구독자에게</b> 나간다(우리 구독은 이미 풀렸다).</item>
     /// </list></summary>
+    /// <param name="cam">찍을 카메라.</param>
     /// <param name="timeout">이 호출의 시한. 구현 설정값보다 우선한다.
     /// <see cref="Timeout.InfiniteTimeSpan"/> 이면 구현 자신의 시한에 맡긴다.</param>
+    /// <param name="ct">취소. 시한 만료(<c>null</c>)와 달리 <see cref="OperationCanceledException"/> 으로 나간다.</param>
     public static async Task<CamFrame?> GrabFrameAsync(this ICam cam, TimeSpan timeout, CancellationToken ct = default)
     {
         if (cam is null) throw new ArgumentNullException(nameof(cam));
