@@ -40,6 +40,10 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// <summary>true 면 GrabOne 이 프레임을 내지 않고 조용히 돌아간다 — 답할 수 없는 구현(DeadCam 류)의 모양.</summary>
     public bool GrabPublishesNothing { get; set; }
 
+    /// <summary>0 보다 크면 GrabOne 이 **먼저 돌아가고** 그만큼 뒤에 다른 스레드에서 발행한다 —
+    /// 프레임이 벤더 콜백으로 들어오는 취득 계층의 모양. 반환만 보고 단락하는 구현은 여기서 거짓 null 을 낸다.</summary>
+    public int PublishAfterReturnMs { get; set; }
+
     /// <summary>GrabOne 이 던질 예외 — 답해야 하는데 못 하는 상태를 흉내낸다.</summary>
     public Exception? GrabThrows { get; set; }
 
@@ -55,8 +59,18 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         if (GrabThrows is { } ex) throw ex;
         if (GrabDelayMs > 0) Thread.Sleep(GrabDelayMs);
         if (GrabPublishesNothing) return;
-        FrameAcquired?.Invoke(this, new CvInspect.Imaging.CamFrame(
-            new byte[4], 2, 2, 2, CvInspect.Imaging.CamPixelFormat.Mono8));
+        var frame = new CvInspect.Imaging.CamFrame(new byte[4], 2, 2, 2, CvInspect.Imaging.CamPixelFormat.Mono8);
+        if (PublishAfterReturnMs > 0)
+        {
+            var after = PublishAfterReturnMs;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                Thread.Sleep(after);
+                FrameAcquired?.Invoke(this, frame);
+            });
+            return;
+        }
+        FrameAcquired?.Invoke(this, frame);
     }
     public void StartContinuous()
     {

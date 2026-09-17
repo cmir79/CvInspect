@@ -77,10 +77,18 @@ The `timeout` argument wins over whatever the implementation has configured, bec
 knows more than the configuration did. Pass `Timeout.InfiniteTimeSpan` to defer to the
 implementation's own deadline.
 
-Backends where a frame arrives on someone else's thread should implement **`ICamGrabAsync`**; the
-extension then calls that instead of the generic path. The generic path cannot tell *this* grab's
-frame from one that merely arrived at the same moment — only the implementation, holding the device's
-own pairing evidence (frame id, ticket), can. `GevCam` and `ReconnectingCam` implement it.
+Implement **`ICamGrabAsync`** when your camera knows something the generic path cannot, and the
+extension will call you instead. There are two such things:
+
+- **Which frame is *this* grab's.** The generic path takes whatever arrives while it is subscribed;
+  only the implementation, holding the device's own pairing evidence (frame id, ticket), can tell that
+  from a frame that merely showed up at the same moment. `GevCam` does this by frame id.
+- **That no frame is coming at all.** The generic path cannot distinguish "not yet" from "never", so
+  it waits out the timeout rather than guessing — it will not cut short a backend that publishes just
+  after `GrabOne` returns. A camera that knows the answer immediately should say so: `DeadCam` returns
+  `null` at once instead of stalling every grab for the full timeout.
+
+`GevCam`, `ReconnectingCam` (which forwards to its inner camera) and `DeadCam` implement it.
 
 ## Frame lifetime
 

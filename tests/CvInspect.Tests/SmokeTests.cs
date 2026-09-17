@@ -792,17 +792,39 @@ public class SmokeTests
                 $"and repeated calls do not pile up (leaked={cam.FrameSubscribers - before})");
         }
 
-        // 10-G-3) 답할 수 없는 구현은 null 이다 — 던지지 않는다. GrabOne 이 프레임 없이 돌아오면
-        //         그 뒤로 올 장이 없다는 뜻이라(ICam 계약: 부른 쪽을 붙잡는다) 시한을 다 기다리지 않는다.
+        // 10-G-3) **발행이 반환보다 늦는 구현에서도 정상 그랩을 잘라 내지 않는다.**
+        //         프레임이 벤더 콜백으로 들어오는 취득 계층이 그 모양이다. 기본 절차가 "GrabOne 이
+        //         돌아왔는데 아직 장이 없다 → null" 로 단락하면 여기서 **정상 그랩이 거짓 null** 이 된다.
+        //         (실제로 처음에 그렇게 짰고, 형제 저장소가 자기 백엔드 모양으로 짚어 줘서 걷었다.)
+        {
+            using var cam = new FakeCam { PublishAfterReturnMs = 120 };
+            cam.Open();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromSeconds(2));
+            Check(frame is not null, "a frame published after GrabOne returns is still delivered, not cut to null");
+        }
+
+        // 10-G-3b) 그 대가 — "영영 안 오는" 것은 기본 절차가 알 수 없어 시한을 다 기다린다. 그것이
+        //          정직한 동작이다(모르는 것을 안다고 하지 않는다). 즉시 아는 구현은 표식을 단다(10-G-3c).
         {
             using var cam = new FakeCam { GrabPublishesNothing = true };
             cam.Open();
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromSeconds(5));
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(150));
             sw.Stop();
             Check(frame is null, "a grab that publishes nothing yields null");
-            Check(sw.ElapsedMilliseconds < 1000,
-                $"and it does not burn the whole timeout waiting for a frame that will never come ({sw.ElapsedMilliseconds}ms)");
+            Check(sw.ElapsedMilliseconds >= 140,
+                $"and the generic path honestly waits out the timeout rather than guessing ({sw.ElapsedMilliseconds}ms)");
+        }
+
+        // 10-G-3c) DeadCam 은 표식을 달아 **즉시** 답한다 — 기다릴 이유가 없다는 것을 그 자리는 안다.
+        //          그랩마다 시한만큼 멈춰 서면 죽은 자리 하나가 호스트 전체를 느리게 만든다.
+        {
+            using var dead = new CvInspect.Imaging.DeadCam(new CvInspect.Imaging.CamOpt { Name = "slot3" }, "not configured");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(dead, TimeSpan.FromSeconds(5));
+            sw.Stop();
+            Check(frame is null, "DeadCam yields null rather than throwing (same reason GrabOne does not throw)");
+            Check(sw.ElapsedMilliseconds < 1000, $"and it answers at once instead of burning the timeout ({sw.ElapsedMilliseconds}ms)");
         }
 
         // 10-G-4) 시한 만료도 null 이다 — 사유 없이 장이 없었다는 뜻으로 같다.
