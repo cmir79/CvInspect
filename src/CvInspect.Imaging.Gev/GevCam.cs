@@ -1072,7 +1072,11 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 // 않았다"** 는 뜻일 뿐이다(소비자 관측: Crevis MG-A320K-35 펌웨어 3.6.2.9 에 30000us,
                 // 하루 260그랩 — 이 줄 0건. 그쪽 격자가 얼마인지는 아무도 모른다. 거절되는 값을 넣어 봐야
                 // 알 수 있는데 그건 가동 라인의 노출을 건드리는 일이다).
-                // 기종을 늘려 재기 전까지 위 숫자는 **이 한 대의 것**이다.
+                // 기종을 늘려 재기 전까지 위 숫자는 **이 한 대의 것**이다 — 말 그대로 한 대다.
+                // 이 격자를 읽은 관측이 셋인데(GevSharp 직결 · Cognex VisionPro 경유 · 다른 호스트의
+                // GevCam 로그, 요청 10000→적용 10010) **전부 같은 개체**다(SN 24426379). 그래서 이 숫자가
+                // **스택의 해석이 아니라 장치의 성질**이라는 데까지는 서로 다른 세 경로가 받쳐 주지만,
+                // **기종 일반화에는 한 고리도 보태지 못한다.** 관측 수가 느는 것과 표본이 느는 것은 다르다.
                 WriteLog(CvLogLevel.Info,
                     $"exposure {timeUs}us is not on the camera's grid (anchor {anchor}, step {increment}) — " +
                     $"used {snapped}us instead. Put that value in the configuration to stop this message." +
