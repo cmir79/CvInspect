@@ -527,10 +527,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
         var nodes = _nodes!;
 
         // 새로 찍기 전에 남은 것을 버린다 — 안 버리면 이 그랩이 옛 프레임을 가져간다.
-        // ⚠ **이 줄은 청소가 아니라 하중을 받는다.** 아래 번호 검사와 함께 "늦게 도착한 옛 장" 을 막는
-        // 두 겹 중 앞쪽이고, 실제로는 이쪽이 대부분을 막는다. 형제 저장소가 같은 구조에서 실측했다 —
+        // ⚠ **이 줄은 청소가 아닐 수 있다 — 하중을 받는 자리로 의심하라.** 아래 번호 검사와 함께
+        // "늦게 도착한 옛 장" 을 막는 두 겹 중 앞쪽이다. 성능을 이유로 걷어내면 뒤쪽 검사만 남는다.
+        // 근거는 **다른 스택의 실측**이다(형제 저장소, 같은 모양의 비우기 + 짝짓기 검사 두 겹):
         // 시한이 만료된 취득이 살아 있다가(만료 직후 대기 1건) 다음 그랩의 비우기를 지나며 사라졌고,
-        // 그래서 뒤쪽 검사가 걸린 횟수가 0 이었다. 성능을 이유로 걷어내면 뒤쪽 검사만 남는다.
+        // 그래서 뒤쪽 검사가 걸린 횟수가 0 이었다.
+        // ⚠ **이쪽에서 같은 몫을 하는지는 안 쟀다.** 구조가 닮았다는 것만으로 "여기서도 앞줄이 다 막는다"
+        // 로 닫지 않는다 — 걷어낼 일이 생기면 그때 이 저장소에서 재고 판단한다.
         if (DrainStream(stream, out var drainedUpTo) is var dropped and > 0)
             WriteLog(CvLogLevel.Debug,
                 $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");
@@ -586,6 +589,14 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // 로그 한 줄 없이 영영 선다.
             // 취소 토큰을 쓰지 않는다 — 시한 초과나 중단으로 끊긴 그랩일수록 장치를 멈춰 두어야 한다.
             await TryExecuteAsync(nodes, "AcquisitionStop", CancellationToken.None).ConfigureAwait(false);
+
+            // ⚠ **멈췄으면 번호 기준을 버린다.** 취득을 멈춘 뒤 다시 걸었을 때 장치가 프레임 번호를
+            // 이어 준다는 보장이 없다 — **1부터 다시 세는 기종이 있다**(실측: Crevis MG-A320K-35 펌웨어
+            // 3.6.2.9). 기준을 들고 가면 다음 그랩이 받은 장이 "옛것" 으로 판정돼 위 while 이 전부 버리고,
+            // 오지 않을 새 번호를 기다리다 시한이 끝난다. 그 기종에서 30회 중 1회만 성공했다(첫 회만
+            // 기준이 0 이라 필터가 꺼져 있다). 장치는 30장을 온전히 보냈고 스트림도 다 받았다
+            // (GevCamHealth CompletedFrames=30, 손실 0) — 우리가 버린 것이다.
+            ResetFrameIdBaseline();
         }
     }
 
@@ -632,7 +643,11 @@ public sealed class GevCam : ICam, ICamGrabAsync
             if (stopped)
                 Interlocked.Exchange(ref _stoppedAtTicks, DateTime.UtcNow.Ticks);
             if (stopped && _nodes != null)
+            {
                 Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
+                // 단발 경로와 같은 이유 — 멈춘 뒤 번호가 이어진다는 보장이 없다. 펌프는 위에서 이미 섰다.
+                ResetFrameIdBaseline();
+            }
 
             // 멈춘 뒤에 대기열을 비운다 — 남겨 두면 다음 단발 그랩이 그것을 가져간다.
             // 펌프를 세운 다음이라야 배수가 수신과 겹치지 않는다 — 이 자리를 락 밖으로도, 정지 앞으로도 옮기지 않는다.
@@ -1053,14 +1068,27 @@ public sealed class GevCam : ICam, ICamGrabAsync
             {
                 await node.SetAsync(snapped, ct).ConfigureAwait(false);
                 written = snapped;
-                // 경고가 아니라 보고다. 장치가 격자 밖 값을 전부 거절하므로, 격자의 배수가 아닌 설정은
-                // **어느 것이든** 이 길을 지난다 — 실측(Basler acA2500-14gm, 격자 35us): 50→35 · 70→70 ·
-                // 100→105 · 200→210 · 1000→1015 · 5000→5005 · 12000→12005. 평범한 값이 전부 여기 걸린다.
+                // 경고가 아니라 보고다 — **피할 수 없는 양자화**를 경고로 내면 여는 길마다 뜨고,
+                // 그러면 진짜 경고가 안 읽힌다. 조작자가 할 수 있는 일은 격자 값을 적어 넣는 것뿐이라
+                // 안내는 남기되 등급만 내린다.
+                //
+                // 실측 — **Basler acA2500-14gm(격자 anchor 35 · step 35)**: 50→35 · 70→70 · 100→105 ·
+                // 200→210 · 1000→1015 · 5000→5005 · 12000→12005. 이 장치는 격자 밖 값을 거절하므로
+                // 35 의 배수가 아닌 설정은 **어느 것이든** 이 길을 지난다 — 평범한 현장 값이 전부 걸린다.
                 // 짧은 쪽도 함께 잰 이유: 격자 한 칸이 요청값에 비해 커지는 구간이라, **비율**로 판정하는
                 // 구현은 바로 여기서 거짓 경보를 낸다(50→35 는 최근접 격자점인데 오차가 30% 다).
                 // 재는 점을 늘리는 것과 재는 구간을 넓히는 것은 다른 일이다.
-                // 이것을 Warning 으로 내면 여는 길마다 경고가 뜨고, 그러면 진짜 경고가 안 읽힌다.
-                // 조작자가 할 수 있는 일은 격자 값을 적어 넣는 것뿐이라 안내는 남기되 등급만 내린다.
+                //
+                // ⚠ **장치 일반의 성질이 아니다.** 이 길은 쓰기가 GenApiException 으로 **거절될 때만**
+                // 지난다. 다른 기종에서 경고가 0 건인 것은 "격자가 없다" 가 아니라 **"그 값이 거절되지
+                // 않았다"** 는 뜻일 뿐이다(소비자 관측: Crevis MG-A320K-35 펌웨어 3.6.2.9 에 30000us,
+                // 하루 260그랩 — 이 줄 0건. 그쪽 격자가 얼마인지는 아무도 모른다. 거절되는 값을 넣어 봐야
+                // 알 수 있는데 그건 가동 라인의 노출을 건드리는 일이다).
+                // 기종을 늘려 재기 전까지 위 숫자는 **이 한 대의 것**이다 — 말 그대로 한 대다.
+                // 이 격자를 읽은 관측이 셋인데(GevSharp 직결 · Cognex VisionPro 경유 · 다른 호스트의
+                // GevCam 로그, 요청 10000→적용 10010) **전부 같은 개체**다(SN 24426379). 그래서 이 숫자가
+                // **스택의 해석이 아니라 장치의 성질**이라는 데까지는 서로 다른 세 경로가 받쳐 주지만,
+                // **기종 일반화에는 한 고리도 보태지 못한다.** 관측 수가 느는 것과 표본이 느는 것은 다르다.
                 WriteLog(CvLogLevel.Info,
                     $"exposure {timeUs}us is not on the camera's grid (anchor {anchor}, step {increment}) — " +
                     $"used {snapped}us instead. Put that value in the configuration to stop this message." +
@@ -1102,6 +1130,19 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 (snapped ? "" : " — the camera took a different value without refusing the write."));
         }
         catch (GenApiException) { /* 되읽기 실패는 진단 손실일 뿐이라 넘어간다 */ }
+    }
+
+    /// <summary>프레임 번호 기준을 버린다 — <b>취득을 멈춘 자리에서 부른다.</b>
+    ///
+    /// 이 기준은 "받은 장이 지난번보다 새것인가" 를 재는 자 인데, 그 비교는 <b>번호가 이어질 때만</b>
+    /// 뜻이 있다. 취득을 멈췄다 다시 걸면 이어 주는 기종도 있고 <b>1부터 다시 세는 기종도 있다</b> —
+    /// 뒤엣것에서 기준을 들고 가면 멀쩡한 새 장이 전부 "옛것" 으로 기각된다. 멈춤은 그 자를 못 믿게
+    /// 만드는 사건이므로, 자를 버리고 다음 장을 무엇이든 받는다(첫 장을 그렇게 받는 것과 같은 자리다).
+    ///
+    /// 유실 계수(<c>_neverArrivedFrames</c>)도 함께 끊는다 — 멈춤을 걸친 번호 간격은 잃은 것이 아니다.</summary>
+    private void ResetFrameIdBaseline()
+    {
+        _lastEmittedFrameId = 0;
     }
 
     /// <summary>거절이 "격자 어긋남" 이면 기준점과 간격을 꺼낸다 — 예외에 값으로 실려 온다.</summary>
