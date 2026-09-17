@@ -20,7 +20,7 @@ namespace CvInspect.Imaging;
 /// <see cref="GrabOne"/> 은 <see cref="InvalidOperationException"/> 으로 <b>명확히 실패</b>한다(조용히 무시하면
 /// 상위가 프레임을 영원히 기다린다).
 /// </summary>
-public sealed class ReconnectingCam : ICam
+public sealed class ReconnectingCam : ICam, ICamGrabAsync
 {
     private const string LogSource = nameof(ReconnectingCam);
 
@@ -193,6 +193,16 @@ public sealed class ReconnectingCam : ICam
     {
         var cam = CurrentOrThrow();
         cam.GrabOne();
+    }
+
+    /// <summary>한 장을 찍어 돌려준다 — <see cref="ICamGrabAsync"/>. <b>안쪽으로 그대로 넘긴다</b>:
+    /// 안쪽이 표식을 단 구현이면 그쪽 짝짓기 보장이 살아야 하고, 아니면 확장의 기본 절차가 돈다.
+    /// 미연결 구간의 경계는 <see cref="GrabOne"/> 과 같다 — 즉시 결과가 필요한 호출이라 <b>던진다</b>.
+    /// null 로 접으면 상위가 오지 않을 프레임을 계속 기다린다.</summary>
+    public Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        var cam = CurrentOrThrow();
+        return cam.GrabFrameAsync(timeout, ct);
     }
 
     public void StartContinuous()

@@ -17,7 +17,7 @@ namespace CvInspect.Imaging;
 /// 카메라가 나중에 돌아올 수 있는 상황이라면 이것 대신 <see cref="ReconnectingCam"/> 을 쓴다 —
 /// 그쪽은 처음에 못 열려도 계속 다시 시도할 수 있다.
 /// </summary>
-public sealed class DeadCam : ICam
+public sealed class DeadCam : ICam, ICamGrabAsync
 {
     private const string LogSource = nameof(DeadCam);
     private bool _disposed;
@@ -64,6 +64,22 @@ public sealed class DeadCam : ICam
         ThrowIfDisposed();
         // 던지지 않는다 — 위 주석 참조. 프레임이 안 오는 것으로 끝나고, 단서는 이 줄이다.
         WarnIgnored(nameof(GrabOne));
+    }
+
+    /// <summary>즉시 <c>null</c> — <b>기다릴 이유가 없다는 것을 이 자리는 안다.</b>
+    ///
+    /// 표식(<see cref="ICamGrabAsync"/>)을 다는 이유가 여기서는 짝짓기가 아니라 <b>시한</b>이다.
+    /// 확장의 기본 절차는 "아직 안 온 것" 과 "영영 안 올 것" 을 가르지 못해 시한을 끝까지 기다리는데,
+    /// 죽은 자리에서는 그 기다림이 통째로 낭비다 — 그랩마다 시한만큼 멈춰 선다.
+    /// 어차피 답이 없다는 것을 아는 구현이 스스로 답하는 편이, 기본 절차가 밖에서 넘겨짚는 것보다 옳다.
+    ///
+    /// <c>null</c> 이지 예외가 아닌 것은 <see cref="GrabOne"/> 과 같은 이유다(타입 주석 참조) —
+    /// 이 타입만 다르게 흘러 대체 가능성이 깨지면 안 된다.</summary>
+    public Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        WarnIgnored(nameof(GrabFrameAsync));
+        return Task.FromResult<CamFrame?>(null);
     }
 
     public void StartContinuous()

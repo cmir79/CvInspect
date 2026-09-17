@@ -753,6 +753,142 @@ public class SmokeTests
     }
     }
 
+    /// <summary>단발 그랩을 프레임으로 받는 확장 — null 과 던지는 것의 경계가 이 API 의 계약이다.</summary>
+    [Fact]
+    public async Task GrabFrameAsync()
+    {
+    // === 10-G) CamGrabExt.GrabFrameAsync — 기본 절차와 경계 ===
+    {
+        var second = TimeSpan.FromSeconds(2);
+
+        // 10-G-1) 기본 절차가 실제로 프레임을 돌려준다. 그리고 FrameAcquired 로도 나간다 —
+        //         같은 취득이므로, 이미 구독 중인 표시 경로가 이 장만 못 보는 일이 없어야 한다.
+        {
+            using var cam = new FakeCam();
+            cam.Open();
+            var alsoPublished = 0;
+            CvInspect.Imaging.CamFrame? published = null;
+            cam.FrameAcquired += (_, f) => { published = f; Interlocked.Increment(ref alsoPublished); };
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
+            // ⚠ "null 이 아니다" 로는 부족하다 — "아무 장이나 하나 받았다" 와 안 갈린다. 돌려받은 것이
+            //   그 호출 동안 발행된 **바로 그 인스턴스**인지를 본다(형제 저장소가 쓴 기준을 가져왔다).
+            Check(ReferenceEquals(frame, published),
+                "the returned frame is the very instance the grab published, not merely some frame");
+            Check(alsoPublished == 1, $"the frame still goes out on FrameAcquired (count={alsoPublished})");
+            Check(cam.GrabCalls == 1, $"exactly one GrabOne per call (calls={cam.GrabCalls})");
+        }
+
+        // 10-G-2) 구독을 건 뒤에 부르고, 끝나면 푼다. 안 풀면 카메라가 이 호출의 핸들러를 영원히 붙잡는다
+        //         — 호출이 잦은 자리(트리거마다 한 장)에서는 핸들러가 계속 쌓인다.
+        //         ⚠ 구독자 **수**를 직접 센다. 발행 수를 세면 남은 핸들러가 무해해서 시험이 그냥 통과한다
+        //         (실제로 처음에 그렇게 짰다가 고의 손상이 통과해 잡았다).
+        {
+            using var cam = new FakeCam();
+            cam.Open();
+            var before = cam.FrameSubscribers;
+            await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
+            Check(cam.FrameSubscribers == before,
+                $"the helper releases its subscription when it returns (leaked={cam.FrameSubscribers - before})");
+
+            await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
+            await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
+            Check(cam.FrameSubscribers == before,
+                $"and repeated calls do not pile up (leaked={cam.FrameSubscribers - before})");
+        }
+
+        // 10-G-3) **발행이 반환보다 늦는 구현에서도 정상 그랩을 잘라 내지 않는다.**
+        //         프레임이 벤더 콜백으로 들어오는 취득 계층이 그 모양이다. 기본 절차가 "GrabOne 이
+        //         돌아왔는데 아직 장이 없다 → null" 로 단락하면 여기서 **정상 그랩이 거짓 null** 이 된다.
+        //         (실제로 처음에 그렇게 짰고, 형제 저장소가 자기 백엔드 모양으로 짚어 줘서 걷었다.)
+        {
+            using var cam = new FakeCam { PublishAfterReturnMs = 120 };
+            cam.Open();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromSeconds(2));
+            Check(frame is not null, "a frame published after GrabOne returns is still delivered, not cut to null");
+        }
+
+        // 10-G-3b) 그 대가 — "영영 안 오는" 것은 기본 절차가 알 수 없어 시한을 다 기다린다. 그것이
+        //          정직한 동작이다(모르는 것을 안다고 하지 않는다). 즉시 아는 구현은 표식을 단다(10-G-3c).
+        {
+            using var cam = new FakeCam { GrabPublishesNothing = true };
+            cam.Open();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(150));
+            sw.Stop();
+            Check(frame is null, "a grab that publishes nothing yields null");
+            Check(sw.ElapsedMilliseconds >= 140,
+                $"and the generic path honestly waits out the timeout rather than guessing ({sw.ElapsedMilliseconds}ms)");
+        }
+
+        // 10-G-3c) DeadCam 은 표식을 달아 **즉시** 답한다 — 기다릴 이유가 없다는 것을 그 자리는 안다.
+        //          그랩마다 시한만큼 멈춰 서면 죽은 자리 하나가 호스트 전체를 느리게 만든다.
+        {
+            using var dead = new CvInspect.Imaging.DeadCam(new CvInspect.Imaging.CamOpt { Name = "slot3" }, "not configured");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(dead, TimeSpan.FromSeconds(5));
+            sw.Stop();
+            Check(frame is null, "DeadCam yields null rather than throwing (same reason GrabOne does not throw)");
+            Check(sw.ElapsedMilliseconds < 1000, $"and it answers at once instead of burning the timeout ({sw.ElapsedMilliseconds}ms)");
+        }
+
+        // 10-G-3d) **시한은 부른 순간부터 센다** — 그랩이 끝난 뒤부터 다시 세면 부른 쪽이 준 상한이
+        //          실제로는 "그랩 시간 + 시한" 이 되어 약속을 말없이 넘는다. 형제 저장소가 자기 구현에서
+        //          그 자리를 잡아 알려 왔고, 이쪽은 맞게 되어 있었다 — 리팩터가 조용히 깨뜨릴 자리라 못 박는다.
+        {
+            using var cam = new FakeCam { GrabDelayMs = 150, GrabPublishesNothing = true };
+            cam.Open();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(250));
+            sw.Stop();
+            Check(sw.ElapsedMilliseconds < 350,
+                $"the deadline runs from the call, not from when the grab returned ({sw.ElapsedMilliseconds}ms; " +
+                "a restarted clock would take grab 150ms + timeout 250ms)");
+        }
+
+        // 10-G-4) 시한 만료도 null 이다 — 사유 없이 장이 없었다는 뜻으로 같다.
+        {
+            using var cam = new FakeCam { GrabDelayMs = 2000 };
+            cam.Open();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(120));
+            Check(frame is null, "a grab that outruns the timeout yields null");
+        }
+
+        // 10-G-5) ⚠ 대조군 — **답해야 하는데 못 하는 상태는 던진다.** null 로 접으면 사유 채널이 하나로
+        //         뭉개지고, 부른 쪽은 오지 않을 프레임을 계속 기다린다. 이것이 없으면 위의 null 들은
+        //         "무엇이든 null" 과 구분되지 않는다.
+        {
+            using var cam = new FakeCam { GrabThrows = new InvalidOperationException("continuous is running") };
+            cam.Open();
+            var threw = false;
+            try { await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second); }
+            catch (InvalidOperationException) { threw = true; }
+            Check(threw, "a grab that cannot answer surfaces its reason instead of returning null");
+        }
+
+        // 10-G-6) 재연결 데코레이터의 미연결 구간도 같은 경계다 — GrabOne 과 갈리면 안 된다.
+        {
+            var made = new List<FakeCam>();
+            var slow = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 400 }, ShutdownWaitMs = 1000 };
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slow);
+            cam.Open();
+            made[0].LoseConnection();
+            Thread.Sleep(40);
+            var threw = false;
+            try { await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second); }
+            catch (InvalidOperationException) { threw = true; }
+            Check(threw, "GrabFrameAsync during the reconnect gap fails explicitly, exactly as GrabOne does");
+        }
+
+        // 10-G-7) 표식을 단 구현은 기본 절차를 타지 않고 자기 구현이 불린다.
+        {
+            using var cam = new NativeGrabCam();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
+            Check(frame is not null && cam.NativeCalls == 1 && cam.GrabCalls == 0,
+                $"ICamGrabAsync wins over the default path (native={cam.NativeCalls}, GrabOne={cam.GrabCalls})");
+        }
+    }
+    }
+
     /// <summary>쓸 수 없는 자리를 메우는 널 오브젝트 — 던지지 않고, 발화하지 않고, 이유를 남긴다.</summary>
     [Fact]
     public void DeadCam()
