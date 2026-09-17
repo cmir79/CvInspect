@@ -1001,6 +1001,7 @@ public sealed class GevCam : ICam
             WriteLog(CvLogLevel.Warning, $"camera exposes no exposure-time node — {timeUs}us ignored");
             return;
         }
+        var written = timeUs;   // 실제로 장치에 쓴 값 — 격자에 맞춰 바뀌었을 수 있다
         try
         {
             await node.SetAsync(timeUs, ct).ConfigureAwait(false);
@@ -1019,7 +1020,13 @@ public sealed class GevCam : ICam
             try
             {
                 await node.SetAsync(snapped, ct).ConfigureAwait(false);
-                WriteLog(CvLogLevel.Warning,
+                written = snapped;
+                // 경고가 아니라 보고다. 장치가 격자 밖 값을 전부 거절하므로, 격자의 배수가 아닌 설정은
+                // **어느 것이든** 이 길을 지난다 — 실측(Basler acA2500-14gm, 격자 35us): 1000→1015 ·
+                // 5000→5005 · 12000→12005 · 200→210. 현장에서 쓰는 평범한 값이 전부 여기 걸린다.
+                // 이것을 Warning 으로 내면 여는 길마다 경고가 뜨고, 그러면 진짜 경고가 안 읽힌다.
+                // 조작자가 할 수 있는 일은 격자 값을 적어 넣는 것뿐이라 안내는 남기되 등급만 내린다.
+                WriteLog(CvLogLevel.Info,
                     $"exposure {timeUs}us is not on the camera's grid (anchor {anchor}, step {increment}) — " +
                     $"used {snapped}us instead. Put that value in the configuration to stop this message." +
                     (sameUnits
@@ -1045,11 +1052,19 @@ public sealed class GevCam : ICam
 
         // 쓰기가 성공해도 카메라가 그 값을 그대로 쓴다는 보장은 없다 — 실제 값을 남긴다.
         // "썼으니 됐겠지" 가 이 바닥에서 제일 자주 틀리는 가정이다.
+        //
+        // 비교 대상은 요청값이 아니라 **우리가 쓴 값**이다. 격자에 맞춰 바꿔 쓴 것은 위에서 이미
+        // 보고했으므로 여기서 또 말하면 같은 사실이 두 줄이 된다. 그리고 등급이 여기서 갈린다 —
+        // 맞춰 쓴 값과 다르면 그건 양자화가 아니라 **장치가 말없이 다른 값을 들고 있는 것**이고,
+        // 그 경우에만 경고다. 임계값을 지어내지 않는다: 기준은 우리가 쓴 값 그 자체다.
         try
         {
             var actual = await node.GetAsync(ct).ConfigureAwait(false);
-            if (Math.Abs(actual - timeUs) > 0.5)
-                WriteLog(CvLogLevel.Info, $"exposure requested {timeUs}us, camera applied {actual}us via '{node.Name}'");
+            if (Math.Abs(actual - written) <= 0.5) return;
+            var snapped = Math.Abs(written - timeUs) > 0.5;
+            WriteLog(snapped ? CvLogLevel.Info : CvLogLevel.Warning,
+                $"exposure requested {timeUs}us, wrote {written}us, camera applied {actual}us via '{node.Name}'" +
+                (snapped ? "" : " — the camera took a different value without refusing the write."));
         }
         catch (GenApiException) { /* 되읽기 실패는 진단 손실일 뿐이라 넘어간다 */ }
     }
