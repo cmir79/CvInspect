@@ -460,6 +460,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// <summary>단발 그랩 한 번 — <see cref="GrabOne"/> 과 <see cref="GrabFrameAsync"/> 의 공통 몸통.
     /// 가드·취소원 수명·끊긴 그랩의 사유 변환이 한 자리에 있어야 둘이 갈리지 않는다.</summary>
     /// <param name="timeout">null 이면 <see cref="GevCamOpt.GrabTimeoutMs"/> 를 쓴다.</param>
+    /// <param name="ct">부른 쪽의 취소 — 이 그랩을 끊는다.</param>
     private CamFrame? RunGrab(TimeSpan? timeout, CancellationToken ct)
     {
         GevStream stream;
@@ -539,6 +540,11 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");
 
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
+
+        // **이 그랩의 시작선을 장치 시계로 찍어 둔다.** 이보다 이른 장은 이 그랩의 답이 아니다.
+        // 시작 직전이어야 한다 — 뒤에 찍으면 우리 장까지 시작선보다 이르게 나온다.
+        var startedAt = await LatchDeviceTimestampAsync(nodes, ct).ConfigureAwait(false);
+
         await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
 
         // 호출이 준 시한이 설정값을 이긴다 — 호출 자리의 사정이 더 최신이다. 안 주면 설정값을 쓴다.
@@ -557,11 +563,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
         {
             frame = await stream.ReceiveAsync(deadline.Token).ConfigureAwait(false);
 
-            // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 번호로 걸러 낸다.
-            // 번호는 되돌이를 도므로 크기가 아니라 16비트 안의 거리로 본다. 기준이 0 이면 아직 아무것도
-            // 지나가지 않은 것이라 무엇이든 받는다.
-            while (frame.FrameId != 0 && _lastEmittedFrameId != 0
-                   && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId, frame.IsExtendedId))
+            // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 시작선보다 이른 장을 버린다.
+            while (IsStale(frame, startedAt))
             {
                 frame.Dispose();
                 frame = await stream.ReceiveAsync(deadline.Token).ConfigureAwait(false);
@@ -1132,6 +1135,58 @@ public sealed class GevCam : ICam, ICamGrabAsync
         catch (GenApiException) { /* 되읽기 실패는 진단 손실일 뿐이라 넘어간다 */ }
     }
 
+    /// <summary>
+    /// 이 그랩의 <b>시작선</b>을 장치 시계로 찍는다 — 못 찍으면 <c>null</c>.
+    ///
+    /// 쓰는 것은 GigE Vision <b>표준 부트스트랩</b> 레지스터다(벤더 확장이 아니다): 래치 명령이 그 순간의
+    /// 장치 시각을 레지스터에 옮기고, 그것을 읽는다. 값은 <b>반드시 캐시를 버리고</b> 읽는다 — 래치는
+    /// 장치가 값을 바꾸는 일이라, 안 버리면 앞서 읽은 값이 그대로 돌아온다.
+    ///
+    /// <b>왜 번호가 아니라 시각인가.</b> 프레임 번호는 <b>에포크를 우리가 못 정한다</b> — 기종마다 언제
+    /// 1로 돌아가는지가 다르다(실측: Basler acA2500-14gm 은 스트림을 열 때, Crevis MG-A320K-35 펌웨어
+    /// 3.6.2.9 는 <b>취득을 멈출 때마다</b>). 뒤엣것에서는 옛 장과 새 장이 <b>둘 다 번호 1</b> 로 와서
+    /// 번호로는 원리적으로 못 가린다(소비자 실측: 옛 1·2·3·4 뒤에 새 1). 시각은 우리가 직접 찍으므로
+    /// 에포크를 우리가 정한다 — 그래서 기종을 안 탄다.
+    ///
+    /// 실측으로 받쳐 둔 전제 둘(양쪽 기종에서 확인): ① 프레임 헤더의 시각과 이 래치가 <b>같은 시계</b>다
+    /// (래치 → 그랩 → 래치 했을 때 프레임 시각이 두 래치 사이에 들어온다) ② 하루 단위로 도는 값이 아니다
+    /// (Basler 125MHz 에서 13.6일치, Crevis 66.7MHz 에서 하루치를 넘는 값이 누적돼 있었다).
+    ///
+    /// ⚠ 이 시계도 <c>GevTimestampControlReset</c> 으로 되돌릴 수 있다. 다른 응용이 그것을 부르면 판정이
+    /// 어긋나는데, 방향이 <b>거짓 기각</b>(시한 만료로 시끄럽게 실패)이라 남의 장을 답으로 내주는 것보다 낫다.
+    /// </summary>
+    private async Task<ulong?> LatchDeviceTimestampAsync(GenApiNodeMap nodes, CancellationToken ct)
+    {
+        if (nodes.GetNode("GevTimestampControlLatch") is not ICommand latch) return null;
+        if (nodes.GetNode("GevTimestampValue") is not IInteger value) return null;
+        try
+        {
+            await latch.ExecuteAsync(ct).ConfigureAwait(false);
+            value.Invalidate();
+            var now = (ulong)await value.GetAsync(ct).ConfigureAwait(false);
+            // 0 은 "시계를 안 준다" 는 뜻으로 읽는다 — 그 값으로는 아무것도 못 가른다.
+            return now == 0 ? null : now;
+        }
+        catch (GenApiException)
+        {
+            // 진단이 그랩을 깨뜨리지 않는다 — 못 찍으면 번호 쪽으로 떨어진다.
+            return null;
+        }
+    }
+
+    /// <summary>이 그랩의 답이 아닌 장인가.
+    ///
+    /// 시작선을 찍었으면 <b>그보다 이른 장</b>이 낡은 것이다 — 번호를 보지 않는다.
+    /// 못 찍었으면(시계를 안 주는 장치) 종전대로 번호로 가린다: 마지막으로 내보낸 것보다 새것이 아니면 낡았다.
+    /// 번호는 되돌이를 도므로 크기가 아니라 16비트 안의 거리로 본다. 기준이 0 이면 아직 아무것도 지나가지
+    /// 않은 것이라 무엇이든 받는다.</summary>
+    private bool IsStale(GevFrame frame, ulong? startedAt)
+    {
+        if (startedAt is { } since) return frame.Timestamp != 0 && frame.Timestamp <= since;
+        return frame.FrameId != 0 && _lastEmittedFrameId != 0
+               && !IsNewerFrameId(frame.FrameId, _lastEmittedFrameId, frame.IsExtendedId);
+    }
+
     /// <summary>프레임 번호 기준을 버린다 — <b>취득을 멈춘 자리에서 부른다.</b>
     ///
     /// 이 기준은 "받은 장이 지난번보다 새것인가" 를 재는 자 인데, 그 비교는 <b>번호가 이어질 때만</b>
@@ -1139,7 +1194,14 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// 뒤엣것에서 기준을 들고 가면 멀쩡한 새 장이 전부 "옛것" 으로 기각된다. 멈춤은 그 자를 못 믿게
     /// 만드는 사건이므로, 자를 버리고 다음 장을 무엇이든 받는다(첫 장을 그렇게 받는 것과 같은 자리다).
     ///
-    /// 유실 계수(<c>_neverArrivedFrames</c>)도 함께 끊는다 — 멈춤을 걸친 번호 간격은 잃은 것이 아니다.</summary>
+    /// 유실 계수(<c>_neverArrivedFrames</c>)도 함께 끊는다 — 멈춤을 걸친 번호 간격은 잃은 것이 아니다.
+    ///
+    /// ⚠ <b>기종에 따라 갈리므로, 한 대에서 멀쩡하다고 이 자리를 지우지 마라.</b> 실측으로 양쪽을 다 봤다:
+    /// Crevis MG-A320K-35(펌웨어 3.6.2.9)는 멈출 때마다 1부터 다시 세어 단발 그랩이 30회 중 1회만 성공했고,
+    /// Basler acA2500-14gm 은 <b>이어 준다</b> — 그랩마다 멈추며 4회 돌려 번호가 1·2·3·4 였고, 멈추지 않는
+    /// 기준선이 그 뒤를 5·6·7·8 로 이어받았다(계수기가 실제로 도는 것도 그 기준선이 보인다).
+    /// 그래서 <b>Basler 로는 이 결함이 원리적으로 안 드러난다</b> — 그 기종에서 번호가 1로 돌아가는 것은
+    /// 스트림 세션을 열 때뿐이고, 거기서는 <see cref="Open"/> 이 스트림을 세우며 이미 기준을 0 으로 되돌린다.</summary>
     private void ResetFrameIdBaseline()
     {
         _lastEmittedFrameId = 0;
@@ -1172,10 +1234,19 @@ public sealed class GevCam : ICam, ICamGrabAsync
         var trigMode = await TryReadEnumAsync(nodes, "TriggerMode", ct).ConfigureAwait(false);
         var trigSrc = await TryReadEnumAsync(nodes, "TriggerSource", ct).ConfigureAwait(false);
 
+        // 단발 그랩이 "이 장이 내 것인가" 를 무엇으로 가리는지 한 번 남긴다 — 그랩마다가 아니라 여기서
+        // 한 번이다. 이 한 줄이 있어야 나중에 "그 판정이 어느 길로 갔는가" 를 물을 수 있다.
+        // deviceClock 이면 우리가 찍은 시작선으로 가리고(기종 무관), frameId 면 시계를 못 얻어
+        // 번호로 떨어진 것이다(번호는 기종마다 리셋 시점이 달라 약하다 — ResetFrameIdBaseline 참조).
+        var grabKey = await LatchDeviceTimestampAsync(nodes, ct).ConfigureAwait(false) is not null
+            ? "deviceClock"
+            : "frameId";
+
         WriteLog(CvLogLevel.Info,
             $"camera state: pixelFormat={pixel ?? "?"} size={w?.ToString() ?? "?"}x{h?.ToString() ?? "?"} " +
             $"payloadSize={payload?.ToString() ?? "?"} acquisitionMode={acq ?? "?"} " +
-            $"triggerMode={trigMode ?? "(absent)"} triggerSource={trigSrc ?? "(absent)"}");
+            $"triggerMode={trigMode ?? "(absent)"} triggerSource={trigSrc ?? "(absent)"} " +
+            $"grabKey={grabKey}");
 
         if (string.Equals(trigMode, "On", StringComparison.OrdinalIgnoreCase))
             WriteLog(CvLogLevel.Warning,
