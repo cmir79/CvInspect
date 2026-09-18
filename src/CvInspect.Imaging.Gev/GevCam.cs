@@ -541,8 +541,12 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 이 줄을 "대개 빈손인 청소" 로 읽으면 안 된다 — 0.26.1 은 이 자리에서 기준을 옛 에포크 번호로
         // 세웠고, 그래서 번호를 다시 세는 기종의 현장에서 **라이브를 껐다 켠 다음 촬영마다** 5초 만료로
         // 죽었다(소비자 실측, 배포 다음 날). 지금은 판정이 번호가 아니라 시작선이라 그 길이 막혀 있다.
+        // 버린 것이 있을 때만 남긴다(정상 구간에서는 한 줄도 안 난다) — 그리고 Debug 가 아니라 Info 다.
+        // **이 줄이 "낡은 장 가드가 실제로 일했다" 는 유일한 증거**이기 때문이다. 없으면 그랩이 성공했을 때
+        // "구멍을 밟고도 통과" 인지 "구멍을 안 밟은 통과" 인지 밖에서 가릴 수 없다 — 소비자가 현장 검증에서
+        // 정확히 그 자리에 걸렸다(파일 로그 최소 레벨이 Info 라 이 줄이 안 남아, 통과를 추론으로 닫아야 했다).
         if (DrainStream(stream, out var drainedUpTo) is var dropped and > 0)
-            WriteLog(CvLogLevel.Debug,
+            WriteLog(CvLogLevel.Info,
                 $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");
 
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
