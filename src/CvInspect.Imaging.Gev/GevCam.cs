@@ -535,6 +535,12 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 그래서 뒤쪽 검사가 걸린 횟수가 0 이었다.
         // ⚠ **이쪽에서 같은 몫을 하는지는 안 쟀다.** 구조가 닮았다는 것만으로 "여기서도 앞줄이 다 막는다"
         // 로 닫지 않는다 — 걷어낼 일이 생기면 그때 이 저장소에서 재고 판단한다.
+        //
+        // **언제 버릴 것이 생기는가 — 라이브를 껐다 켜면 생긴다.** 드물게 나는 일이 아니라 티칭 화면의
+        // 기본 조작이다(실측: 라이브 1.5초 × 2회로 42장을 받은 뒤 그랩하니 여기서 1장을 버렸다).
+        // 이 줄을 "대개 빈손인 청소" 로 읽으면 안 된다 — 0.26.1 은 이 자리에서 기준을 옛 에포크 번호로
+        // 세웠고, 그래서 번호를 다시 세는 기종의 현장에서 **라이브를 껐다 켠 다음 촬영마다** 5초 만료로
+        // 죽었다(소비자 실측, 배포 다음 날). 지금은 판정이 번호가 아니라 시작선이라 그 길이 막혀 있다.
         if (DrainStream(stream, out var drainedUpTo) is var dropped and > 0)
             WriteLog(CvLogLevel.Debug,
                 $"discarded {dropped} queued frame(s) up to frame {drainedUpTo} before grabbing a fresh one");
