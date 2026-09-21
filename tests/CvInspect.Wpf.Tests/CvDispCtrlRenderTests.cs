@@ -206,8 +206,10 @@ public class CvDispCtrlRenderTests
         }
     });
 
-    [Fact]
-    public void ResizeRefitsWithoutANewFrame() => RunSta(() =>
+    [Theory]
+    [InlineData(800, 1400)]   // 커지면 여백이 남았다
+    [InlineData(1400, 800)]   // 작아지면 잘린 채 남았다
+    public void ResizeRefitsWithoutANewFrame(int fromW, int toW) => RunSta(() =>
     {
         // 프레임이 드문 화면(관제·라인 정지 중)에서 창 크기가 바뀌면 다음 프레임이 올 때까지 옛 배율로 남아
         // 여백이 생기거나 잘렸다(0.26.2 현장 보고 — 모니터가 빠졌다 붙어 풀스크린 창이 커진 경우).
@@ -217,17 +219,17 @@ public class CvDispCtrlRenderTests
         CamFrame Frame() => new(gray, 1000, 500, 1000, CamPixelFormat.Mono8);   // 대입마다 새 값이어야 교체로 친다
 
         var ctrl = Ctrl(Frame());
-        Render(ctrl, 800, 600);
+        Render(ctrl, fromW, 600);
         // 한 장 더 받고 선 화면 — 첫 배치의 크기 변경이 남긴 맞춤 예약을 이 프레임이 소화한다. 이 단계를 빼면 남은
         // 예약이 리사이즈 뒤 그리기에서 쓰여 결함이 가려진다(실측: 빼면 고치기 전 코드에서도 통과했다).
         ctrl.Frame = Frame();
-        var before = GrayWidth(Render(ctrl, 800, 600), 800, 600);
-        var resized = GrayWidth(Render(ctrl, 1400, 600), 1400, 600);   // 새 프레임 없이 크기만 바꾼다
-        var born = GrayWidth(Render(Ctrl(Frame()), 1400, 600), 1400, 600);
+        var before = GrayWidth(Render(ctrl, fromW, 600), fromW, 600);
+        var resized = GrayWidth(Render(ctrl, toW, 600), toW, 600);   // 새 프레임 없이 크기만 바꾼다
+        var born = GrayWidth(Render(Ctrl(Frame()), toW, 600), toW, 600);
 
-        Check(before > 0 && born > 0, $"the probe sees the picture at all (800 wide={before}px, 1400 wide={born}px)");
-        Check(born - before > 50, $"a wider control fits the picture wider — else the next check proves nothing (800={before}px, 1400={born}px)");
+        Check(before > 0 && born > 0, $"the probe sees the picture at all ({fromW} wide={before}px, {toW} wide={born}px)");
+        Check(Math.Abs(born - before) > 50, $"a control of the other width fits the picture differently — else the next check proves nothing ({fromW}={before}px, {toW}={born}px)");
         Check(resized == born,
-            $"resizing refits at once without a new frame: drew {resized}px, a control born at that size draws {born}px (the old fit was {before}px)");
+            $"resizing {fromW}->{toW} refits at once without a new frame: drew {resized}px, a control born at that size draws {born}px (the old fit was {before}px)");
     });
 }
