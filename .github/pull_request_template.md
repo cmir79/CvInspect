@@ -10,6 +10,6 @@
 
 ## Checks
 
-- [ ] `dotnet build` in the default configuration reports 0 warnings
+- [ ] `dotnet build CvInspect.sln -c Release --no-incremental` reports 0 warnings (an incremental build reports none when it recompiles nothing)
 - [ ] `main` is an ancestor of this branch (the release-pr-guard job verifies it)
 - [ ] the tag will be created on the merge commit, `main` merged back into `dev` afterwards, and `dev` bumped to the next `-dev` version
