@@ -18,7 +18,18 @@ internal sealed partial class CvDispSurface
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
     {
         base.OnRenderSizeChanged(sizeInfo);
+        // 맞춤을 예약만 하지 않고 다시 그리기를 함께 청한다. 크기가 바뀐 배치에서 WPF 는 Arrange 안에서 OnRender 를
+        // 먼저 부르고(그때는 예약이 없어 옛 배율로 그린다) 이 통지는 배치가 끝난 뒤에 보낸다(PresentationCore 8.0.31
+        // UIElement.Arrange → ContextLayoutManager.UpdateLayout 의 fireSizeChangedEvents, 원문 확인). 예약만 세우고
+        // 나가면 두 가지가 남는다 — 실측(1000×500 영상, 표면 800→1400 폭, 새 프레임 없음):
+        //  ① 다음 프레임이 올 때까지 옛 배율: 776px 그대로(맞춤은 1126px). 프레임이 드문 화면(관제·라인 정지 중)에서
+        //     창이 커지면 여백, 작아지면 잘림이 그대로 남았다.
+        //  ② 다음 그리기가 무엇이든 예약을 소화한다: 휠 한 칸 축소가 621px 이 아니라 1126px 로 커졌다(줌이 덮인다).
+        // 부모 쪽 SizeChanged 에서 무효화해서는 안 된다 — 이 통지는 바깥 요소부터 나가고, 핸들러가 다시 그리기를
+        // 청하면 WPF 가 통지를 멈추고 배치부터 다시 해서 이 표면은 예약이 서기 전에 다시 그려진다(실측 776px 그대로).
+        // 여기서는 예약이 먼저 서 있으니 이 요청이 부르는 그리기가 맞춘다. 대가는 크기가 바뀔 때 OnRender 한 번 더.
         _fitPending = true;
+        InvalidateVisual();
     }
 
     protected override void OnRender(DrawingContext dc)

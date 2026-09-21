@@ -1,7 +1,8 @@
 // CvDispCtrl 오프스크린 렌더 실증 — 창 없이 RenderTargetBitmap 으로 그려 픽셀을 센다.
 // 각 절은 계약 하나를 못 박는다: Frame 에 ICvPixelSource 를 직접 넣은 렌더가 Mat 경로와 같은지, 대입 뒤 원본
 // 배열을 고쳐도 화면이 그대로인지(픽셀은 대입 시점에 백버퍼로 옮겨진다), 행 끝 패딩 버퍼가 제대로 걸리는지,
-// 계약을 어긴 값이 예외 대신 빈 화면 + 경고로 끝나는지. WPF 요소는 STA 스레드에서만 만들 수 있어 본문을 STA 로 감싼다.
+// 계약을 어긴 값이 예외 대신 빈 화면 + 경고로 끝나는지, 크기가 바뀌면 새 프레임 없이도 그 크기에 맞추는지.
+// WPF 요소는 STA 스레드에서만 만들 수 있어 본문을 STA 로 감싼다.
 using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Media;
@@ -98,6 +99,23 @@ public class CvDispCtrlRenderTests
 
     private static CvDispCtrl Ctrl(object? frame = null) => new() { IsToolbarVisible = false, Frame = frame };
 
+    /// <summary>가운데 행에서 이미지(회색 128) 화소가 차지하는 가로 폭 — 그려진 배율을 잰다. 컨트롤 배경(0x2A)과
+    /// 상태 줄은 이 값에서 멀어 섞이지 않는다.</summary>
+    private static int GrayWidth(byte[] px, int w, int h)
+    {
+        int row = h / 2, first = -1, last = -1;
+        for (int x = 0; x < w; x++)
+        {
+            int i = (row * w + x) * 4;
+            if (px[i + 3] > 200 && Math.Abs(px[i] - 128) < 20 && Math.Abs(px[i + 1] - 128) < 20 && Math.Abs(px[i + 2] - 128) < 20)
+            {
+                if (first < 0) first = x;
+                last = x;
+            }
+        }
+        return first < 0 ? 0 : last - first + 1;
+    }
+
     [Fact]
     public void PixelSourcePathMatchesMatPath() => RunSta(() =>
     {
@@ -186,5 +204,32 @@ public class CvDispCtrlRenderTests
         {
             CvLog.Sink = prev;
         }
+    });
+
+    [Theory]
+    [InlineData(800, 1400)]   // 커지면 여백이 남았다
+    [InlineData(1400, 800)]   // 작아지면 잘린 채 남았다
+    public void ResizeRefitsWithoutANewFrame(int fromW, int toW) => RunSta(() =>
+    {
+        // 프레임이 드문 화면(관제·라인 정지 중)에서 창 크기가 바뀌면 다음 프레임이 올 때까지 옛 배율로 남아
+        // 여백이 생기거나 잘렸다(0.26.2 현장 보고 — 모니터가 빠졌다 붙어 풀스크린 창이 커진 경우).
+        // 기준은 처음부터 그 크기로 뜬 컨트롤이다 — 맞춤 식을 여기 다시 적으면 식이 바뀔 때 같이 틀린다.
+        var gray = new byte[1000 * 500];
+        Array.Fill(gray, (byte)128);
+        CamFrame Frame() => new(gray, 1000, 500, 1000, CamPixelFormat.Mono8);   // 대입마다 새 값이어야 교체로 친다
+
+        var ctrl = Ctrl(Frame());
+        Render(ctrl, fromW, 600);
+        // 한 장 더 받고 선 화면 — 첫 배치의 크기 변경이 남긴 맞춤 예약을 이 프레임이 소화한다. 이 단계를 빼면 남은
+        // 예약이 리사이즈 뒤 그리기에서 쓰여 결함이 가려진다(실측: 빼면 고치기 전 코드에서도 통과했다).
+        ctrl.Frame = Frame();
+        var before = GrayWidth(Render(ctrl, fromW, 600), fromW, 600);
+        var resized = GrayWidth(Render(ctrl, toW, 600), toW, 600);   // 새 프레임 없이 크기만 바꾼다
+        var born = GrayWidth(Render(Ctrl(Frame()), toW, 600), toW, 600);
+
+        Check(before > 0 && born > 0, $"the probe sees the picture at all ({fromW} wide={before}px, {toW} wide={born}px)");
+        Check(Math.Abs(born - before) > 50, $"a control of the other width fits the picture differently — else the next check proves nothing ({fromW}={before}px, {toW}={born}px)");
+        Check(resized == born,
+            $"resizing {fromW}->{toW} refits at once without a new frame: drew {resized}px, a control born at that size draws {born}px (the old fit was {before}px)");
     });
 }
