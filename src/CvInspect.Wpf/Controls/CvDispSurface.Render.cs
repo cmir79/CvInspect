@@ -47,7 +47,22 @@ internal sealed partial class CvDispSurface
         dc.DrawImage(_bitmap, new Rect(0, 0, _imgW, _imgH));
         dc.Pop();
 
-        if (_overlay is not null) RenderOverlay(dc, _overlay);
+        if (_overlay is not null)
+        {
+            // 켜면 이미지가 차지한 화면 사각으로만 자른다. 끄면(기본) 이 표면의 경계가 유일한 클립이라, 맞춤 여백에도
+            // 오버레이가 그려진다(소비자 실측 0.26.3: 400×150 프레임을 400×400 칸에 맞추면 영역 밖 도형·라벨의 6305px 이
+            // 위아래 여백에 찍혔다). 편집 도형은 자르지 않는다 — 가장자리의 핸들을 잡을 수 있어야 한다.
+            if (_clipOverlayToImage)
+            {
+                dc.PushClip(new RectangleGeometry(Rect.Transform(new Rect(0, 0, _imgW, _imgH), _view)));
+                RenderOverlay(dc, _overlay);
+                dc.Pop();
+            }
+            else
+            {
+                RenderOverlay(dc, _overlay);
+            }
+        }
         if (_shapes is not null) RenderShapes(dc, _shapes);
     }
 

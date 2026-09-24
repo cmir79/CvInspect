@@ -284,6 +284,61 @@ public class CvDispCtrlRenderTests
         Check(reshown == fitMid, $"a size change while hidden refits on show: drew {reshown}px, a control born at that size draws {fitMid}px");
     });
 
+    [Fact]
+    public void ClipOverlayToImageKeepsTheFitMarginsClean() => RunSta(() =>
+    {
+        // 잘린 프레임은 칸과 비율이 달라 맞춤 여백이 크다. 오버레이를 표면 경계로만 자르면 영역에 걸친 도형과 영역 밖
+        // 라벨이 그 여백에 그려져 이미지가 이어지는 것처럼 보인다(소비자 실측 0.26.3, 400×150 → 400×400: 여백 6305px).
+        // 켜면 여백은 비고 이미지 안은 그대로 그려져야 한다. 끄면(기본) 종전대로 여백에도 그린다 — 가장자리 라벨이 읽히게.
+        var gray = new byte[400 * 150];
+        Array.Fill(gray, (byte)128);
+        var frame = new CamFrame(gray, 400, 150, 400, CamPixelFormat.Mono8);
+        var overlay = new CvInspect.Vision.Overlay.ViOverlay();
+        overlay.Add(new CvInspect.Vision.Overlay.ViOverlaySeg { X1 = 200, Y1 = -200, X2 = 200, Y2 = 350 });   // 영역에 걸친 선
+        overlay.Add(new CvInspect.Vision.Overlay.ViOverlayLabel { Text = "outside", X = 200, Y = -40 });   // 영역 밖 라벨
+        var inside = new CvInspect.Vision.Overlay.ViOverlay();
+        inside.Add(new CvInspect.Vision.Overlay.ViOverlayRect { CenterX = 100, CenterY = 75, Width = 60, Height = 40 });
+
+        var bare = Render(Ctrl(frame), 400, 400);
+        // 이미지가 그려진 사각 — 회색 화소의 외접 사각에서 한 칸씩 더 뗀 바깥을 여백으로 센다(경계 행의 섞인 화소 제외).
+        // 맨 아래 상태 줄은 회색 계열이라 훑지 않는다(표면 밖이라 오버레이도 거기엔 못 그린다).
+        int x0 = 400, y0 = 400, x1 = -1, y1 = -1;
+        for (int y = 0; y < 360; y++)
+            for (int x = 0; x < 400; x++)
+            {
+                int i = (y * 400 + x) * 4;
+                if (Math.Abs(bare[i] - 128) < 4 && Math.Abs(bare[i + 1] - 128) < 4 && Math.Abs(bare[i + 2] - 128) < 4)
+                {
+                    x0 = Math.Min(x0, x); y0 = Math.Min(y0, y); x1 = Math.Max(x1, x); y1 = Math.Max(y1, y);
+                }
+            }
+        Check(y1 - y0 < 200 && y0 > 50, $"the frame is letterboxed, leaving margins above and below (image rows {y0}..{y1})");
+
+        (int Margin, int Image) Count(byte[] px)
+        {
+            int margin = 0, image = 0;
+            for (int y = 0; y < 400; y++)
+                for (int x = 0; x < 400; x++)
+                {
+                    int i = (y * 400 + x) * 4;
+                    if (px[i] == bare[i] && px[i + 1] == bare[i + 1] && px[i + 2] == bare[i + 2] && px[i + 3] == bare[i + 3]) continue;
+                    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) image++;
+                    else if (x < x0 - 1 || x > x1 + 1 || y < y0 - 1 || y > y1 + 1) margin++;
+                }
+            return (margin, image);
+        }
+
+        var off = Count(Render(new CvDispCtrl { IsToolbarVisible = false, Frame = frame, Overlay = overlay }, 400, 400));
+        var on = Count(Render(new CvDispCtrl { IsToolbarVisible = false, Frame = frame, Overlay = overlay, ClipOverlayToImage = true }, 400, 400));
+        var inOnly = Count(Render(new CvDispCtrl { IsToolbarVisible = false, Frame = frame, Overlay = inside, ClipOverlayToImage = true }, 400, 400));
+
+        Check(off.Margin > 0, $"by default the overlay still runs into the fit margin — the old behaviour is kept, and this proves the counter sees margins ({off.Margin}px)");
+        Check(on.Margin == 0, $"with ClipOverlayToImage the margins stay clean ({on.Margin}px drawn there)");
+        Check(on.Image > 0 && Math.Abs(on.Image - off.Image) <= 4,
+            $"and the part inside the image is still drawn as before (inside {on.Image}px on, {off.Image}px off)");
+        Check(inOnly.Margin == 0 && inOnly.Image > 0, $"geometry wholly inside the image is untouched by the clip ({inOnly.Image}px inside)");
+    });
+
     /// <summary>툴바 버튼을 툴팁 문구로 찾는다(버튼은 내부에서 만들어져 이름이 없다).</summary>
     private static System.Windows.Controls.Button? FindButton(DependencyObject root, string tooltip)
     {

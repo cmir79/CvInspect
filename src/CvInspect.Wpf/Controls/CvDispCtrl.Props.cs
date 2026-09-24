@@ -59,6 +59,26 @@ public sealed partial class CvDispCtrl
         set => SetValue(OverlayProperty, value);
     }
 
+    public static readonly DependencyProperty ClipOverlayToImageProperty = DependencyProperty.Register(
+        nameof(ClipOverlayToImage), typeof(bool), typeof(CvDispCtrl),
+        new PropertyMetadata(false, (d, e) => ((CvDispCtrl)d)._surface.ClipOverlayToImage = (bool)e.NewValue));
+
+    /// <summary>
+    /// 결과 오버레이를 이미지가 그려진 사각 안으로 자를지. 기본 false — 표시 영역 경계까지 그린다(종전 동작).
+    /// 그래서 이미지 가장자리에 붙은 라벨이 맞춤 여백으로 삐져나와도 끝까지 읽힌다.
+    ///
+    /// 잘린 영역을 보이는 화면(<c>ViOverlay.CropTo</c> 사본을 얹는 자리)에서는 켠다. 자른 영역에 걸친 도형(탐색 사각·긴 선)과
+    /// 영역 밖 라벨이 맞춤 여백에 그려져 이미지가 그 너머로 이어지는 것처럼 보인다 — 소비자 실측(0.26.3): 400×150 프레임을
+    /// 400×400 칸에 맞추면 오버레이 6305px 이 위아래 여백에 찍혔다. 프레임과 칸의 비율 차가 클수록 여백이 커져 번짐도 커진다.
+    /// 같은 비율이어도 맞춤이 둘레에 몇 px 을 남긴다.
+    /// 켜면 이미지 가장자리 라벨은 그 가장자리에서 잘린다. 편집 도형(<see cref="Shapes"/>)은 이 값과 무관하게 자르지 않는다.
+    /// </summary>
+    public bool ClipOverlayToImage
+    {
+        get => (bool)GetValue(ClipOverlayToImageProperty);
+        set => SetValue(ClipOverlayToImageProperty, value);
+    }
+
     public static readonly DependencyProperty ShapesProperty = DependencyProperty.Register(
         nameof(Shapes), typeof(object), typeof(CvDispCtrl),
         new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d)._surface.SetShapes(e.NewValue as IReadOnlyList<CvEditShape>)));

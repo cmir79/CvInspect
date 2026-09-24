@@ -36,6 +36,20 @@ internal sealed partial class CvDispSurface : FrameworkElement
     /// <summary>팬 모드 — true 면 좌드래그가 도형 히트 무시하고 항상 화면 이동 (툴바 ✋ 토글).</summary>
     public bool IsPanMode { get; set; }
 
+    private bool _clipOverlayToImage;
+
+    /// <summary>결과 오버레이를 이미지 사각으로 자를지 — 컨트롤의 같은 이름 속성이 설명을 갖는다.</summary>
+    public bool ClipOverlayToImage
+    {
+        get => _clipOverlayToImage;
+        set
+        {
+            if (_clipOverlayToImage == value) return;
+            _clipOverlayToImage = value;
+            InvalidateVisual();
+        }
+    }
+
     private bool _showLoadHint = true;
 
     /// <summary>무이미지 안내에 "우클릭 → 불러오기" 한 줄을 붙일지. 불러오기가 없는 화면에서는
