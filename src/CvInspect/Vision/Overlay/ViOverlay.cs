@@ -132,7 +132,9 @@ public sealed class ViOverlayLabel : ViOverlayItem
     /// <summary>요약 HUD 의 내용 — <see cref="ViHud"/> 가 받은 판정·제목·줄(줄별 색)·모서리를 그대로 싣는다. HUD 가 아니거나
     /// 내용 없이 만든 라벨이면 null. 화면이 HUD 를 떼어 따로 적을 때는 이것을 읽는다 — <see cref="Text"/> 는 그리기용으로
     /// 조립한 문자열이라 형식(머리 글자 <c>[OK]</c>/<c>[NG]</c>, 줄 구분)과 색이 바뀔 수 있고(문구 번역 등), 그것을 되읽어
-    /// 판정을 정하면 OK 가 NG 색으로 뜨는 결함이 정상처럼 보인다.</summary>
+    /// 판정을 정하면 OK 가 NG 색으로 뜨는 결함이 정상처럼 보인다.
+    /// <see cref="IsHud"/> 와는 따로 선다 — IsHud 는 "모서리에 붙은 요약 자리인가"(자르기·재부착의 근거), 이것은 그 내용이다.
+    /// ViHud 가 만든 라벨은 둘 다 있고, 손으로 IsHud 만 켠 라벨은 이것이 null 이다(그때는 Text 뿐이다).</summary>
     public ViHudSummary? Hud { get; init; }
 
     /// <summary>앵커만 옮긴 사본 — 나머지 속성을 빠짐없이 잇는다(속성이 늘면 여기 한 곳만 고친다).</summary>

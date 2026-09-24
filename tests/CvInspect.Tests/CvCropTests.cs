@@ -185,9 +185,24 @@ public class CvCropTests
         var callerLines = new List<(string Text, ViOverlayColor? Color)> { ("before", null) };
         var copied = new ViOverlay();
         copied.AddSummary(ViHudPos.TopLeft, 0, 0, true, "t", callerLines);
+        var direct = new ViHudSummary(true, "t", callerLines, ViHudPos.TopLeft);   // 공개 생성자로 직접 만들어도 같아야 한다
         callerLines[0] = ("after", null);
-        Check(((ViOverlayLabel)copied.Items[0]).Hud!.Lines[0].Text == "before",
-            "the summary keeps its own copy of the lines — the drawn text cannot be changed afterwards, so the data must not be either");
+        Check(((ViOverlayLabel)copied.Items[0]).Hud!.Lines[0].Text == "before" && direct.Lines[0].Text == "before",
+            "the summary keeps its own copy of the lines, whichever way it is built — the drawn text cannot be changed afterwards, so the data must not be either");
+        Check(direct.Lines is not (string, ViOverlayColor?)[] && direct.Lines is not List<(string, ViOverlayColor?)>,
+            "and the list it hands out cannot be written through a cast");
+        Check(direct == new ViHudSummary(true, "t", new[] { ("before", (ViOverlayColor?)null) }, ViHudPos.TopLeft)
+              && direct != new ViHudSummary(true, "t", new[] { ("other", (ViOverlayColor?)null) }, ViHudPos.TopLeft),
+            "two summaries with the same content are equal — the record compares the lines, not the list reference");
+
+        // 줄별 색은 그려지는 줄과 1:1 이어야 한다 — 항목 안에 줄바꿈이 있어도 뒤 줄의 색이 밀리지 않게.
+        var multi = new ViOverlay();
+        multi.AddSummary(ViHudPos.TopLeft, 0, 0, true, "t", new[] { ("err\nsecond", (ViOverlayColor?)ViOverlayColor.Orange), ("next", ViOverlayColor.Cyan) });
+        var ml = (ViOverlayLabel)multi.Items[0];
+        Check(ml.LineColors!.Count == ml.Text.Split('\n').Length
+              && ml.LineColors.SequenceEqual(new ViOverlayColor?[] { null, ViOverlayColor.Orange, ViOverlayColor.Orange, ViOverlayColor.Cyan })
+              && ml.Hud!.Lines.Count == 2,
+            $"a coloured entry with a line break colours each drawn line; the next entry keeps its own colour ({string.Join(",", ml.LineColors)}); the summary keeps the entries as given");
         var before = src.Items.ToList();
 
         var cut = src.CropTo(x, y, w, h);
