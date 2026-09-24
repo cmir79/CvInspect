@@ -73,6 +73,7 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
 - **Overlay primitives** (`ViOverlay`, `ViDraw`, `ViHud`) — renderer-neutral result graphics
   (segments, labels, rects, polylines) that any display layer can draw. `ViOverlay.CropTo` gives a copy
   for showing a result on the cropped region, with the summary HUD (`ViOverlayLabel.IsHud`) put back in its corner
+  (on `CvDispCtrl`, turn on `ClipOverlayToImage` for that view)
 
 Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display control,
 shape dragging, property editor), **CvInspect.Imaging** (camera acquisition contract with virtual /

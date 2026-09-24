@@ -24,6 +24,8 @@ public sealed class ViOverlay
     ///
     /// 원본은 건드리지 않는다 — 이력 저장·다른 화면이 같은 참조를 쥐고 있다(항목도 init 전용이라 새로 만든다).
     /// 영역 밖 항목도 거르지 않는다: 경계에 걸친 도형은 반만이라도 보여야 하고, 보이는 범위로 자르는 것은 렌더러 몫이다.
+    /// CvInspect.Wpf 의 <c>CvDispCtrl</c> 은 <c>ClipOverlayToImage</c> 를 켜야 이미지 사각으로 자른다 — 기본은 표시 영역
+    /// 경계까지 그려, 잘린 프레임을 맞춤 표시하면 영역 밖 항목이 맞춤 여백에 그려진다.
     /// 이 파일이 모르는 항목 종류(호스트가 파생한 것)는 옮길 방법이 없어 그대로 싣는다 — 그런 항목은 호스트가 옮긴다.
     /// </summary>
     public ViOverlay CropTo(double x, double y, double width, double height)
@@ -122,7 +124,9 @@ public sealed class ViOverlayLabel : ViOverlayItem
     /// <summary>요약 HUD 표식 — <see cref="ViHud"/> 가 켠다. 이 라벨은 이미지의 한 <b>모서리</b>에 붙어 있고
     /// (<see cref="Align"/> 이 그 모서리) 검사 기하와 무관하다 — 그래서 잘라 보일 때(<see cref="ViOverlay.CropTo"/>)
     /// 옮기지 않고 같은 모서리에 다시 붙이며, 화면이 HUD 를 따로 떼어 적을 때 이것으로 가린다.
-    /// Align 만으로는 못 가린다 — 모서리 Align 은 검출 박스 위 라벨(BottomLeft 등)에도 쓰인다. 렌더러는 읽지 않는다.</summary>
+    /// Align 만으로는 못 가린다 — 모서리 Align 은 검출 박스 위 라벨(BottomLeft 등)에도 쓰인다. 그리는 모양은 바꾸지 않는다
+    /// (렌더러는 보통 라벨로 그린다). CvInspect.Wpf 의 <c>CvDispCtrl</c> 은 오버레이를 이미지 사각으로 자를 때 이 라벨만은
+    /// 자르지 않는다 — 글자가 화면 고정 크기라 작은 잘린 영역에서 판정 사유 줄이 잘려 나간다.</summary>
     public bool IsHud { get; init; }
 
     /// <summary>앵커만 옮긴 사본 — 나머지 속성을 빠짐없이 잇는다(속성이 늘면 여기 한 곳만 고친다).</summary>

@@ -1,7 +1,8 @@
 // CvDispCtrl 오프스크린 렌더 실증 — 창 없이 RenderTargetBitmap 으로 그려 픽셀을 센다.
 // 각 절은 계약 하나를 못 박는다: Frame 에 ICvPixelSource 를 직접 넣은 렌더가 Mat 경로와 같은지, 대입 뒤 원본
 // 배열을 고쳐도 화면이 그대로인지(픽셀은 대입 시점에 백버퍼로 옮겨진다), 행 끝 패딩 버퍼가 제대로 걸리는지,
-// 계약을 어긴 값이 예외 대신 빈 화면 + 경고로 끝나는지, 크기가 바뀌면 새 프레임 없이도 그 크기에 맞추는지.
+// 계약을 어긴 값이 예외 대신 빈 화면 + 경고로 끝나는지, 크기가 바뀌면 새 프레임 없이도 그 크기에 맞추는지,
+// 오버레이를 이미지 사각으로 자르는 옵션이 여백만 비우고 모서리 HUD·편집 도형은 남기는지.
 // WPF 요소는 STA 스레드에서만 만들 수 있어 본문을 STA 로 감싼다.
 using System.Runtime.ExceptionServices;
 using System.Windows;
@@ -10,6 +11,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using CvInspect.Controls;
 using CvInspect.Imaging;
+using CvInspect.Vision.Edit;
+using CvInspect.Vision.Overlay;
 using Xunit;
 
 namespace CvInspect.Wpf.Tests;
@@ -284,59 +287,122 @@ public class CvDispCtrlRenderTests
         Check(reshown == fitMid, $"a size change while hidden refits on show: drew {reshown}px, a control born at that size draws {fitMid}px");
     });
 
-    [Fact]
-    public void ClipOverlayToImageKeepsTheFitMarginsClean() => RunSta(() =>
-    {
-        // 잘린 프레임은 칸과 비율이 달라 맞춤 여백이 크다. 오버레이를 표면 경계로만 자르면 영역에 걸친 도형과 영역 밖
-        // 라벨이 그 여백에 그려져 이미지가 이어지는 것처럼 보인다(소비자 실측 0.26.3, 400×150 → 400×400: 여백 6305px).
-        // 켜면 여백은 비고 이미지 안은 그대로 그려져야 한다. 끄면(기본) 종전대로 여백에도 그린다 — 가장자리 라벨이 읽히게.
-        var gray = new byte[400 * 150];
-        Array.Fill(gray, (byte)128);
-        var frame = new CamFrame(gray, 400, 150, 400, CamPixelFormat.Mono8);
-        var overlay = new CvInspect.Vision.Overlay.ViOverlay();
-        overlay.Add(new CvInspect.Vision.Overlay.ViOverlaySeg { X1 = 200, Y1 = -200, X2 = 200, Y2 = 350 });   // 영역에 걸친 선
-        overlay.Add(new CvInspect.Vision.Overlay.ViOverlayLabel { Text = "outside", X = 200, Y = -40 });   // 영역 밖 라벨
-        var inside = new CvInspect.Vision.Overlay.ViOverlay();
-        inside.Add(new CvInspect.Vision.Overlay.ViOverlayRect { CenterX = 100, CenterY = 75, Width = 60, Height = 40 });
+    private const int ClipBox = 400;   // 맞춤 여백 절의 칸 크기(정사각)
 
-        var bare = Render(Ctrl(frame), 400, 400);
-        // 이미지가 그려진 사각 — 회색 화소의 외접 사각에서 한 칸씩 더 뗀 바깥을 여백으로 센다(경계 행의 섞인 화소 제외).
-        // 맨 아래 상태 줄은 회색 계열이라 훑지 않는다(표면 밖이라 오버레이도 거기엔 못 그린다).
-        int x0 = 400, y0 = 400, x1 = -1, y1 = -1;
-        for (int y = 0; y < 360; y++)
-            for (int x = 0; x < 400; x++)
+    private static CamFrame GrayFrame(int w, int h)
+    {
+        var px = new byte[w * h];
+        Array.Fill(px, (byte)128);
+        return new CamFrame(px, w, h, w, CamPixelFormat.Mono8);
+    }
+
+    private static CvDispCtrl ClipCtrl(CamFrame frame, bool clip, ViOverlay? overlay = null, IReadOnlyList<CvEditShape>? shapes = null)
+        => new() { IsToolbarVisible = false, Frame = frame, Overlay = overlay, Shapes = shapes, ClipOverlayToImage = clip };
+
+    /// <summary>이미지가 그려진 사각 — 오버레이 없이 그린 화면에서 회색(128) 화소의 외접 사각. 맨 아래 상태 줄은 글자
+    /// 가장자리가 회색 계열이라 훑지 않는다(표면 밖이라 오버레이도 거기엔 못 그린다). 상태 줄은 밝은 바탕이고 표면의
+    /// 맞춤 여백은 어두운 컨트롤 바탕이라, 맨 왼쪽 열이 처음 밝아지는 행을 표면의 끝으로 본다(이미지는 맞춤 둘레 때문에
+    /// 그 열에 닿지 않는다). 고정 행수로 자르면 세로로 긴 이미지의 아래쪽을 여백으로 잘못 센다. 못 찾으면 X1 &lt; X0 이다.</summary>
+    private static (int X0, int Y0, int X1, int Y1) GrayBox(byte[] bare)
+    {
+        var surfaceRows = ClipBox;
+        for (int y = 0; y < ClipBox; y++)
+            if (bare[y * ClipBox * 4] > 0x80) { surfaceRows = y; break; }
+        int x0 = ClipBox, y0 = ClipBox, x1 = -1, y1 = -1;
+        for (int y = 0; y < surfaceRows; y++)
+            for (int x = 0; x < ClipBox; x++)
             {
-                int i = (y * 400 + x) * 4;
+                int i = (y * ClipBox + x) * 4;
                 if (Math.Abs(bare[i] - 128) < 4 && Math.Abs(bare[i + 1] - 128) < 4 && Math.Abs(bare[i + 2] - 128) < 4)
                 {
                     x0 = Math.Min(x0, x); y0 = Math.Min(y0, y); x1 = Math.Max(x1, x); y1 = Math.Max(y1, y);
                 }
             }
-        Check(y1 - y0 < 200 && y0 > 50, $"the frame is letterboxed, leaving margins above and below (image rows {y0}..{y1})");
+        return (x0, y0, x1, y1);
+    }
 
-        (int Margin, int Image) Count(byte[] px)
-        {
-            int margin = 0, image = 0;
-            for (int y = 0; y < 400; y++)
-                for (int x = 0; x < 400; x++)
-                {
-                    int i = (y * 400 + x) * 4;
-                    if (px[i] == bare[i] && px[i + 1] == bare[i + 1] && px[i + 2] == bare[i + 2] && px[i + 3] == bare[i + 3]) continue;
-                    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) image++;
-                    else if (x < x0 - 1 || x > x1 + 1 || y < y0 - 1 || y > y1 + 1) margin++;
-                }
-            return (margin, image);
-        }
+    /// <summary>오버레이 없는 화면과 달라진 화소를 이미지 안 / 여백으로 나눠 센다. 이미지 경계 한 칸(섞인 화소)은 어느 쪽에도
+    /// 세지 않는다.</summary>
+    private static (int Margin, int Image) CountChanged(byte[] px, byte[] bare, (int X0, int Y0, int X1, int Y1) b)
+    {
+        int margin = 0, image = 0;
+        for (int y = 0; y < ClipBox; y++)
+            for (int x = 0; x < ClipBox; x++)
+            {
+                int i = (y * ClipBox + x) * 4;
+                if (px[i] == bare[i] && px[i + 1] == bare[i + 1] && px[i + 2] == bare[i + 2] && px[i + 3] == bare[i + 3]) continue;
+                if (x >= b.X0 && x <= b.X1 && y >= b.Y0 && y <= b.Y1) image++;
+                else if (x < b.X0 - 1 || x > b.X1 + 1 || y < b.Y0 - 1 || y > b.Y1 + 1) margin++;
+            }
+        return (margin, image);
+    }
 
-        var off = Count(Render(new CvDispCtrl { IsToolbarVisible = false, Frame = frame, Overlay = overlay }, 400, 400));
-        var on = Count(Render(new CvDispCtrl { IsToolbarVisible = false, Frame = frame, Overlay = overlay, ClipOverlayToImage = true }, 400, 400));
-        var inOnly = Count(Render(new CvDispCtrl { IsToolbarVisible = false, Frame = frame, Overlay = inside, ClipOverlayToImage = true }, 400, 400));
+    [Theory]
+    [InlineData(400, 150)]   // 위아래 여백
+    [InlineData(150, 400)]   // 좌우 여백
+    public void ClipOverlayToImageKeepsTheFitMarginsClean(int fw, int fh) => RunSta(() =>
+    {
+        // 잘린 프레임은 칸과 비율이 달라 맞춤 여백이 크다. 오버레이를 표면 경계로만 자르면 영역에 걸친 도형과 영역 밖
+        // 라벨이 그 여백에 그려져 이미지가 이어지는 것처럼 보인다(소비자 실측 0.26.3 — 조건은 속성 주석).
+        // 켜면 여백은 비고 이미지 안은 그대로 그려져야 한다. 끄면(기본) 종전대로 여백에도 그린다.
+        var frame = GrayFrame(fw, fh);
+        var overlay = new ViOverlay();
+        overlay.Add(new ViOverlaySeg { X1 = fw / 2.0, Y1 = -200, X2 = fw / 2.0, Y2 = fh + 200 });   // 위아래로 걸친 선
+        overlay.Add(new ViOverlaySeg { X1 = -200, Y1 = fh / 2.0, X2 = fw + 200, Y2 = fh / 2.0 });   // 좌우로 걸친 선
+        overlay.Add(new ViOverlayLabel { Text = "outside", X = fw / 2.0, Y = -40 });
+        overlay.Add(new ViOverlayLabel { Text = "outside", X = -60, Y = fh / 2.0 });
+        var inside = new ViOverlay();
+        inside.Add(new ViOverlayRect { CenterX = fw / 2.0, CenterY = fh / 2.0, Width = fw / 4.0, Height = fh / 4.0 });
 
+        var bare = Render(ClipCtrl(frame, false), ClipBox, ClipBox);
+        var b = GrayBox(bare);
+        var wide = fw > fh;
+        Check(b.X1 >= b.X0 && b.Y1 >= b.Y0 && (wide ? b.X1 - b.X0 > 300 && b.Y0 > 50 : b.Y1 - b.Y0 > 300 && b.X0 > 50),
+            $"the detector found the image and the fit leaves {(wide ? "margins above and below" : "margins left and right")} (image {b})");
+
+        var off = CountChanged(Render(ClipCtrl(frame, false, overlay), ClipBox, ClipBox), bare, b);
+        var on = CountChanged(Render(ClipCtrl(frame, true, overlay), ClipBox, ClipBox), bare, b);
         Check(off.Margin > 0, $"by default the overlay still runs into the fit margin — the old behaviour is kept, and this proves the counter sees margins ({off.Margin}px)");
         Check(on.Margin == 0, $"with ClipOverlayToImage the margins stay clean ({on.Margin}px drawn there)");
-        Check(on.Image > 0 && Math.Abs(on.Image - off.Image) <= 4,
-            $"and the part inside the image is still drawn as before (inside {on.Image}px on, {off.Image}px off)");
-        Check(inOnly.Margin == 0 && inOnly.Image > 0, $"geometry wholly inside the image is untouched by the clip ({inOnly.Image}px inside)");
+        Check(on.Image > 0 && on.Image == off.Image,
+            $"and exactly the same pixels are drawn inside the image (inside {on.Image}px on, {off.Image}px off)");
+
+        var inOn = CountChanged(Render(ClipCtrl(frame, true, inside), ClipBox, ClipBox), bare, b);
+        var inOff = CountChanged(Render(ClipCtrl(frame, false, inside), ClipBox, ClipBox), bare, b);
+        Check(inOn.Image > 0 && inOn == inOff,
+            $"geometry wholly inside the image draws the same pixels with the clip on as off ({inOn} vs {inOff})");
+    });
+
+    [Fact]
+    public void ClipLeavesTheCornerHudAndEditShapesWhole() => RunSta(() =>
+    {
+        // 띠 모양으로 잘린 영역 — 화면에 그려진 이미지가 HUD 블록보다 낮다. HUD 글자는 화면 고정 크기라, 자르면 판정 사유
+        // 줄이 사라지고 헤더 한 줄만 남아 온전한 HUD 처럼 보인다(게시 전 검토 실측: 83% 소실). 그래서 HUD 는 자르지 않는다.
+        var frame = GrayFrame(1000, 60);
+        var hud = new ViOverlay();
+        hud.AddSummary(false, "PatternFind", "line 1", "line 2", "line 3", "line 4", "line 5");
+        var h = (ViOverlayLabel)hud.Items[0];
+        var plain = new ViOverlay();   // 같은 글자·자리에 HUD 표식만 없는 라벨 — 이 이미지에서 클립이 일한다는 대조군
+        plain.Add(new ViOverlayLabel { Text = h.Text, X = h.X, Y = h.Y, FontSize = h.FontSize, Align = h.Align, Color = h.Color });
+
+        var bare = Render(ClipCtrl(frame, false), ClipBox, ClipBox);
+        var b = GrayBox(bare);
+        Check(b.X1 > b.X0 && b.Y1 >= b.Y0 && b.Y1 - b.Y0 < 60, $"the strip is drawn low and wide (image {b})");
+
+        var hudOff = CountChanged(Render(ClipCtrl(frame, false, hud), ClipBox, ClipBox), bare, b);
+        var hudOn = CountChanged(Render(ClipCtrl(frame, true, hud), ClipBox, ClipBox), bare, b);
+        var plainOn = CountChanged(Render(ClipCtrl(frame, true, plain), ClipBox, ClipBox), bare, b);
+        Check(hudOff.Margin > 0, $"the HUD block is taller than the drawn strip and runs into the margin — else the next checks prove nothing ({hudOff.Margin}px)");
+        Check(plainOn.Margin == 0, $"the same label without the HUD mark is clipped — the clip is at work on this image ({plainOn.Margin}px in the margin)");
+        Check(hudOn == hudOff, $"the corner HUD is not clipped, so its reason lines stay readable ({hudOn} on vs {hudOff} off)");
+
+        // 편집 도형 — 이미지 가장자리에 걸친 사각. 켜도 여백 쪽 핸들이 그려져야 잡을 수 있다.
+        var rect = new CvEditRect { Label = "Search" };
+        rect.Set(-100, -30, 400, 80);
+        IReadOnlyList<CvEditShape> shapes = [rect];
+        var shOff = CountChanged(Render(ClipCtrl(frame, false, null, shapes), ClipBox, ClipBox), bare, b);
+        var shOn = CountChanged(Render(ClipCtrl(frame, true, null, shapes), ClipBox, ClipBox), bare, b);
+        Check(shOn.Margin > 0 && shOn == shOff, $"edit shapes are not clipped to the image — edge handles stay grabbable ({shOn} on vs {shOff} off)");
     });
 
     /// <summary>툴바 버튼을 툴팁 문구로 찾는다(버튼은 내부에서 만들어져 이름이 없다).</summary>

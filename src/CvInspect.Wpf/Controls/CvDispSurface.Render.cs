@@ -49,18 +49,21 @@ internal sealed partial class CvDispSurface
 
         if (_overlay is not null)
         {
-            // 켜면 이미지가 차지한 화면 사각으로만 자른다. 끄면(기본) 이 표면의 경계가 유일한 클립이라, 맞춤 여백에도
-            // 오버레이가 그려진다(소비자 실측 0.26.3: 400×150 프레임을 400×400 칸에 맞추면 영역 밖 도형·라벨의 6305px 이
-            // 위아래 여백에 찍혔다). 편집 도형은 자르지 않는다 — 가장자리의 핸들을 잡을 수 있어야 한다.
+            // 켜면 이미지가 차지한 화면 사각으로 자른다(근거·실측은 CvDispCtrl.ClipOverlayToImage 주석). 끄면(기본) 이 표면의
+            // 경계가 유일한 클립이라 맞춤 여백에도 그려진다.
+            // 모서리 HUD 는 켜도 자르지 않고 그 뒤에 그린다 — 글자가 화면 고정 크기라 이미지가 작게 그려지면 블록이 이미지보다
+            // 커지는데, 자르면 판정 사유 줄이 사라지고 남은 헤더 한 줄이 온전한 HUD 처럼 보인다(게시 전 검토 실측:
+            // 1000×60 띠를 400×400 칸에 → HUD 픽셀 83% 소실). 편집 도형도 자르지 않는다 — 가장자리 핸들을 잡을 수 있어야 한다.
             if (_clipOverlayToImage)
             {
                 dc.PushClip(new RectangleGeometry(Rect.Transform(new Rect(0, 0, _imgW, _imgH), _view)));
-                RenderOverlay(dc, _overlay);
+                RenderOverlay(dc, _overlay, item => !IsCornerHud(item));
                 dc.Pop();
+                RenderOverlay(dc, _overlay, IsCornerHud);
             }
             else
             {
-                RenderOverlay(dc, _overlay);
+                RenderOverlay(dc, _overlay, null);
             }
         }
         if (_shapes is not null) RenderShapes(dc, _shapes);
@@ -107,11 +110,21 @@ internal sealed partial class CvDispSurface
         StatusChanged?.Invoke();   // 컨트롤이 디스패처 경유로 갱신 — OnRender 중 호출 안전
     }
 
-    private void RenderOverlay(DrawingContext dc, ViOverlay overlay)
+    /// <summary>이미지 모서리에 붙은 요약 HUD — <c>ViOverlay.CropTo</c> 가 같은 모서리로 다시 붙이는 것과 같은 판정.</summary>
+    private static bool IsCornerHud(ViOverlayItem item)
+        => item is ViOverlayLabel
+        {
+            IsHud: true,
+            Align: ViOverlayAlign.TopLeft or ViOverlayAlign.TopRight or ViOverlayAlign.BottomLeft or ViOverlayAlign.BottomRight,
+        };
+
+    /// <summary>오버레이 항목을 목록 순서대로 그린다. <paramref name="include"/> 가 있으면 그것이 참인 항목만.</summary>
+    private void RenderOverlay(DrawingContext dc, ViOverlay overlay, Func<ViOverlayItem, bool>? include)
     {
         var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         foreach (var item in overlay.Items)
         {
+            if (include is not null && !include(item)) continue;
             var brush = MapBrush(item.Color);
             var pen = new Pen(brush, 2);
             if (item.IsDashed) pen.DashStyle = DashStyles.Dash;
