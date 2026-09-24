@@ -118,8 +118,9 @@ public static class ViHud
     /// <summary>
     /// 잘린 이미지(<paramref name="width"/>×<paramref name="height"/>)의 같은 모서리에 다시 붙인 사본 —
     /// <see cref="ViOverlay.CropTo"/> 가 부른다. 왼쪽·위 모서리는 좌표가 곧 가장자리까지의 거리라 그대로 둔다
-    /// (시작 높이를 지정한 갈래가 준 높이도 그대로 산다). 오른쪽·아래는 원본 크기를 모르므로 여기서 붙이는
-    /// 여백으로 다시 잡는다 — 위 갈래들이 오른쪽·아래에 붙일 때 쓰는 값과 같아서 결과가 처음부터 잘린 이미지에
+    /// (시작 높이를 지정한 갈래가 준 높이도 그대로 산다 — 그 높이보다 낮게 자르면 HUD 가 잘린 이미지 아래로 나간다.
+    /// 원본 높이에 비례해 준 값이면 잘린 이미지에서는 그만큼 비례하지 않는다). 오른쪽·아래는 원본 크기를 모르므로 여기서
+    /// 붙이는 여백으로 다시 잡는다 — 위 갈래들이 오른쪽·아래에 붙일 때 쓰는 값과 같아서 결과가 처음부터 잘린 이미지에
     /// 붙인 것과 같다.
     /// </summary>
     internal static ViOverlayLabel Reanchor(ViOverlayLabel hud, double width, double height)

@@ -16,9 +16,11 @@ public sealed class ViOverlay
     /// 잘라 낸 이미지 위에 얹을 사본 — (x, y, width, height) 는 원본 좌표의 자른 자리(<c>CvImageOps.Crop</c> 이 돌려준
     /// used 를 그대로 넘긴다. 같은 사각으로 <c>CamFrame.Crop</c> 을 하면 프레임과 그림이 맞는다).
     ///
-    /// 항목은 전부 (−x, −y) 만큼 옮긴다. 요약 HUD(<see cref="ViOverlayLabel.IsHud"/>)만은 옮기지 않고 잘린 이미지의
-    /// <b>같은 모서리</b>에 다시 붙인다 — 원본 모서리에 붙은 라벨을 그대로 옮기면 잘린 이미지 밖(음수 좌표)으로 나간다.
+    /// 항목은 전부 (−x, −y) 만큼 옮긴다. 요약 HUD(<see cref="ViOverlayLabel.IsHud"/> 이고 모서리 정렬)만은 옮기지 않고
+    /// 잘린 이미지의 <b>같은 모서리</b>에 다시 붙인다 — 원본 모서리에 붙은 라벨을 그대로 옮기면 잘린 이미지 밖으로 나간다
+    /// (왼쪽·위 모서리는 음수 좌표로, 오른쪽·아래 모서리는 잘린 폭·높이 너머로).
     /// 붙이는 규칙은 <see cref="ViHud"/> 가 처음 붙일 때와 같다(왼쪽·위는 가장자리까지의 거리 보존, 오른쪽·아래는 HUD 여백).
+    /// HUD 표식이 있어도 모서리 정렬이 아니면 붙일 모서리가 없으므로 다른 라벨처럼 옮긴다.
     ///
     /// 원본은 건드리지 않는다 — 이력 저장·다른 화면이 같은 참조를 쥐고 있다(항목도 init 전용이라 새로 만든다).
     /// 영역 밖 항목도 거르지 않는다: 경계에 걸친 도형은 반만이라도 보여야 하고, 보이는 범위로 자르는 것은 렌더러 몫이다.
@@ -30,7 +32,11 @@ public sealed class ViOverlay
         foreach (var item in Items)
             cut.Add(item switch
             {
-                ViOverlayLabel { IsHud: true } hud => ViHud.Reanchor(hud, width, height),
+                ViOverlayLabel
+                {
+                    IsHud: true,
+                    Align: ViOverlayAlign.TopLeft or ViOverlayAlign.TopRight or ViOverlayAlign.BottomLeft or ViOverlayAlign.BottomRight,
+                } hud => ViHud.Reanchor(hud, width, height),
                 ViOverlayLabel l => l.MovedTo(l.X - x, l.Y - y),
                 ViOverlaySeg s => new ViOverlaySeg
                 {

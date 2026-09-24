@@ -302,10 +302,11 @@ public sealed partial class MainVm : ObservableObject, IDisposable
             DemoRecipeRunner.WireTrainHooks(_recipe, () => _last?.AsMat());
             OnPropertyChanged(nameof(Tools));
             RecipePath = dlg.FolderName;
-            IsDirty = false;
+            IsDirty = loaded.MovedLegacyCrop;   // 옮긴 크롭은 다시 저장해야 옛 키가 빠진다 — 제목의 * 로 알린다
             SelectedTool = Tools.FirstOrDefault();
             Rerun();
-            Status = $"loaded {Tools.Count} tool(s) from {dlg.FolderName}";
+            Status = $"loaded {Tools.Count} tool(s) from {dlg.FolderName}"
+                     + (loaded.MovedLegacyCrop ? " — moved a pre-0.27 crop into a Crop tool, save to keep it" : "");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         {

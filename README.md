@@ -214,8 +214,14 @@ configure it to skip delegate-typed members.
 back). An old file with the crop on still loads, but `Preprocess` refuses to run until the crop is
 moved — the tools after it were taught on the cropped image, and running them uncropped would put
 every one of them off by the crop origin with nothing looking wrong. Call `CvCropOpt.FromLegacy`
-when the recipe loads, put the returned crop in front, and save the image-process file again so
-the old keys are dropped.
+when the recipe loads, put the returned crop in front, and save the image-process file again so the
+crop is not moved a second time. With `System.Text.Json` that save also drops the old keys; a
+serializer that ignores its conditional attributes (Json.NET) keeps writing them as `false`/`0`,
+which reads back as a crop that is off.
+
+This is a one-way step: once a migrated recipe is saved, a host on 0.26.x or earlier reads no crop
+from the image-process file and does not know the crop tool — it runs uncropped, with no error.
+Roll recipes back together with the host (keep a copy from before the first 0.27 save).
 
 ## Samples
 

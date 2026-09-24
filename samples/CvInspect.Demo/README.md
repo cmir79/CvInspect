@@ -30,7 +30,7 @@ part before they run — the cyan dashed geometry shows where they actually ran,
 where you taught them. Untrained, the tools run at the taught geometry and fail honestly once the
 part moves.
 
-**Stages.** A Crop tool (`CvCropOpt`, drawn in original coordinates) and a Preprocess tool
+**Stages.** A Crop tool (`CvCropOpt`, its box drawn on its own input — the original when it comes first) and a Preprocess tool
 (area-resize by `SampleX`/`SampleY` → median, `CvImageProcessOpt`) each change the image every tool
 below them sees, and their geometry is taught in that stage's coordinates. The crop moves the origin,
 the resize changes the scale; `CvImageOps.MapOf(used, pre)` carries both. Select such a tool and the display switches to its stage image, so you drag shapes on

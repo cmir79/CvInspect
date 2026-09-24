@@ -124,6 +124,22 @@ public class CvCropTests
     }
 
     [Fact]
+    public void AnOldCropWithoutItsSizeMovesAtTheOldDefaultSize()
+    {
+        // 0.26 은 폭·높이 키가 없는 파일을 기본값 640×480 으로 잘랐다. 0 으로 옮기면 퇴화 사각이 되어 자르기가 전체로
+        // 폴백하고, 원점만큼 어긋난 판정이 정상처럼 나간다 — Preprocess 가 막으려던 바로 그 결과가 한 단계 뒤에서 난다.
+        var ip = JsonSerializer.Deserialize<CvImageProcessOpt>("""{"UseCrop":true,"CropX":100,"CropY":50,"SampleX":2}""")!;
+        var moved = CvCropOpt.FromLegacy(ip);
+        Check(moved is { CropX: 100, CropY: 50, CropW: 640, CropH: 480 },
+            $"missing CropW/CropH move as 640x480, as 0.26 cropped that file: {moved?.CropW}x{moved?.CropH}");
+        using var big = new Mat(800, 1000, MatType.CV_8UC1, Scalar.All(0));
+        using var cut = CvImageOps.Crop(big, moved!, out var used);
+        Check(used == new Rect(100, 50, 640, 480), $"and the crop actually cuts there instead of falling back to the whole image: {used}");
+        var direct = JsonSerializer.Deserialize<CvCropOpt>("""{"UseCrop":true,"CropX":100,"CropY":50,"SampleX":2}""")!;
+        Check((direct.CropW, direct.CropH) == (moved!.CropW, moved.CropH), "both documented migration paths agree on the missing size");
+    }
+
+    [Fact]
     public void AnOldFileWithTheCropOffLoadsQuietly()
     {
         var ip = JsonSerializer.Deserialize<CvImageProcessOpt>(OldUncroppedJson)!;
@@ -141,19 +157,21 @@ public class CvCropTests
         const double imgW = 1000, imgH = 800, x = 300, y = 200, w = 400, h = 300;
         var src = new ViOverlay();
         var seg = new ViOverlaySeg { X1 = 310, Y1 = 220, X2 = 350, Y2 = 260, HasEndArrow = true, IsDashed = true, Color = ViOverlayColor.Cyan };
-        var rect = new ViOverlayRect { CenterX = 400, CenterY = 300, Width = 50, Height = 30, AngleDeg = 10 };
-        var poly = new ViOverlayPoly { Points = [(300, 200), (320, 210)], IsClosed = false };
+        var rect = new ViOverlayRect { CenterX = 400, CenterY = 300, Width = 50, Height = 30, AngleDeg = 10, Color = ViOverlayColor.Orange, IsDashed = true };
+        var poly = new ViOverlayPoly { Points = [(300, 200), (320, 210)], IsClosed = false, Color = ViOverlayColor.Teal, IsDashed = true };
         var boxLabel = new ViOverlayLabel { Text = "[OK] A 12", X = 330, Y = 240, Align = ViOverlayAlign.BottomLeft };
+        var centredHud = new ViOverlayLabel { Text = "[NG] centred", X = 500, Y = 250, Align = ViOverlayAlign.TopCenter, IsHud = true };
         src.Add(seg);
         src.Add(rect);
         src.Add(poly);
         src.Add(boxLabel);
+        src.Add(centredHud);
         src.AddSummary(true, "tl", "a");
         src.AddSummary(30, false, "tl-y");
         src.AddSummary(ViHudPos.TopRight, imgW, imgH, true, "tr");
         src.AddSummary(ViHudPos.BottomLeft, imgW, imgH, false, "bl");
         src.AddSummary(ViHudPos.BottomRight, imgW, imgH, true, "br", [("x", ViOverlayColor.Yellow)]);
-        var huds = src.Items.OfType<ViOverlayLabel>().Where(l => l.IsHud).ToList();
+        var huds = src.Items.OfType<ViOverlayLabel>().Where(l => l.IsHud && !ReferenceEquals(l, centredHud)).ToList();
         Check(huds.Count == 5 && !boxLabel.IsHud,
             "every AddSummary branch marks its label as HUD; a corner-aligned box label starting with [OK] does not get the mark — Align and text cannot tell them apart");
         var before = src.Items.ToList();
@@ -167,11 +185,16 @@ public class CvCropTests
         var s = (ViOverlaySeg)cut.Items[0];
         Check((s.X1, s.Y1, s.X2, s.Y2, s.HasEndArrow, s.IsDashed, s.Color) == (10, 20, 50, 60, true, true, ViOverlayColor.Cyan), $"segment moved by (-x,-y) with its style: {s.X1},{s.Y1}");
         var r = (ViOverlayRect)cut.Items[1];
-        Check((r.CenterX, r.CenterY, r.Width, r.Height, r.AngleDeg) == (100, 100, 50, 30, 10), "rect moves its centre only");
+        Check((r.CenterX, r.CenterY, r.Width, r.Height, r.AngleDeg, r.Color, r.IsDashed) == (100, 100, 50, 30, 10, ViOverlayColor.Orange, true),
+            "rect moves its centre only and keeps its style");
         var p = (ViOverlayPoly)cut.Items[2];
-        Check(p.Points.SequenceEqual(new (double X, double Y)[] { (0, 0), (20, 10) }) && !p.IsClosed, "poly points move");
+        Check(p.Points.SequenceEqual(new (double X, double Y)[] { (0, 0), (20, 10) }) && !p.IsClosed && p.Color == ViOverlayColor.Teal && p.IsDashed,
+            "poly points move and it keeps its style");
         var bl = (ViOverlayLabel)cut.Items[3];
         Check((bl.X, bl.Y, bl.Align, bl.IsHud) == (30, 40, ViOverlayAlign.BottomLeft, false), "a non-HUD label moves with its geometry");
+        var ch = (ViOverlayLabel)cut.Items[4];
+        Check((ch.X, ch.Y, ch.IsHud) == (200, 50, true),
+            "a HUD-marked label with no corner alignment has no corner to go back to — it moves like any label");
 
         // HUD — 잘린 이미지에 처음부터 붙인 것과 같은 자리여야 한다.
         var fresh = new ViOverlay();
@@ -180,7 +203,7 @@ public class CvCropTests
         fresh.AddSummary(ViHudPos.TopRight, w, h, true, "tr");
         fresh.AddSummary(ViHudPos.BottomLeft, w, h, false, "bl");
         fresh.AddSummary(ViHudPos.BottomRight, w, h, true, "br", [("x", ViOverlayColor.Yellow)]);
-        var got = cut.Items.OfType<ViOverlayLabel>().Where(l => l.IsHud).ToList();
+        var got = cut.Items.Skip(5).OfType<ViOverlayLabel>().ToList();
         for (var i = 0; i < 5; i++)
         {
             var a = got[i];

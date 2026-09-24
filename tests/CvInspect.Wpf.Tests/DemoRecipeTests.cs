@@ -173,6 +173,7 @@ public class DemoRecipeTests
             Check(loaded.Tools.Select(t => t.Kind).SequenceEqual(new[] { DemoToolKind.Crop, DemoToolKind.Preprocess, DemoToolKind.Circle }),
                 "the old crop becomes a Crop tool just above the Preprocess that carried it: " + string.Join(", ", loaded.Tools.Select(t => $"{t.Key}:{t.Kind}")));
             Check(loaded.Tools[0].Opt is CvCropOpt { UseCrop: true, CropX: ox, CropY: oy, CropW: 480, CropH: 340 }, "with the saved rect");
+            Check(loaded.MovedLegacyCrop, "the loaded recipe says it differs from its folder, so the window can ask for the save");
 
             using var img = DemoImage.Create();
             using var run = DemoRecipeRunner.Run(loaded, img);
@@ -183,7 +184,8 @@ public class DemoRecipeTests
 
             loaded.Save(dir2);
             Check(!File.ReadAllText(Path.Combine(dir2, "pre.json")).Contains("Crop"), "saving once drops the old keys from the Preprocess file");
-            Check(DemoRecipe.Load(dir2).Tools.Count(t => t.Kind == DemoToolKind.Crop) == 1, "and a reload does not move the crop a second time");
+            var reloaded = DemoRecipe.Load(dir2);
+            Check(reloaded.Tools.Count(t => t.Kind == DemoToolKind.Crop) == 1 && !reloaded.MovedLegacyCrop, "and a reload does not move the crop a second time");
         }
         finally
         {

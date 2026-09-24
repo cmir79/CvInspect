@@ -54,8 +54,9 @@ public sealed class CamFrame : ICvPixelSource
         _ => throw new NotSupportedException($"CamPixelFormat.{Format} has no channel mapping."),
     };
 
-    /// <summary>이 객체가 만들어진 시각(UTC) — 즉 <b>호스트에 도착한 시각</b>이지 촬영 시각이 아니다.
-    /// 전송과 대기열에 걸린 시간이 이미 지난 뒤의 값이다. 촬영 시각은 <see cref="DeviceTimestamp"/> 를 본다.</summary>
+    /// <summary>프레임이 <b>호스트에 도착한 시각</b>(UTC) — 발행한 프레임을 만든 순간의 값이며 촬영 시각이 아니다.
+    /// 전송과 대기열에 걸린 시간이 이미 지난 뒤의 값이다. 촬영 시각은 <see cref="DeviceTimestamp"/> 를 본다.
+    /// 같은 장에서 파생한 프레임(<see cref="Crop"/>)은 원본의 값을 잇는다 — 파생한 시각이 아니다.</summary>
     public DateTime TimestampUtc { get; }
 
     /// <summary>
@@ -72,8 +73,8 @@ public sealed class CamFrame : ICvPixelSource
 
     /// <summary>
     /// 영역을 잘라 낸 새 프레임 — 같은 장이므로 <see cref="Format"/>·<see cref="DeviceTimestamp"/>·<see cref="TimestampUtc"/>
-    /// 를 그대로 잇는다. 픽셀은 빈틈없는 stride 로 복사한다(이 프레임의 배열은 다른 소비자가 쥐고 있고 다시 쓰지 않는다).
-    /// 컬러 포맷도 같다.
+    /// 를 그대로 잇는다. 픽셀은 제 배열에 빈틈없는 stride 로 복사한다 — 이 타입은 배열 첫 바이트가 첫 픽셀이라
+    /// 원본 배열 가운데를 가리킬 방법이 없다. 컬러 포맷도 같다.
     ///
     /// 영역은 프레임 안에 다 들어와야 한다 — 벗어나면 던진다. 잘린 프레임에 얹을 오버레이도 같은 사각으로 옮기므로
     /// (<c>ViOverlay.CropTo</c>) 여기서 조용히 깎으면 프레임과 그림이 어긋난다. <c>CvImageOps.Crop</c> 이 돌려준 자리를
@@ -82,7 +83,8 @@ public sealed class CamFrame : ICvPixelSource
     public CamFrame Crop(int x, int y, int width, int height)
     {
         if (width < 1 || height < 1 || x < 0 || y < 0 || (long)x + width > Width || (long)y + height > Height)
-            throw new ArgumentOutOfRangeException(nameof(width),
+            throw new ArgumentOutOfRangeException(
+                width < 1 ? nameof(width) : height < 1 ? nameof(height) : x < 0 || (long)x + width > Width ? nameof(x) : nameof(y),
                 $"Crop {x},{y} {width}x{height} is not inside the {Width}x{Height} frame.");
 
         var bpp = Channels;

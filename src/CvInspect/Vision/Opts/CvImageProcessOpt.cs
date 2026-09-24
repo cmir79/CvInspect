@@ -35,11 +35,16 @@ public sealed class CvImageProcessOpt
     // 어긋난 자리에서 판정하고, 그 판정은 정상처럼 나간다. 그래서 읽기는 받고, 켜진 채로 Preprocess 에 오면 던지고,
     // 옮기는 길은 CvCropOpt.FromLegacy 하나로 둔다.
     // 저장: 켜져 있으면 그대로 실린다(이관 전에 값을 잃지 않게). 꺼져 있으면 게터가 기본값을 내 새 저장에서 빠진다 —
-    // 쓰지 않던 옛 자리를 파일마다 끌고 다니지 않는다.
+    // 쓰지 않던 옛 자리를 파일마다 끌고 다니지 않는다(System.Text.Json 기준. 이 조건 어트리뷰트를 모르는 직렬화기는
+    // false·0 으로 계속 쓰지만 읽으면 꺼진 크롭이라 해가 없다).
+    // 폭·높이의 초깃값 640×480 은 0.26 의 기본값 그대로다 — 키가 빠진 파일을 0.26 이 그 크기로 잘랐으므로, 0 으로 두면
+    // 이관한 크롭이 퇴화 사각이 되어 전체 이미지로 돌고 원점만큼 어긋난 판정이 정상처럼 나간다.
     private const string LegacyCropNote = "Cropping moved to CvCropOpt in 0.27 — move a saved crop with CvCropOpt.FromLegacy.";
 
+    private const double LegacyDefaultW = 640, LegacyDefaultH = 480;
+
     private bool _useCrop;
-    private double _cropX, _cropY, _cropW, _cropH;
+    private double _cropX, _cropY, _cropW = LegacyDefaultW, _cropH = LegacyDefaultH;
 
     [Obsolete(LegacyCropNote)]
     [Browsable(false)]
@@ -83,6 +88,8 @@ public sealed class CvImageProcessOpt
     internal void ClearLegacyCrop()
     {
         _useCrop = false;
-        _cropX = _cropY = _cropW = _cropH = 0;
+        _cropX = _cropY = 0;
+        _cropW = LegacyDefaultW;
+        _cropH = LegacyDefaultH;
     }
 }

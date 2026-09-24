@@ -44,6 +44,9 @@ public sealed class DemoRecipe
 
     public ObservableCollection<DemoToolEntry> Tools { get; } = [];
 
+    /// <summary><see cref="Load"/> 가 0.26 까지의 크롭을 자르기 툴로 옮겼는지 — 그렇다면 폴더와 달라진 것이라 저장해야 한다.</summary>
+    public bool MovedLegacyCrop { get; private set; }
+
     /// <summary>예제 기본 레시피 — 픽스처 + 라인 + 원 + 블랍, 기하는 합성 부품 기준.</summary>
     public static DemoRecipe Default()
     {
@@ -192,6 +195,7 @@ public sealed class DemoRecipe
                        .Any(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase)))
                     key += "-";
                 r.Tools.Add(new DemoToolEntry(key, DemoToolKind.Crop, moved));
+                r.MovedLegacyCrop = true;
             }
             r.Tools.Add(new DemoToolEntry(t.Key, t.Kind, opt));
         }
