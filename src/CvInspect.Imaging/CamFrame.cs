@@ -15,6 +15,13 @@ public sealed class CamFrame : ICvPixelSource
 {
     public CamFrame(byte[] pixels, int width, int height, int stride, CamPixelFormat format,
                     TimeSpan? deviceTimestamp = null)
+        : this(pixels, width, height, stride, format, deviceTimestamp, DateTime.UtcNow)
+    {
+    }
+
+    // 도착 시각을 잇는 갈래 — 같은 장에서 파생한 프레임(Crop)이 "지금" 을 새로 찍으면 대기 시간 계산이 거짓이 된다.
+    private CamFrame(byte[] pixels, int width, int height, int stride, CamPixelFormat format,
+                     TimeSpan? deviceTimestamp, DateTime timestampUtc)
     {
         DeviceTimestamp = deviceTimestamp;
         Pixels = pixels ?? throw new ArgumentNullException(nameof(pixels));
@@ -22,7 +29,7 @@ public sealed class CamFrame : ICvPixelSource
         Height = height;
         Stride = stride;
         Format = format;
-        TimestampUtc = DateTime.UtcNow;
+        TimestampUtc = timestampUtc;
     }
 
     public byte[] Pixels { get; }
@@ -62,6 +69,29 @@ public sealed class CamFrame : ICvPixelSource
     /// 전송 뒤 어딘가에서 앉아 있던 시간이다. 화면이 밀리는데 처리량은 정상일 때 이 값이 원인을 가른다.
     /// </summary>
     public TimeSpan? DeviceTimestamp { get; }
+
+    /// <summary>
+    /// 영역을 잘라 낸 새 프레임 — 같은 장이므로 <see cref="Format"/>·<see cref="DeviceTimestamp"/>·<see cref="TimestampUtc"/>
+    /// 를 그대로 잇는다. 픽셀은 빈틈없는 stride 로 복사한다(이 프레임의 배열은 다른 소비자가 쥐고 있고 다시 쓰지 않는다).
+    /// 컬러 포맷도 같다.
+    ///
+    /// 영역은 프레임 안에 다 들어와야 한다 — 벗어나면 던진다. 잘린 프레임에 얹을 오버레이도 같은 사각으로 옮기므로
+    /// (<c>ViOverlay.CropTo</c>) 여기서 조용히 깎으면 프레임과 그림이 어긋난다. <c>CvImageOps.Crop</c> 이 돌려준 자리를
+    /// 같은 프레임에 넘기면 언제나 안쪽이다.
+    /// </summary>
+    public CamFrame Crop(int x, int y, int width, int height)
+    {
+        if (width < 1 || height < 1 || x < 0 || y < 0 || (long)x + width > Width || (long)y + height > Height)
+            throw new ArgumentOutOfRangeException(nameof(width),
+                $"Crop {x},{y} {width}x{height} is not inside the {Width}x{Height} frame.");
+
+        var bpp = Channels;
+        var rowBytes = width * bpp;
+        var buf = new byte[rowBytes * height];
+        for (var r = 0; r < height; r++)
+            Buffer.BlockCopy(Pixels, (y + r) * Stride + x * bpp, buf, r * rowBytes, rowBytes);
+        return new CamFrame(buf, width, height, rowBytes, Format, DeviceTimestamp, TimestampUtc);
+    }
 
     /// <summary>Mat → CamFrame 실체화(픽셀 복사) — 소스 구현이 발행 직전에 쓴다.
     /// 8UC1/8UC3/8UC4 만 지원(그 외는 예외). 타이트 패킹(stride = 폭×채널)으로 담는다.</summary>

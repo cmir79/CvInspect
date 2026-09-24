@@ -11,6 +11,46 @@ public sealed class ViOverlay
     public List<ViOverlayItem> Items { get; } = [];
 
     public void Add(ViOverlayItem item) => Items.Add(item);
+
+    /// <summary>
+    /// 잘라 낸 이미지 위에 얹을 사본 — (x, y, width, height) 는 원본 좌표의 자른 자리(<c>CvImageOps.Crop</c> 이 돌려준
+    /// used 를 그대로 넘긴다. 같은 사각으로 <c>CamFrame.Crop</c> 을 하면 프레임과 그림이 맞는다).
+    ///
+    /// 항목은 전부 (−x, −y) 만큼 옮긴다. 요약 HUD(<see cref="ViOverlayLabel.IsHud"/>)만은 옮기지 않고 잘린 이미지의
+    /// <b>같은 모서리</b>에 다시 붙인다 — 원본 모서리에 붙은 라벨을 그대로 옮기면 잘린 이미지 밖(음수 좌표)으로 나간다.
+    /// 붙이는 규칙은 <see cref="ViHud"/> 가 처음 붙일 때와 같다(왼쪽·위는 가장자리까지의 거리 보존, 오른쪽·아래는 HUD 여백).
+    ///
+    /// 원본은 건드리지 않는다 — 이력 저장·다른 화면이 같은 참조를 쥐고 있다(항목도 init 전용이라 새로 만든다).
+    /// 영역 밖 항목도 거르지 않는다: 경계에 걸친 도형은 반만이라도 보여야 하고, 보이는 범위로 자르는 것은 렌더러 몫이다.
+    /// 이 파일이 모르는 항목 종류(호스트가 파생한 것)는 옮길 방법이 없어 그대로 싣는다 — 그런 항목은 호스트가 옮긴다.
+    /// </summary>
+    public ViOverlay CropTo(double x, double y, double width, double height)
+    {
+        var cut = new ViOverlay();
+        foreach (var item in Items)
+            cut.Add(item switch
+            {
+                ViOverlayLabel { IsHud: true } hud => ViHud.Reanchor(hud, width, height),
+                ViOverlayLabel l => l.MovedTo(l.X - x, l.Y - y),
+                ViOverlaySeg s => new ViOverlaySeg
+                {
+                    X1 = s.X1 - x, Y1 = s.Y1 - y, X2 = s.X2 - x, Y2 = s.Y2 - y, HasEndArrow = s.HasEndArrow,
+                    Color = s.Color, IsDashed = s.IsDashed,
+                },
+                ViOverlayRect r => new ViOverlayRect
+                {
+                    CenterX = r.CenterX - x, CenterY = r.CenterY - y, Width = r.Width, Height = r.Height, AngleDeg = r.AngleDeg,
+                    Color = r.Color, IsDashed = r.IsDashed,
+                },
+                ViOverlayPoly p => new ViOverlayPoly
+                {
+                    Points = p.Points.Select(q => (q.X - x, q.Y - y)).ToList(), IsClosed = p.IsClosed,
+                    Color = p.Color, IsDashed = p.IsDashed,
+                },
+                _ => item,
+            });
+        return cut;
+    }
 }
 
 public enum ViOverlayColor { Green, Red, Cyan, Orange, Yellow, White, Teal }
@@ -72,6 +112,27 @@ public sealed class ViOverlayLabel : ViOverlayItem
     /// 여러 라벨을 쌓지 않고 한 블록 안에서 색을 나누는 이유: 라벨 위치는 이미지 좌표인데 글자 크기는
     /// 별도 스케일이라, 줄 높이만큼 좌표를 내려 쌓으면 배율에 따라 겹치거나 벌어진다.</summary>
     public IReadOnlyList<ViOverlayColor?>? LineColors { get; init; }
+
+    /// <summary>요약 HUD 표식 — <see cref="ViHud"/> 가 켠다. 이 라벨은 이미지의 한 <b>모서리</b>에 붙어 있고
+    /// (<see cref="Align"/> 이 그 모서리) 검사 기하와 무관하다 — 그래서 잘라 보일 때(<see cref="ViOverlay.CropTo"/>)
+    /// 옮기지 않고 같은 모서리에 다시 붙이며, 화면이 HUD 를 따로 떼어 적을 때 이것으로 가린다.
+    /// Align 만으로는 못 가린다 — 모서리 Align 은 검출 박스 위 라벨(BottomLeft 등)에도 쓰인다. 렌더러는 읽지 않는다.</summary>
+    public bool IsHud { get; init; }
+
+    /// <summary>앵커만 옮긴 사본 — 나머지 속성을 빠짐없이 잇는다(속성이 늘면 여기 한 곳만 고친다).</summary>
+    internal ViOverlayLabel MovedTo(double x, double y) => new()
+    {
+        Text = Text,
+        X = x,
+        Y = y,
+        FontSize = FontSize,
+        Align = Align,
+        HasBackground = HasBackground,
+        LineColors = LineColors,
+        IsHud = IsHud,
+        Color = Color,
+        IsDashed = IsDashed,
+    };
 }
 
 /// <summary>회전 사각 외곽선 — 패턴 발견 위치 표시 등.</summary>

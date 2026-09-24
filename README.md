@@ -65,10 +65,14 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
 - **Pattern matcher** (`CvPatternFinder` / `CvPatternTeach`) — rotation/scale-stepped masked template matching with coarse-to-fine search
 - **Blob finder** (`CvBlobFinder`) — thresholded connected components with geometric filters
 - **Color segmentation** (`CvColorSegment`) — HSV band segmentation with trainable band
+- **Crop and preprocess** (`CvImageOps.Crop` with `CvCropOpt`, `CvImageOps.Preprocess` with `CvImageProcessOpt`) —
+  two separate stages: the crop moves the origin, the preprocess resamples and denoises, and
+  `CvImageOps.MapOf(used, pre)` maps results back to the original through both
 - **Region / ring masks, ring fill, unwrap geometry, pose & space mapping, geometry fitting**
   (`CvRegionMask`, `CvRingFill`, `CvUnwrapGeom`, `CvPose`, `CvSpaceMap`, `CvFit`, `CvInspGeom`, `CvLineGeom`)
 - **Overlay primitives** (`ViOverlay`, `ViDraw`, `ViHud`) — renderer-neutral result graphics
-  (segments, labels, rects, polylines) that any display layer can draw
+  (segments, labels, rects, polylines) that any display layer can draw. `ViOverlay.CropTo` gives a copy
+  for showing a result on the cropped region, with the summary HUD (`ViOverlayLabel.IsHud`) put back in its corner
 
 Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display control,
 shape dragging, property editor), **CvInspect.Imaging** (camera acquisition contract with virtual /
@@ -205,15 +209,23 @@ identifier strings — saved recipes survive enum evolution, and old integer-val
 still deserialize. If you persist them with another serializer (e.g. Json.NET in Unity),
 configure it to skip delegate-typed members.
 
+**Recipes saved before 0.27.** Cropping used to live in `CvImageProcessOpt` and moved to its own
+`CvCropOpt` (same property names, so an old image-process file read as a `CvCropOpt` gives the crop
+back). An old file with the crop on still loads, but `Preprocess` refuses to run until the crop is
+moved — the tools after it were taught on the cropped image, and running them uncropped would put
+every one of them off by the crop origin with nothing looking wrong. Call `CvCropOpt.FromLegacy`
+when the recipe loads, put the returned crop in front, and save the image-process file again so
+the old keys are dropped.
+
 ## Samples
 
 - `samples/CvInspect.Demo` ([README](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/README.md),
   [screenshot](https://github.com/cmir79/CvInspect/blob/main/samples/CvInspect.Demo/screenshot.png),
   [download the exe](https://github.com/cmir79/CvInspect/releases/latest)) — a WPF window that wires
   everything together as a recipe: `VirtualCam` playing a synthetic part that shifts and rotates, or any
-  USB webcam on the PC opened by VID/PID through `CamOpt.SerialNumber`, `CvDispCtrl` showing the `CamFrame` directly, an ordered tool chain (preprocess, pattern, line,
+  USB webcam on the PC opened by VID/PID through `CamOpt.SerialNumber`, `CvDispCtrl` showing the `CamFrame` directly, an ordered tool chain (crop, preprocess, pattern, line,
   circle, blob) edited through draggable search shapes and the `CvPropEditCtrl` parameter editor, a
-  pattern fixture (`CvPose`) that moves the tools below it onto the found part, preprocess stages whose
+  pattern fixture (`CvPose`) that moves the tools below it onto the found part, crop and preprocess stages whose
   results map back through `CvSpaceMap`, and recipe save/load as a plain folder of JSON plus the
   trained template PNG.
 - `samples/CvInspect.GevProbe` — a console tool that opens a GigE camera with no vendor SDK and

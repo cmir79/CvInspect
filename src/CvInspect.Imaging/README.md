@@ -102,6 +102,10 @@ copying (disposing the view only unpins; the pixels stay valid), so running CvIn
 tools costs no conversion. Sources materialize one buffer per frame; frames already have
 `CamOpt.Flip` / `Rotation` applied.
 
+`Crop(x, y, width, height)` returns a new frame for a region — a copy with a tight stride that keeps
+the format and both timestamps (it is the same shot). The region must lie inside the frame; pass the
+rect `CvImageOps.Crop` reported, and move the result overlay with the same rect (`ViOverlay.CropTo`).
+
 Two more contract points implementers must honor: **only complete frames are published**
 (corrupt / partially received frames are dropped with a `CvLog` warning, never delivered),
 and **`Stride` may exceed width × bytes-per-pixel** on devices that pad rows — consumers

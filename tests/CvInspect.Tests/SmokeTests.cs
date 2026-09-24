@@ -271,7 +271,7 @@ public class SmokeTests
 
         // 크롭 영역 이상 → 경고 로그 seam 경유 확인
         logHits.Clear();
-        var badCrop = new CvImageProcessOpt { UseCrop = true, CropX = -999, CropY = -999, CropW = 1, CropH = 1 };
+        var badCrop = new CvCropOpt { UseCrop = true, CropX = -999, CropY = -999, CropW = 1, CropH = 1 };
         var rect = CvImageOps.CropRectOf(img, badCrop);
         Check(rect.Width == 400 && logHits.Count == 1 && logHits[0].Contains("Crop region"), $"crop warn via CvLog: {logHits.FirstOrDefault()}");
     }

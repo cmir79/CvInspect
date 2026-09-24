@@ -25,6 +25,8 @@ public enum ViHudPos
 /// 배경은 항상 검은 박스(라벨 HasBackground) — 밝은 이미지 위에서도 가독 보장.
 /// 기본 자리는 좌상단이고, <see cref="ViHudPos"/> 갈래로 다른 모서리에 붙일 수 있다 —
 /// 블록은 앵커 모서리에서 이미지 안쪽으로 펼쳐지므로(렌더러의 Align 해석) 배율과 무관하게 그 모서리에 머문다.
+/// 발행한 라벨에는 <see cref="ViOverlayLabel.IsHud"/> 표식이 붙는다 — 화면이 HUD 를 떼어 적거나, 잘라 보일 때
+/// (<see cref="ViOverlay.CropTo"/>) 같은 모서리로 다시 붙이는 근거다. 텍스트 모양으로 가리지 않는다.
 /// </summary>
 public static class ViHud
 {
@@ -64,6 +66,7 @@ public static class ViHud
             Y = topY,
             Align = ViOverlayAlign.TopLeft,
             HasBackground = true,
+            IsHud = true,
         });
     }
 
@@ -108,6 +111,21 @@ public static class ViHud
             },
             HasBackground = true,
             LineColors = colors.Any(c => c is not null) ? colors : null,
+            IsHud = true,
         });
+    }
+
+    /// <summary>
+    /// 잘린 이미지(<paramref name="width"/>×<paramref name="height"/>)의 같은 모서리에 다시 붙인 사본 —
+    /// <see cref="ViOverlay.CropTo"/> 가 부른다. 왼쪽·위 모서리는 좌표가 곧 가장자리까지의 거리라 그대로 둔다
+    /// (시작 높이를 지정한 갈래가 준 높이도 그대로 산다). 오른쪽·아래는 원본 크기를 모르므로 여기서 붙이는
+    /// 여백으로 다시 잡는다 — 위 갈래들이 오른쪽·아래에 붙일 때 쓰는 값과 같아서 결과가 처음부터 잘린 이미지에
+    /// 붙인 것과 같다.
+    /// </summary>
+    internal static ViOverlayLabel Reanchor(ViOverlayLabel hud, double width, double height)
+    {
+        var right = hud.Align is ViOverlayAlign.TopRight or ViOverlayAlign.BottomRight;
+        var bottom = hud.Align is ViOverlayAlign.BottomLeft or ViOverlayAlign.BottomRight;
+        return hud.MovedTo(right ? width - MarginX : hud.X, bottom ? height - DefaultTopY : hud.Y);
     }
 }
