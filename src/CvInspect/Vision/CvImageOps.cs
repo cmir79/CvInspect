@@ -8,11 +8,21 @@ namespace CvInspect.Vision;
 /// </summary>
 public static class CvImageOps
 {
-    /// <summary>전처리 — 잘라내기 → SampleX/Y 축소(면적 평균) → 미디언. 출력이 이후 툴들의 좌표 공간.</summary>
-    public static Mat Preprocess(Mat gray, CvImageProcessOpt opt)
+    /// <summary>
+    /// 전처리 — SampleX/Y 축소(면적 평균) → 미디언. 출력이 이후 툴들의 좌표 공간이다.
+    /// 자르지 않는다 — 자르려면 <see cref="Crop"/> 의 출력을 넘긴다. 원본 환산은 <see cref="MapOf"/>.
+    ///
+    /// 0.26 까지 저장한 전처리 옵션에 켜진 크롭이 남아 있으면(<see cref="CvImageProcessOpt.HasLegacyCrop"/>) <b>던진다</b>.
+    /// 그 레시피는 잘린 이미지에서 티칭됐으므로 자르지 않고 돌리면 모든 툴이 자르기 원점만큼 어긋난 자리에서
+    /// 판정하는데, 그 판정은 실패처럼 보이지 않는다 — 경고 한 줄로 넘기기엔 틀린 OK 가 나가는 자리다.
+    /// </summary>
+    public static Mat Preprocess(Mat src, CvImageProcessOpt opt)
     {
-        var crop = CropRectOf(gray, opt);
-        using var src = new Mat(gray, crop);   // 잘라내지 않으면 전체 뷰라 복사 비용이 없다
+        if (opt.LegacyCrop is { } legacy)
+            throw new InvalidOperationException(
+                $"CvImageProcessOpt still carries a crop saved before 0.27 ({legacy.X:F0},{legacy.Y:F0} {legacy.W:F0}x{legacy.H:F0}). " +
+                "Cropping moved to CvCropOpt and this crop is no longer applied — move it with CvCropOpt.FromLegacy when the recipe loads " +
+                "and run CvImageOps.Crop before Preprocess. Refusing to run: the tools after it were taught on the cropped image.");
 
         var sx = Math.Max(1, opt.SampleX);
         var sy = Math.Max(1, opt.SampleY);
@@ -29,15 +39,35 @@ public static class CvImageOps
     }
 
     /// <summary>
+    /// 자르기 — 실제로 쓴 자리를 <paramref name="used"/> 로 돌려준다(원본 좌표, 끄거나 폴백이면 전체). 채널 수와
+    /// 무관하다(컬러도 그대로 자른다). 쓴 자리는 결과를 원본으로 되돌릴 때(<see cref="MapOf"/>)와, 결과를 잘린 영역으로
+    /// 보일 때(<c>CamFrame.Crop</c>·<c>ViOverlay.CropTo</c>) 같은 값을 넘기는 데 쓴다.
+    ///
+    /// 반환은 <b>사본</b>이다 — 입력과 메모리를 공유하지 않는다. 뷰로 주면 복사가 없지만, 입력이 CamFrame 을 감싼
+    /// Mat(<c>AsMat</c>)이면 그 뷰가 발행된 픽셀 배열을 가리킨다: 제자리 연산에 넘기면 이력·표시가 쥔 같은 배열을
+    /// 고치고, 감싼 Mat 을 먼저 해제하면 핀이 풀린 배열을 본다. 둘 다 틀린 그림이 정상처럼 나오는 쪽이라,
+    /// 자른 영역 한 번(끄면 전체 한 번) 복사하는 값을 치른다. 호출자가 해제한다.
+    /// (앞쪽은 실측이다 — 이것을 뷰로 바꾸면 회귀 <c>CropReturnsACopyThatOwnsItsPixels</c> 에서 발행 배열이 실제로 덮어써진다.
+    /// 뒤쪽 핀 해제는 <c>AsMat</c> 계약을 읽은 것이다.)
+    /// </summary>
+    public static Mat Crop(Mat src, CvCropOpt opt, out Rect used)
+    {
+        used = CropRectOf(src, opt);
+        using var view = new Mat(src, used);
+        return view.Clone();
+    }
+
+    /// <summary>
     /// 실제로 잘라 쓸 자리. 끄면 전체다. 켰는데 자리가 이미지 밖이거나 너무 작으면 전체로 돌린다 —
     /// 잘못된 자리로 검사를 이어 가는 것보다 낫고, 그냥 넘기면 크기 0 이미지로 터진다.
+    /// 자르지 않고 자리만 알아야 할 때(미리보기 환산 등) 쓴다 — <see cref="Crop"/> 과 같은 규칙이다.
     /// </summary>
-    public static Rect CropRectOf(Mat gray, CvImageProcessOpt opt)
+    public static Rect CropRectOf(Mat src, CvCropOpt opt)
     {
-        var full = new Rect(0, 0, gray.Cols, gray.Rows);
+        var full = new Rect(0, 0, src.Cols, src.Rows);
         if (!opt.UseCrop) return full;
 
-        var clipped = ClipRect(opt.CropX, opt.CropY, opt.CropW, opt.CropH, gray.Cols, gray.Rows);
+        var clipped = ClipRect(opt.CropX, opt.CropY, opt.CropW, opt.CropH, src.Cols, src.Rows);
         if (clipped is not { Width: >= 8, Height: >= 8 } r)
         {
             CvLog.Warn(nameof(CvImageOps),
@@ -48,18 +78,16 @@ public static class CvImageOps
     }
 
     /// <summary>
-    /// 전처리 출력 공간 → 원본 공간 환산. 잘라내면 배율뿐 아니라 원점 이동까지 들어가므로
-    /// <see cref="CvSpaceMap"/> 을 직접 만들지 말고 이걸 쓴다 — 오프셋을 빠뜨리면 그림만 어긋난다.
+    /// 전처리 출력 공간 → 원본 공간 환산 — 자르기 원점과 축소 배율을 함께 넣는다.
+    /// <paramref name="used"/> 는 <see cref="Crop"/> 이 돌려준 자리(자르지 않았으면 원본 전체 사각),
+    /// <paramref name="pre"/> 는 그 자른 이미지의 전처리 출력(전처리를 안 했으면 자른 이미지 자체).
+    /// <see cref="CvSpaceMap"/> 을 직접 만들지 말고 이걸 쓴다 — 오프셋을 빠뜨리면 값은 맞는데 그림만 어긋난다.
+    ///
+    /// 자리 대신 자른 Mat 을 받는 갈래는 일부러 두지 않았다 — 자른 이미지는 제 원점을 모르므로, 그걸 넘기면
+    /// 배율만 맞고 오프셋이 조용히 빠진다.
     /// </summary>
-    public static CvSpaceMap MapOf(Mat gray, Mat pre, CvImageProcessOpt opt)
-    {
-        var crop = CropRectOf(gray, opt);
-        return new CvSpaceMap(
-            crop.Width / (double)pre.Cols,
-            crop.Height / (double)pre.Rows,
-            crop.X,
-            crop.Y);
-    }
+    public static CvSpaceMap MapOf(Rect used, Mat pre)
+        => new(used.Width / (double)pre.Cols, used.Height / (double)pre.Rows, used.X, used.Y);
 
     /// <summary>Sobel 에지 크기 이미지 — magnitude × scale 을 0~255 포화한 8bit.</summary>
     public static Mat SobelMagnitude(Mat pre, CvEdgeExtractOpt opt)

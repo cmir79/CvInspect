@@ -1,5 +1,6 @@
 // 편집 도형 — 각 Opt 가 ICvShapeSource 로 자기 도형을 내고, 도형을 움직이면 Opt 에 즉시 되쓰이며 onEdited 가 불리는지.
 // 토글(UseCrop·UseSearchRegion·UseRegion)이 꺼져 있으면 도형이 없다. 코어에 있으니 어느 OS 에서든 같은 회귀가 돈다.
+// 전처리(CvImageProcessOpt)는 0.27 부터 기하가 없다 — 자르기 사각은 CvCropOpt 가 낸다.
 using CvInspect.Vision;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Opts;
@@ -14,11 +15,12 @@ public class CvEditShapeTests
     {
         Type[] shaped =
         [
-            typeof(CvImageProcessOpt), typeof(CvEdgeFilterOpt), typeof(CvPatternOpt), typeof(CvBlobOpt), typeof(CvHoughCircleOpt),
+            typeof(CvCropOpt), typeof(CvEdgeFilterOpt), typeof(CvPatternOpt), typeof(CvBlobOpt), typeof(CvHoughCircleOpt),
             typeof(CvColorSegmentOpt), typeof(CvFindLineOpt), typeof(CvFindCircleOpt), typeof(CvUnwrapOpt), typeof(CvRingFillOpt), typeof(CvRegionOpt),
         ];
         foreach (var t in shaped) Assert.True(typeof(ICvShapeSource).IsAssignableFrom(t), $"{t.Name} supplies its own edit shapes");
         Assert.Null(CvShapeBinder.For(new CvCaliperOpt(), () => { }));   // 기하가 없는 파라미터 — 도형 없음, 예외 없음
+        Assert.Null(CvShapeBinder.For(new CvImageProcessOpt(), () => { }));
         Assert.Null(CvShapeBinder.For(new object(), () => { }));
     }
 
@@ -37,13 +39,13 @@ public class CvEditShapeTests
     [Fact]
     public void TogglesGateTheShapes()
     {
-        var ip = new CvImageProcessOpt { UseCrop = false, CropX = 5, CropY = 6, CropW = 100, CropH = 80 };
-        Assert.Null(CvShapeBinder.For(ip, () => { }));
-        ip.UseCrop = true;
-        var crop = Assert.IsType<CvEditRect>(Assert.Single(CvShapeBinder.For(ip, () => { })!));
+        var cr = new CvCropOpt { UseCrop = false, CropX = 5, CropY = 6, CropW = 100, CropH = 80 };
+        Assert.Null(CvShapeBinder.For(cr, () => { }));
+        cr.UseCrop = true;
+        var crop = Assert.IsType<CvEditRect>(Assert.Single(CvShapeBinder.For(cr, () => { })!));
         Assert.Equal("Crop", crop.Label);
         crop.X = 7;
-        Assert.Equal(7, ip.CropX);
+        Assert.Equal(7, cr.CropX);
 
         var bl = new CvBlobOpt { UseSearchRegion = false };
         Assert.Null(CvShapeBinder.For(bl, () => { }));

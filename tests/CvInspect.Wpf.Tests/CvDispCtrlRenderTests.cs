@@ -34,7 +34,7 @@ public class CvDispCtrlRenderTests
     }
 
     /// <summary>레이아웃 → 디스패처 큐 비우기 → 오프스크린 렌더. 반환은 Pbgra32 픽셀.</summary>
-    private static byte[] Render(CvDispCtrl ctrl, int w = VW, int h = VH)
+    private static byte[] Render(FrameworkElement ctrl, int w = VW, int h = VH)
     {
         ctrl.Measure(new Size(w, h));
         ctrl.Arrange(new Rect(0, 0, w, h));
@@ -232,4 +232,67 @@ public class CvDispCtrlRenderTests
         Check(resized == born,
             $"resizing {fromW}->{toW} refits at once without a new frame: drew {resized}px, a control born at that size draws {born}px (the old fit was {before}px)");
     });
+
+    [Fact]
+    public void HidingAndShowingKeepsTheZoom() => RunSta(() =>
+    {
+        // README 가 두 쪽을 다 약속한다 — 크기가 바뀌면 수동 줌 대신 맞추고, 숨겼다 다시 보이는 것(탭 전환)은
+        // 크기 변경이 아니라 줌이 남는다. WPF 는 접힌 요소를 배치하지 않고 돌아가 크기를 건드리지 않는다
+        // (UIElement.Arrange). 소비자 실측: 페이지 Visibility 를 접었다 펴는 탭 전환에서 표면 크기 통지 0건.
+        // 뒤쪽만 틀리면 탭을 오갈 때마다 줌이 풀리는데, 그렇게 문서를 읽은 호스트는 탭 구조를 피하게 된다.
+        var gray = new byte[1000 * 500];
+        Array.Fill(gray, (byte)128);
+        CamFrame Frame() => new(gray, 1000, 500, 1000, CamPixelFormat.Mono8);
+
+        var ctrl = new CvDispCtrl { Frame = Frame() };   // 툴바를 켠다 — 사람이 하는 줌 그대로 버튼으로 준다
+        var page = new System.Windows.Controls.Grid();   // 탭 페이지 자리 — 접었다 펴는 것은 이쪽이다
+        page.Children.Add(ctrl);
+        var fit = GrayWidth(Render(page, 800, 600), 800, 600);
+
+        var zoomOut = FindButton(ctrl, "Zoom Out");
+        Check(zoomOut is not null, "the toolbar's Zoom Out button is found");
+        zoomOut!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        var zoomed = GrayWidth(Render(page, 800, 600), 800, 600);
+        Check(fit > 0 && Math.Abs(zoomed * 1.25 - fit) <= 3,
+            $"the zoom took effect — else the next check proves nothing (fit {fit}px, one step out {zoomed}px)");
+
+        page.Visibility = Visibility.Collapsed;
+        Render(page, 800, 600);
+        page.Visibility = Visibility.Visible;
+        var shown = GrayWidth(Render(page, 800, 600), 800, 600);
+        Check(shown == zoomed, $"hiding and showing the page keeps the zoom: drew {shown}px, zoomed was {zoomed}px (fit is {fit}px)");
+
+        // 대조군 — 같은 컨트롤에서 크기가 바뀌면 줌이 맞춤으로 바뀐다(앞 절과 같은 계약, 이 절의 판정이 살아 있음을 보인다).
+        var resized = GrayWidth(Render(page, 1400, 600), 1400, 600);
+        var bornPage = new System.Windows.Controls.Grid();
+        bornPage.Children.Add(new CvDispCtrl { Frame = Frame() });
+        var born = GrayWidth(Render(bornPage, 1400, 600), 1400, 600);
+        Check(resized == born, $"a resize still replaces the zoom with a fit: drew {resized}px, a control born at that size draws {born}px");
+
+        // 숨긴 사이에 크기가 바뀌면(탭이 가려진 동안 창 크기 변경) 다시 보일 때 맞춘다 — README 의 단서.
+        FindButton(ctrl, "Zoom Out")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        var zoomedWide = GrayWidth(Render(page, 1400, 600), 1400, 600);
+        Check(zoomedWide != born, $"zoomed again before hiding (drew {zoomedWide}px, fit is {born}px)");
+        page.Visibility = Visibility.Collapsed;
+        Render(page, 1400, 600);
+        Render(page, 1000, 600);   // 가려진 채로 크기가 바뀐다
+        page.Visibility = Visibility.Visible;
+        var reshown = GrayWidth(Render(page, 1000, 600), 1000, 600);
+        var bornMid = new System.Windows.Controls.Grid();
+        bornMid.Children.Add(new CvDispCtrl { Frame = Frame() });
+        var fitMid = GrayWidth(Render(bornMid, 1000, 600), 1000, 600);
+        Check(reshown == fitMid, $"a size change while hidden refits on show: drew {reshown}px, a control born at that size draws {fitMid}px");
+    });
+
+    /// <summary>툴바 버튼을 툴팁 문구로 찾는다(버튼은 내부에서 만들어져 이름이 없다).</summary>
+    private static System.Windows.Controls.Button? FindButton(DependencyObject root, string tooltip)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var c = VisualTreeHelper.GetChild(root, i);
+            if (c is System.Windows.Controls.Button b && Equals(b.ToolTip, tooltip)) return b;
+            if (FindButton(c, tooltip) is { } found) return found;
+        }
+        return null;
+    }
 }

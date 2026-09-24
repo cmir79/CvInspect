@@ -9,7 +9,7 @@ namespace CvInspect.Demo;
 public sealed record DemoToolResult(DemoToolEntry Tool, bool Ok, string Summary, ViOverlay Graphic, CvSpaceMap Map);
 
 /// <summary>
-/// 한 번의 레시피 실행 결과. 단계 이미지(툴 i 의 입력)는 전처리가 만든 것만 새 Mat 이고 나머지는 앞 단계를 그대로 가리킨다 —
+/// 한 번의 레시피 실행 결과. 단계 이미지(툴 i 의 입력)는 자르기·전처리가 만든 것만 새 Mat 이고 나머지는 앞 단계를 그대로 가리킨다 —
 /// 이 객체가 그것들을 소유하므로 다음 실행으로 바꿀 때 dispose 한다. 표시는 <see cref="OverlayFor"/> 로 원하는 단계 공간에 모은다.
 /// </summary>
 public sealed class DemoRunResult : IDisposable
@@ -67,7 +67,7 @@ public sealed class DemoRunResult : IDisposable
             case ViOverlayLabel l:
             {
                 var p = f(l.X, l.Y);
-                return new ViOverlayLabel { Text = l.Text, X = p.X, Y = p.Y, FontSize = l.FontSize, Align = l.Align, HasBackground = l.HasBackground, LineColors = l.LineColors, Color = l.Color, IsDashed = l.IsDashed };
+                return new ViOverlayLabel { Text = l.Text, X = p.X, Y = p.Y, FontSize = l.FontSize, Align = l.Align, HasBackground = l.HasBackground, LineColors = l.LineColors, IsHud = l.IsHud, Color = l.Color, IsDashed = l.IsDashed };
             }
             case ViOverlayRect r:
             {
@@ -89,7 +89,7 @@ public sealed class DemoRunResult : IDisposable
 }
 
 /// <summary>
-/// 레시피 실행기 — 툴을 순서대로 돌린다. 전처리는 단계 이미지와 공간 환산을 바꾸고, 패턴은 이후 툴의 티칭 기하를
+/// 레시피 실행기 — 툴을 순서대로 돌린다. 자르기·전처리는 단계 이미지와 공간 환산을 바꾸고, 패턴은 이후 툴의 티칭 기하를
 /// 발견 포즈로 옮기는 픽스처가 된다. 기하는 각 툴의 <b>자기 단계 공간</b>에 적혀 있으므로, 픽스처 적용은
 /// 툴 공간 → 원본 → 패턴 단계 공간 → 포즈 → 원본 → 툴 공간 순으로 환산한다(단계 맵이 축소·자르기라 역환산이 닫힌다).
 /// 순수 계산이라 같은 입력에 같은 결과가 나온다 — 테스트가 이 성질에 기댄다.
@@ -130,16 +130,27 @@ public static class DemoRecipeRunner
 
             switch (tool.Kind)
             {
+                case DemoToolKind.Crop:
+                {
+                    var opt = (CvCropOpt)tool.Opt;
+                    var cut = CvImageOps.Crop(stage, opt, out var used);
+                    map = Chain(map, CvImageOps.MapOf(used, cut));   // cut → stage: 원점만 옮긴다
+                    stage = cut;
+                    owned.Add(cut);
+                    ok = true;
+                    summary = $"{cut.Cols}x{cut.Rows}" + (opt.UseCrop ? $"  at ({used.X}, {used.Y})" : "  (off)");
+                    break;
+                }
                 case DemoToolKind.Preprocess:
                 {
                     var opt = (CvImageProcessOpt)tool.Opt;
                     var pre = CvImageOps.Preprocess(stage, opt);
-                    var local = CvImageOps.MapOf(stage, pre, opt);   // pre → stage
-                    map = new CvSpaceMap(map.Sx * local.Sx, map.Sy * local.Sy, map.Ox + map.Sx * local.Ox, map.Oy + map.Sy * local.Oy);
+                    var local = CvImageOps.MapOf(new Rect(0, 0, stage.Cols, stage.Rows), pre);   // pre → stage: 배율만
+                    map = Chain(map, local);
                     stage = pre;
                     owned.Add(pre);
                     ok = true;
-                    summary = $"{pre.Cols}x{pre.Rows}  scale {local.Sx:F2}x{local.Sy:F2}" + (opt.UseCrop ? $"  crop@({local.Ox:F0},{local.Oy:F0})" : "");
+                    summary = $"{pre.Cols}x{pre.Rows}  scale {local.Sx:F2}x{local.Sy:F2}";
                     break;
                 }
                 case DemoToolKind.Pattern:
@@ -288,19 +299,28 @@ public static class DemoRecipeRunner
                 };
     }
 
-    /// <summary>툴 index 의 입력 이미지 — 앞선 전처리 툴만 순서대로 적용한다. 만든 Mat 은 owned 에 담는다.</summary>
+    /// <summary>툴 index 의 입력 이미지 — 앞선 자르기·전처리 툴만 순서대로 적용한다. 만든 Mat 은 owned 에 담는다.</summary>
     private static Mat StageInputFor(DemoRecipe recipe, Mat gray0, int index, List<Mat> owned)
     {
         var stage = gray0;
         for (var i = 0; i < index; i++)
         {
-            if (recipe.Tools[i].Opt is not CvImageProcessOpt opt) continue;
-            var pre = CvImageOps.Preprocess(stage, opt);
-            owned.Add(pre);
-            stage = pre;
+            Mat next;
+            switch (recipe.Tools[i].Opt)
+            {
+                case CvCropOpt crop: next = CvImageOps.Crop(stage, crop, out _); break;
+                case CvImageProcessOpt pre: next = CvImageOps.Preprocess(stage, pre); break;
+                default: continue;
+            }
+            owned.Add(next);
+            stage = next;
         }
         return stage;
     }
+
+    /// <summary>단계 환산 잇기 — inner(이번 단계 → 앞 단계) 뒤에 outer(앞 단계 → 원본)를 붙인 것(이번 단계 → 원본).</summary>
+    private static CvSpaceMap Chain(CvSpaceMap outer, CvSpaceMap inner)
+        => new(outer.Sx * inner.Sx, outer.Sy * inner.Sy, outer.Ox + outer.Sx * inner.Ox, outer.Oy + outer.Sy * inner.Oy);
 
     /// <summary>블랍 옵션 사본 — 탐색 사각만 포즈로 옮긴 것. 회전한 사각을 축 정렬로 되돌릴 때 외접 사각은 판 밖(배경)을
     /// 끌어들이므로, 같은 중심에서 회전 사각 안에 들어가는 최대 축 정렬 사각(반폭 a·cosθ − b·sinθ, b·cosθ − a·sinθ)을 쓴다.

@@ -7,7 +7,7 @@ using CvInspect.Vision.Opts;
 
 namespace CvInspect.Demo;
 
-public enum DemoToolKind { Preprocess, Pattern, Line, Circle, Blob }
+public enum DemoToolKind { Crop, Preprocess, Pattern, Line, Circle, Blob }
 
 /// <summary>레시피의 툴 하나 — 키(파일 이름이 된다), 종류, 종류에 맞는 Cv*Opt POCO.</summary>
 public sealed class DemoToolEntry
@@ -44,6 +44,9 @@ public sealed class DemoRecipe
 
     public ObservableCollection<DemoToolEntry> Tools { get; } = [];
 
+    /// <summary><see cref="Load"/> 가 0.26 까지의 크롭을 자르기 툴로 옮겼는지 — 그렇다면 폴더와 달라진 것이라 저장해야 한다.</summary>
+    public bool MovedLegacyCrop { get; private set; }
+
     /// <summary>예제 기본 레시피 — 픽스처 + 라인 + 원 + 블랍, 기하는 합성 부품 기준.</summary>
     public static DemoRecipe Default()
     {
@@ -75,6 +78,7 @@ public sealed class DemoRecipe
 
     public static Type OptTypeOf(DemoToolKind kind) => kind switch
     {
+        DemoToolKind.Crop => typeof(CvCropOpt),
         DemoToolKind.Preprocess => typeof(CvImageProcessOpt),
         DemoToolKind.Pattern => typeof(CvPatternOpt),
         DemoToolKind.Line => typeof(CvFindLineOpt),
@@ -83,9 +87,18 @@ public sealed class DemoRecipe
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    /// <summary>종류별 기본 Opt — 기하는 합성 부품(원본 공간) 기준. 전처리 뒤에 두면 그 공간에 맞게 사용자가 옮긴다.</summary>
+    /// <summary>종류별 기본 Opt — 기하는 합성 부품(원본 공간) 기준. 자르기·전처리 뒤에 두면 그 공간에 맞게 사용자가 옮긴다.</summary>
     public static object NewOpt(DemoToolKind kind) => kind switch
     {
+        // 판을 여백 조금 두고 감싸는 자리 — 넣자마자 켜져 있어야 무엇이 달라지는지 보인다.
+        DemoToolKind.Crop => new CvCropOpt
+        {
+            UseCrop = true,
+            CropX = DemoImage.PlateX - 40,
+            CropY = DemoImage.PlateY - 40,
+            CropW = DemoImage.PlateW + 80,
+            CropH = DemoImage.PlateH + 80,
+        },
         DemoToolKind.Preprocess => new CvImageProcessOpt { SampleX = 1, SampleY = 1, MedianKernel = 0 },
         DemoToolKind.Pattern => new CvPatternOpt
         {
@@ -147,7 +160,9 @@ public sealed class DemoRecipe
     }
 
     /// <summary>폴더에서 로드. 툴 파일 하나가 깨져도 나머지는 살린다 — 깨진 것은 종류 기본 Opt 로 두고 로그를 남긴다.
-    /// 패턴 툴은 템플릿 파일이 있어야 학습 상태가 유지된다(없으면 Trained=false).</summary>
+    /// 패턴 툴은 템플릿 파일이 있어야 학습 상태가 유지된다(없으면 Trained=false).
+    /// 전처리 파일에 0.26 까지의 크롭이 켜져 있으면 그 바로 앞에 자르기 툴을 끼워 옮긴다(<see cref="CvCropOpt.FromLegacy"/>) —
+    /// 그 뒤 툴들은 잘린 이미지에서 티칭됐으므로 자리를 지켜야 한다. <see cref="Save"/> 가 파일을 다시 쓰면 옛 키가 빠진다.</summary>
     public static DemoRecipe Load(string dir)
     {
         var doc = JsonSerializer.Deserialize<RecipeDoc>(File.ReadAllText(Path.Combine(dir, RecipeFile)), Json)
@@ -171,6 +186,16 @@ public sealed class DemoRecipe
                 var tpl = Path.Combine(dir, t.Key + ".Template.png");
                 if (File.Exists(tpl)) pat.TemplatePng = File.ReadAllBytes(tpl);
                 else pat.Trained = false;
+            }
+            if (opt is CvImageProcessOpt ip && CvCropOpt.FromLegacy(ip) is { } moved)
+            {
+                // 키는 파일 이름이 된다 — 아직 안 읽은 뒤 툴의 키와도 겹치면 안 된다.
+                var key = t.Key + "-crop";
+                while (doc.Tools.Concat(r.Tools.Select(x => new RecipeToolRef(x.Key, x.Kind)))
+                       .Any(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase)))
+                    key += "-";
+                r.Tools.Add(new DemoToolEntry(key, DemoToolKind.Crop, moved));
+                r.MovedLegacyCrop = true;
             }
             r.Tools.Add(new DemoToolEntry(t.Key, t.Kind, opt));
         }

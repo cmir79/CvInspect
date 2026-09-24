@@ -46,7 +46,7 @@ dotnet add package OpenCvSharp4.runtime.win
 
 | Property | Type | Meaning |
 |---|---|---|
-| `Frame` | `Mat` or `ICvPixelSource` | Frame to display — a `Mat` is copied on assignment, an `ICvPixelSource` (e.g. `CamFrame` from CvInspect.Imaging) is held by reference. `null` shows a placeholder. Auto-fits when the frame dimensions change and when the display area is resized — a resize replaces a manual zoom. |
+| `Frame` | `Mat` or `ICvPixelSource` | Frame to display — a `Mat` is copied on assignment, an `ICvPixelSource` (e.g. `CamFrame` from CvInspect.Imaging) is held by reference. `null` shows a placeholder. Auto-fits when the frame dimensions change and when the display area is resized — a resize replaces a manual zoom. Hiding and showing the control (a tab switch, a collapsed parent) is not a resize: the zoom is kept unless the size changed while it was hidden. |
 | `Overlay` | `ViOverlay` | Result graphics (segments, labels, rects, polylines); replace the reference to refresh. |
 | `Shapes` | `IReadOnlyList<CvEditShape>` | Editable teaching shapes; drag edits raise `Changed` immediately. The control subscribes to each shape's `Changed` only while it is loaded (attached on `Loaded`, released on `Unloaded`), so a long-lived shape list never keeps a discarded control alive. |
 | `GrabCommand` / `ContinuousCommand` / `StopCommand` | `ICommand` | Camera actions behind the 📸 / ⏯️ toolbar buttons. |

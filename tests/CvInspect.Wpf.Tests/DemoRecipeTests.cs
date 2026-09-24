@@ -118,6 +118,83 @@ public class DemoRecipeTests
     }
 
     [Fact]
+    public void CropStageShiftsTheOrigin()
+    {
+        // 자르기는 배율 없이 원점만 옮긴다 — 이후 툴은 잘린 공간 좌표로 티칭되고, 결과는 원본 자리로 돌아와야 한다.
+        var recipe = new DemoRecipe();
+        var crop = (CvCropOpt)recipe.Add(DemoToolKind.Crop, "cut").Opt;   // 판 둘레 — 기본값
+        recipe.Add(DemoToolKind.Pattern, "fixture");
+        recipe.Add(DemoToolKind.Circle, "hole");
+        double ox = crop.CropX, oy = crop.CropY;
+        foreach (var t in recipe.Tools)
+            switch (t.Opt)
+            {
+                case CvPatternOpt p: p.TrainX -= ox; p.TrainY -= oy; break;
+                case CvFindCircleOpt c: c.CenterX -= ox; c.CenterY -= oy; break;
+            }
+        using (var reference = DemoImage.Create())
+            Check(DemoRecipeRunner.Train(recipe, Fixture(recipe), reference), "pattern trains in the cropped stage");
+
+        const double dx = 12, dy = -8, deg = 5;
+        using var moved = DemoImage.Create(dx, dy, deg);
+        using var run = DemoRecipeRunner.Run(recipe, moved);
+        Check(run.IsOk, "OK in the cropped stage: " + string.Join(" | ", run.Tools.Select(t => $"{t.Tool.Key}={t.Ok} {t.Summary}")));
+        Check(run.StageOf(1).Width == (int)crop.CropW && run.IsOriginalStage(0), $"stage 1 is the cut-out ({run.StageOf(1).Width} wide)");
+
+        var hole = DemoImage.Map(DemoImage.HoleCenterX, DemoImage.HoleCenterY, dx, dy, deg);
+        (double X, double Y) Centroid(ViOverlay o) { var poly = o.Items.OfType<ViOverlayPoly>().Single(); return (poly.Points.Average(p => p.X), poly.Points.Average(p => p.Y)); }
+        var inOriginal = Centroid(run.OverlayFor(0));
+        var inCut = Centroid(run.OverlayFor(2));
+        Check(Near(inOriginal, hole, 1.5), $"circle mapped to original space: ({inOriginal.X:F1}, {inOriginal.Y:F1}) vs ({hole.X:F1}, {hole.Y:F1})");
+        Check(Near(inCut, (hole.X - ox, hole.Y - oy), 1.5), $"circle in the cut space is off by the crop origin: ({inCut.X:F1}, {inCut.Y:F1}) vs ({hole.X - ox:F1}, {hole.Y - oy:F1})");
+    }
+
+    [Fact]
+    public void APreCropFolderMovesItsCropIntoItsOwnTool()
+    {
+        // 0.26 까지는 전처리가 잘랐다. 그때 저장한 폴더를 읽으면 자르기 툴이 그 앞에 끼워지고, 검사 결과가 같아야 한다 —
+        // 옛 키를 모르는 키로 건너뛰면 원형 툴이 자르기 원점만큼 어긋난 자리에서 돈다.
+        const int ox = 80, oy = 70;
+        var recipe = new DemoRecipe();
+        recipe.Add(DemoToolKind.Preprocess, "pre");
+        var hole = (CvFindCircleOpt)recipe.Add(DemoToolKind.Circle, "hole").Opt;
+        hole.CenterX -= ox;
+        hole.CenterY -= oy;
+
+        var dir = Path.Combine(Path.GetTempPath(), "cvinspect-recipe-" + Guid.NewGuid().ToString("N"));
+        var dir2 = dir + "-resaved";
+        try
+        {
+            recipe.Save(dir);
+            File.WriteAllText(Path.Combine(dir, "pre.json"),
+                $$"""{"UseCrop":true,"CropX":{{ox}},"CropY":{{oy}},"CropW":480,"CropH":340,"SampleX":1,"SampleY":1,"MedianKernel":0}""");
+
+            var loaded = DemoRecipe.Load(dir);
+            Check(loaded.Tools.Select(t => t.Kind).SequenceEqual(new[] { DemoToolKind.Crop, DemoToolKind.Preprocess, DemoToolKind.Circle }),
+                "the old crop becomes a Crop tool just above the Preprocess that carried it: " + string.Join(", ", loaded.Tools.Select(t => $"{t.Key}:{t.Kind}")));
+            Check(loaded.Tools[0].Opt is CvCropOpt { UseCrop: true, CropX: ox, CropY: oy, CropW: 480, CropH: 340 }, "with the saved rect");
+            Check(loaded.MovedLegacyCrop, "the loaded recipe says it differs from its folder, so the window can ask for the save");
+
+            using var img = DemoImage.Create();
+            using var run = DemoRecipeRunner.Run(loaded, img);
+            var c = run.OverlayFor(0).Items.OfType<ViOverlayPoly>().Single();
+            var centroid = (c.Points.Average(p => p.X), c.Points.Average(p => p.Y));
+            Check(run.IsOk && Near(centroid, (DemoImage.HoleCenterX, DemoImage.HoleCenterY), 1.5),
+                $"the circle still finds the hole where it was taught on the cut-out: ({centroid.Item1:F1}, {centroid.Item2:F1})");
+
+            loaded.Save(dir2);
+            Check(!File.ReadAllText(Path.Combine(dir2, "pre.json")).Contains("Crop"), "saving once drops the old keys from the Preprocess file");
+            var reloaded = DemoRecipe.Load(dir2);
+            Check(reloaded.Tools.Count(t => t.Kind == DemoToolKind.Crop) == 1 && !reloaded.MovedLegacyCrop, "and a reload does not move the crop a second time");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { }
+            try { Directory.Delete(dir2, true); } catch { }
+        }
+    }
+
+    [Fact]
     public void TrainingRefusesEmptyOrRotatedRegions()
     {
         var recipe = DemoRecipe.Default();

@@ -8,6 +8,7 @@ each tool sees what the tools above it produced:
 ```
 VirtualCam (folder playback) ──CamFrame──▶ CvDispCtrl.Frame                          (held by reference, no copy)
                                └──AsMat()──▶ DemoRecipeRunner.Run(recipe)
+                                              ├─ Crop         CvImageOps.Crop ──▶ stage image + the rect it used
                                               ├─ Preprocess   CvImageOps.Preprocess ──▶ stage image + CvSpaceMap (stage → original)
                                               ├─ Pattern      CvInspGeom.MatchPattern ──CvPose──▶ fixture for every tool below it
                                               ├─ Line/Circle/Blob   run at XformByPose(taught geometry), in their own stage space
@@ -29,9 +30,10 @@ part before they run — the cyan dashed geometry shows where they actually ran,
 where you taught them. Untrained, the tools run at the taught geometry and fail honestly once the
 part moves.
 
-**Stages.** A Preprocess tool (crop → area-resize by `SampleX`/`SampleY` → median, `CvImageProcessOpt`)
-changes the image every tool below it sees, and their geometry is taught in that stage's
-coordinates. Select such a tool and the display switches to its stage image, so you drag shapes on
+**Stages.** A Crop tool (`CvCropOpt`, its box drawn on its own input — the original when it comes first) and a Preprocess tool
+(area-resize by `SampleX`/`SampleY` → median, `CvImageProcessOpt`) each change the image every tool
+below them sees, and their geometry is taught in that stage's coordinates. The crop moves the origin,
+the resize changes the scale; `CvImageOps.MapOf(used, pre)` carries both. Select such a tool and the display switches to its stage image, so you drag shapes on
 what the tool actually sees. Each tool's result is mapped back through `CvSpaceMap`, so the overlay
 of every tool lands on whichever stage is displayed — and a fixture found in one stage still moves
 tools in another.
@@ -47,6 +49,8 @@ the fixture follows it, and the cyan geometry with it.
 per tool (the option POCO as-is, enums as strings) and `{key}.Template.png` for each trained
 pattern — readable and diffable, no binary blob. *Load…* brings it back including the trained
 template, and the loaded recipe produces the identical run. An unsaved change puts `*` in the title.
+A folder saved before 0.27, whose Preprocess still carried the crop, loads with a Crop tool inserted
+just above it (`CvCropOpt.FromLegacy`) — save it once to drop the old keys.
 
 ## Try
 
@@ -58,6 +62,8 @@ template, and the loaded recipe produces the identical run. An unsaved change pu
 - **Put a Preprocess first** with `SampleX`/`SampleY` = 2, then drag the shapes of the tools below it
   on the half-size image (or halve their numbers in the editor) — select any tool above the
   Preprocess and the results still land on the right spot of the original.
+- **Put a Crop first** — it starts around the plate. Drag its orange box, and the tools below it
+  run on (and are taught on) the cut-out; their results still land on the original.
 - **Drag the search shape** (the line's segment, the circle's expected arc, the blob's search
   rectangle) — the tool re-runs as you drag, because the shape writes straight back into the
   option POCO. Widen the blob rectangle past the plate and watch the dark background become the
@@ -86,5 +92,6 @@ Windows only (WPF). A USB webcam is optional — without one the source list hol
 part. The recipe runner (`DemoRecipeRunner`) is pure and deterministic — the WPF test
 suite trains the default recipe on the reference part, runs it on a shifted-and-rotated one and checks
 that the pose angle, the followed line, circle and blob all land within a pixel of where the geometry
-went; saves and reloads a recipe and checks the run is identical; and runs a half-resolution stage to
-check that the space maps hold both ways.
+went; saves and reloads a recipe and checks the run is identical; runs a half-resolution stage and a
+cropped one to check that the space maps hold both ways; and loads a pre-0.27 folder to check the
+crop moves into its own tool with the run unchanged.
