@@ -59,6 +59,33 @@ public sealed partial class CvDispCtrl
         set => SetValue(OverlayProperty, value);
     }
 
+    public static readonly DependencyProperty ClipOverlayToImageProperty = DependencyProperty.Register(
+        nameof(ClipOverlayToImage), typeof(bool), typeof(CvDispCtrl),
+        new PropertyMetadata(false, (d, e) => ((CvDispCtrl)d)._surface.ClipOverlayToImage = (bool)e.NewValue));
+
+    /// <summary>
+    /// 결과 오버레이를 이미지가 그려진 사각 안으로 자를지. 기본 false — 표시 영역 경계까지 그린다(종전 동작).
+    /// 그래서 이미지 가장자리에 붙은 라벨이 그쪽에 맞춤 여백이 있으면 그 여백으로 삐져나와 읽힌다(여백이 없는 쪽 —
+    /// 칸과 같은 비율이면 둘레 1.5% 남짓, 확대하면 0 — 은 켜든 끄든 표시 영역 경계에서 잘린다).
+    ///
+    /// 잘린 영역을 보이는 화면(<c>ViOverlay.CropTo</c> 사본을 얹는 자리)에서는 켠다. 끄면 자른 영역에 걸친 선과 영역 밖
+    /// 도형·라벨이 맞춤 여백에 그려져 이미지가 그 너머로 이어지는 것처럼 보인다. 소비자 실측(0.26.3 — 0.27.0 도 같은 렌더러,
+    /// 오프스크린 96DPI, Mono8 프레임, 영역에 걸친 선 + 영역 밖 다각형·라벨로 된 그쪽 오버레이): 400×150 프레임을 400×400 칸에
+    /// 맞추면 여백에 6305px, 150×400 은 좌우 여백에 4582px, 같은 비율이어도 맞춤 둘레에 56px, 영역 안 도형만이면 0.
+    /// 번지는 양은 그려 넣은 것에 달렸다 — 여백이 넓을수록 번질 자리가 넓을 뿐이다.
+    ///
+    /// 켜면 오버레이 항목이 이미지 가장자리에서 잘린다. 라벨 글자는 화면 고정 크기라, 이미지가 작게 그려질수록(작은 타일,
+    /// 축소) 가장자리 라벨이 더 많이 잘린다. 예외 둘:
+    /// 모서리 요약 HUD(<c>ViOverlayLabel.IsHud</c>, 모서리 정렬)는 자르지 않고 나머지 항목 뒤에 그린다(맨 위에 온다) — 이미지보다
+    /// 커진 블록을 자르면 판정 사유 줄이 사라지고 남은 헤더 한 줄이 온전한 HUD 처럼 보인다. 편집 도형(<see cref="Shapes"/>)도 이미지 사각으로는 자르지
+    /// 않는다 — 가장자리 핸들을 잡을 수 있어야 한다(둘 다 표시 영역 경계에서는 잘린다).
+    /// </summary>
+    public bool ClipOverlayToImage
+    {
+        get => (bool)GetValue(ClipOverlayToImageProperty);
+        set => SetValue(ClipOverlayToImageProperty, value);
+    }
+
     public static readonly DependencyProperty ShapesProperty = DependencyProperty.Register(
         nameof(Shapes), typeof(object), typeof(CvDispCtrl),
         new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d)._surface.SetShapes(e.NewValue as IReadOnlyList<CvEditShape>)));

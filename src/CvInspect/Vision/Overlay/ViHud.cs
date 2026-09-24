@@ -2,6 +2,29 @@ using System.Linq;
 
 namespace CvInspect.Vision.Overlay;
 
+/// <summary>
+/// 요약 HUD 의 내용 — <see cref="ViHud"/> 가 받은 값 그대로(<see cref="ViOverlayLabel.Hud"/> 로 실린다). 라벨의 글자는 이것을
+/// 그리기용으로 조립한 것이고 형식은 바뀔 수 있으므로, 판정·줄을 따로 적는 화면은 글자가 아니라 이것을 읽는다.
+/// <see cref="Lines"/> 는 제목 줄을 뺀 상세 줄을 받은 그대로 담는다 — 항목 안에 줄바꿈이 있을 수 있으므로 항목 수로 그려진
+/// 줄 수를 셈하지 않는다. 색이 null 인 줄은 판정색으로 그려진다. <see cref="Lines"/> 의 요소 이름(Text·Color)은 컴파일 때만
+/// 있는 것이라, 이 값을 JSON 으로 직렬화하려면 System.Text.Json 은 <c>IncludeFields</c>(또는 변환기)가 필요하고 Json.NET 은
+/// Item1·Item2 로 쓴다 — 코드가 읽는 값이지 저장 형식이 아니다(<c>ViOverlayPoly.Points</c> 와 같다).
+///
+/// 생성자가 받은 목록을 읽기 전용 사본으로 떠 두므로 호출자가 나중에 그 목록을 고쳐도, 꺼낸 목록을 형 변환해도 바뀌지 않는다
+/// (그린 글자를 나중에 못 바꾸듯 데이터도 못 바뀌게). 같음 비교는 줄의 내용으로 한다.
+/// 이 목록 형은 <see cref="ViHud"/> 의 줄별 색 갈래가 받는 형과 같다 — 꺼낸 값으로 같은 HUD 를 다시 만들 수 있다.
+/// </summary>
+public sealed record ViHudSummary(bool IsOk, string Title, IReadOnlyList<(string Text, ViOverlayColor? Color)> Lines, ViHudPos Pos)
+{
+    public IReadOnlyList<(string Text, ViOverlayColor? Color)> Lines { get; } =
+        Array.AsReadOnly((Lines ?? throw new ArgumentNullException(nameof(Lines))).ToArray());
+
+    public bool Equals(ViHudSummary? other)
+        => other is not null && IsOk == other.IsOk && Title == other.Title && Pos == other.Pos && Lines.SequenceEqual(other.Lines);
+
+    public override int GetHashCode() => HashCode.Combine(IsOk, Title, Pos, Lines.Count);
+}
+
 /// <summary>요약 HUD 가 붙는 이미지 모서리.</summary>
 public enum ViHudPos
 {
@@ -27,6 +50,8 @@ public enum ViHudPos
 /// 블록은 앵커 모서리에서 이미지 안쪽으로 펼쳐지므로(렌더러의 Align 해석) 배율과 무관하게 그 모서리에 머문다.
 /// 발행한 라벨에는 <see cref="ViOverlayLabel.IsHud"/> 표식이 붙는다 — 화면이 HUD 를 떼어 적거나, 잘라 보일 때
 /// (<see cref="ViOverlay.CropTo"/>) 같은 모서리로 다시 붙이는 근거다. 텍스트 모양으로 가리지 않는다.
+/// 받은 판정·제목·줄은 <see cref="ViOverlayLabel.Hud"/>(<see cref="ViHudSummary"/>)에 그대로 싣는다 — 라벨 글자와 색은
+/// 표시용이고, 판정·내용을 되읽는 근거가 아니다.
 /// </summary>
 public static class ViHud
 {
@@ -67,6 +92,7 @@ public static class ViHud
             Align = ViOverlayAlign.TopLeft,
             HasBackground = true,
             IsHud = true,
+            Hud = new ViHudSummary(isOk, title, lines.Select(l => (l, (ViOverlayColor?)null)).ToList(), ViHudPos.TopLeft),
         });
     }
 
@@ -84,12 +110,16 @@ public static class ViHud
     public static void AddSummary(this ViOverlay overlay, ViHudPos pos, double imgW, double imgH,
         bool isOk, string title, IReadOnlyList<(string Text, ViOverlayColor? Color)> lines)
     {
-        var texts = new List<string>(lines.Count + 1) { $"[{(isOk ? "OK" : "NG")}] {title}" };
-        var colors = new List<ViOverlayColor?>(lines.Count + 1) { null };
+        var header = $"[{(isOk ? "OK" : "NG")}] {title}";
+        var texts = new List<string>(lines.Count + 1) { header };
+        // 줄별 색은 그려지는 줄과 1:1 이어야 한다(렌더러가 글자를 줄바꿈으로 나눠 색을 줄 순서로 짚는다). 항목 안에
+        // 줄바꿈이 있으면 그 항목의 색을 나뉜 줄마다 채운다 — 한 칸씩만 넣으면 뒤 줄들의 색이 하나씩 밀린다.
+        var colors = new List<ViOverlayColor?>(lines.Count + 1);
+        colors.AddRange(Enumerable.Repeat((ViOverlayColor?)null, header.Split('\n').Length));
         foreach (var (text, color) in lines)
         {
             texts.Add(text);
-            colors.Add(color);
+            colors.AddRange(Enumerable.Repeat(color, text.Split('\n').Length));
         }
 
         // 앵커는 고른 모서리에서 여백만큼 안쪽 — Align 이 같은 모서리를 가리키므로 블록은 이미지 안으로 펼쳐진다.
@@ -112,6 +142,7 @@ public static class ViHud
             HasBackground = true,
             LineColors = colors.Any(c => c is not null) ? colors : null,
             IsHud = true,
+            Hud = new ViHudSummary(isOk, title, lines, pos),   // 사본은 요약이 뜬다
         });
     }
 

@@ -67,7 +67,7 @@ public sealed class DemoRunResult : IDisposable
             case ViOverlayLabel l:
             {
                 var p = f(l.X, l.Y);
-                return new ViOverlayLabel { Text = l.Text, X = p.X, Y = p.Y, FontSize = l.FontSize, Align = l.Align, HasBackground = l.HasBackground, LineColors = l.LineColors, IsHud = l.IsHud, Color = l.Color, IsDashed = l.IsDashed };
+                return new ViOverlayLabel { Text = l.Text, X = p.X, Y = p.Y, FontSize = l.FontSize, Align = l.Align, HasBackground = l.HasBackground, LineColors = l.LineColors, IsHud = l.IsHud, Hud = l.Hud, Color = l.Color, IsDashed = l.IsDashed };
             }
             case ViOverlayRect r:
             {

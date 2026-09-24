@@ -6,7 +6,7 @@
 
 ## Version
 
-<!-- Release PR: the last commit drops "-dev" from <Version> in Directory.Build.props — minor when the public API grew, patch otherwise. Hotfix PR: patch. Documentation-only changes do not get a release; they ride the next one. -->
+<!-- Release PR: the last commit drops "-dev" from <Version> in Directory.Build.props — minor when the public API grew, patch otherwise — except an opt-in addition that completes the feature the previous minor introduced (default = old behaviour), which ships as a patch; say so in the notes, with the cost (code using it cannot go back to the previous patch). Hotfix PR: patch. Documentation-only changes do not get a release; they ride the next one. -->
 
 ## Checks
 

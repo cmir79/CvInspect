@@ -174,6 +174,35 @@ public class CvCropTests
         var huds = src.Items.OfType<ViOverlayLabel>().Where(l => l.IsHud && !ReferenceEquals(l, centredHud)).ToList();
         Check(huds.Count == 5 && !boxLabel.IsHud,
             "every AddSummary branch marks its label as HUD; a corner-aligned box label starting with [OK] does not get the mark — Align and text cannot tell them apart");
+        Check(huds.Select(l => l.Hud?.IsOk).SequenceEqual(new bool?[] { true, false, true, false, true })
+              && huds.Select(l => l.Hud?.Title).SequenceEqual(new[] { "tl", "tl-y", "tr", "bl", "br" })
+              && huds.Select(l => l.Hud?.Pos).SequenceEqual(new ViHudPos?[] { ViHudPos.TopLeft, ViHudPos.TopLeft, ViHudPos.TopRight, ViHudPos.BottomLeft, ViHudPos.BottomRight })
+              && boxLabel.Hud is null && centredHud.Hud is null,
+            "every AddSummary branch carries the verdict, title and corner it was given, so a screen reading the HUD apart never parses the [OK]/[NG] text or colour; labels made without it carry null");
+        Check(huds[0].Hud!.Lines.SequenceEqual(new (string, ViOverlayColor?)[] { ("a", null) }) && huds[1].Hud!.Lines.Count == 0
+              && huds[4].Hud!.Lines.SequenceEqual(new (string, ViOverlayColor?)[] { ("x", ViOverlayColor.Yellow) }),
+            "the detail lines come back as given, with their colours, the title line not among them");
+        var callerLines = new List<(string Text, ViOverlayColor? Color)> { ("before", null) };
+        var copied = new ViOverlay();
+        copied.AddSummary(ViHudPos.TopLeft, 0, 0, true, "t", callerLines);
+        var direct = new ViHudSummary(true, "t", callerLines, ViHudPos.TopLeft);   // 공개 생성자로 직접 만들어도 같아야 한다
+        callerLines[0] = ("after", null);
+        Check(((ViOverlayLabel)copied.Items[0]).Hud!.Lines[0].Text == "before" && direct.Lines[0].Text == "before",
+            "the summary keeps its own copy of the lines, whichever way it is built — the drawn text cannot be changed afterwards, so the data must not be either");
+        Check(direct.Lines is not (string, ViOverlayColor?)[] && direct.Lines is not List<(string, ViOverlayColor?)>,
+            "and the list it hands out cannot be written through a cast");
+        Check(direct == new ViHudSummary(true, "t", new[] { ("before", (ViOverlayColor?)null) }, ViHudPos.TopLeft)
+              && direct != new ViHudSummary(true, "t", new[] { ("other", (ViOverlayColor?)null) }, ViHudPos.TopLeft),
+            "two summaries with the same content are equal — the record compares the lines, not the list reference");
+
+        // 줄별 색은 그려지는 줄과 1:1 이어야 한다 — 항목 안에 줄바꿈이 있어도 뒤 줄의 색이 밀리지 않게.
+        var multi = new ViOverlay();
+        multi.AddSummary(ViHudPos.TopLeft, 0, 0, true, "t", new[] { ("err\nsecond", (ViOverlayColor?)ViOverlayColor.Orange), ("next", ViOverlayColor.Cyan) });
+        var ml = (ViOverlayLabel)multi.Items[0];
+        Check(ml.LineColors!.Count == ml.Text.Split('\n').Length
+              && ml.LineColors.SequenceEqual(new ViOverlayColor?[] { null, ViOverlayColor.Orange, ViOverlayColor.Orange, ViOverlayColor.Cyan })
+              && ml.Hud!.Lines.Count == 2,
+            $"a coloured entry with a line break colours each drawn line; the next entry keeps its own colour ({string.Join(",", ml.LineColors)}); the summary keeps the entries as given");
         var before = src.Items.ToList();
 
         var cut = src.CropTo(x, y, w, h);
@@ -212,8 +241,8 @@ public class CvCropTests
                 $"HUD '{a.Text.Split('\n')[0]}' sits where AddSummary would put it on the cut image: ({a.X},{a.Y}) vs ({e.X},{e.Y})");
             Check(a.X is >= 0 and <= w && a.Y is >= 0 and <= h, $"HUD stays inside the cut image: ({a.X},{a.Y})");
             Check(a.Text == huds[i].Text && a.Color == huds[i].Color && a.FontSize == huds[i].FontSize && a.HasBackground
-                  && ReferenceEquals(a.LineColors, huds[i].LineColors) && a.IsHud,
-                "the HUD keeps its text, verdict colour, line colours and mark");
+                  && ReferenceEquals(a.LineColors, huds[i].LineColors) && a.IsHud && ReferenceEquals(a.Hud, huds[i].Hud),
+                "the HUD keeps its text, verdict colour, line colours, mark and summary");
         }
     }
 
