@@ -174,6 +174,20 @@ public class CvCropTests
         var huds = src.Items.OfType<ViOverlayLabel>().Where(l => l.IsHud && !ReferenceEquals(l, centredHud)).ToList();
         Check(huds.Count == 5 && !boxLabel.IsHud,
             "every AddSummary branch marks its label as HUD; a corner-aligned box label starting with [OK] does not get the mark — Align and text cannot tell them apart");
+        Check(huds.Select(l => l.Hud?.IsOk).SequenceEqual(new bool?[] { true, false, true, false, true })
+              && huds.Select(l => l.Hud?.Title).SequenceEqual(new[] { "tl", "tl-y", "tr", "bl", "br" })
+              && huds.Select(l => l.Hud?.Pos).SequenceEqual(new ViHudPos?[] { ViHudPos.TopLeft, ViHudPos.TopLeft, ViHudPos.TopRight, ViHudPos.BottomLeft, ViHudPos.BottomRight })
+              && boxLabel.Hud is null && centredHud.Hud is null,
+            "every AddSummary branch carries the verdict, title and corner it was given, so a screen reading the HUD apart never parses the [OK]/[NG] text or colour; labels made without it carry null");
+        Check(huds[0].Hud!.Lines.SequenceEqual(new (string, ViOverlayColor?)[] { ("a", null) }) && huds[1].Hud!.Lines.Count == 0
+              && huds[4].Hud!.Lines.SequenceEqual(new (string, ViOverlayColor?)[] { ("x", ViOverlayColor.Yellow) }),
+            "the detail lines come back as given, with their colours, the title line not among them");
+        var callerLines = new List<(string Text, ViOverlayColor? Color)> { ("before", null) };
+        var copied = new ViOverlay();
+        copied.AddSummary(ViHudPos.TopLeft, 0, 0, true, "t", callerLines);
+        callerLines[0] = ("after", null);
+        Check(((ViOverlayLabel)copied.Items[0]).Hud!.Lines[0].Text == "before",
+            "the summary keeps its own copy of the lines — the drawn text cannot be changed afterwards, so the data must not be either");
         var before = src.Items.ToList();
 
         var cut = src.CropTo(x, y, w, h);
@@ -212,8 +226,8 @@ public class CvCropTests
                 $"HUD '{a.Text.Split('\n')[0]}' sits where AddSummary would put it on the cut image: ({a.X},{a.Y}) vs ({e.X},{e.Y})");
             Check(a.X is >= 0 and <= w && a.Y is >= 0 and <= h, $"HUD stays inside the cut image: ({a.X},{a.Y})");
             Check(a.Text == huds[i].Text && a.Color == huds[i].Color && a.FontSize == huds[i].FontSize && a.HasBackground
-                  && ReferenceEquals(a.LineColors, huds[i].LineColors) && a.IsHud,
-                "the HUD keeps its text, verdict colour, line colours and mark");
+                  && ReferenceEquals(a.LineColors, huds[i].LineColors) && a.IsHud && ReferenceEquals(a.Hud, huds[i].Hud),
+                "the HUD keeps its text, verdict colour, line colours, mark and summary");
         }
     }
 

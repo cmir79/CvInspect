@@ -2,6 +2,14 @@ using System.Linq;
 
 namespace CvInspect.Vision.Overlay;
 
+/// <summary>
+/// 요약 HUD 의 내용 — <see cref="ViHud"/> 가 받은 값 그대로(<see cref="ViOverlayLabel.Hud"/> 로 실린다). 라벨의 글자는 이것을
+/// 그리기용으로 조립한 것이고 형식은 바뀔 수 있으므로, 판정·줄을 따로 적는 화면은 글자가 아니라 이것을 읽는다.
+/// <see cref="Lines"/> 는 제목 줄을 뺀 상세 줄이며 색이 null 인 줄은 판정색으로 그려진다. 만들 때 받은 목록을 복사해 두므로
+/// 호출자가 나중에 그 목록을 고쳐도 바뀌지 않는다.
+/// </summary>
+public sealed record ViHudSummary(bool IsOk, string Title, IReadOnlyList<(string Text, ViOverlayColor? Color)> Lines, ViHudPos Pos);
+
 /// <summary>요약 HUD 가 붙는 이미지 모서리.</summary>
 public enum ViHudPos
 {
@@ -27,6 +35,8 @@ public enum ViHudPos
 /// 블록은 앵커 모서리에서 이미지 안쪽으로 펼쳐지므로(렌더러의 Align 해석) 배율과 무관하게 그 모서리에 머문다.
 /// 발행한 라벨에는 <see cref="ViOverlayLabel.IsHud"/> 표식이 붙는다 — 화면이 HUD 를 떼어 적거나, 잘라 보일 때
 /// (<see cref="ViOverlay.CropTo"/>) 같은 모서리로 다시 붙이는 근거다. 텍스트 모양으로 가리지 않는다.
+/// 받은 판정·제목·줄은 <see cref="ViOverlayLabel.Hud"/>(<see cref="ViHudSummary"/>)에 그대로 싣는다 — 라벨 글자와 색은
+/// 표시용이고, 판정·내용을 되읽는 근거가 아니다.
 /// </summary>
 public static class ViHud
 {
@@ -67,6 +77,7 @@ public static class ViHud
             Align = ViOverlayAlign.TopLeft,
             HasBackground = true,
             IsHud = true,
+            Hud = new ViHudSummary(isOk, title, lines.Select(l => (l, (ViOverlayColor?)null)).ToArray(), ViHudPos.TopLeft),
         });
     }
 
@@ -112,6 +123,7 @@ public static class ViHud
             HasBackground = true,
             LineColors = colors.Any(c => c is not null) ? colors : null,
             IsHud = true,
+            Hud = new ViHudSummary(isOk, title, lines.ToArray(), pos),
         });
     }
 

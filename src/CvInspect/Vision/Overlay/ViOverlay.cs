@@ -129,6 +129,12 @@ public sealed class ViOverlayLabel : ViOverlayItem
     /// 자르지 않는다 — 글자가 화면 고정 크기라 작은 잘린 영역에서 판정 사유 줄이 잘려 나간다.</summary>
     public bool IsHud { get; init; }
 
+    /// <summary>요약 HUD 의 내용 — <see cref="ViHud"/> 가 받은 판정·제목·줄(줄별 색)·모서리를 그대로 싣는다. HUD 가 아니거나
+    /// 내용 없이 만든 라벨이면 null. 화면이 HUD 를 떼어 따로 적을 때는 이것을 읽는다 — <see cref="Text"/> 는 그리기용으로
+    /// 조립한 문자열이라 형식(머리 글자 <c>[OK]</c>/<c>[NG]</c>, 줄 구분)과 색이 바뀔 수 있고(문구 번역 등), 그것을 되읽어
+    /// 판정을 정하면 OK 가 NG 색으로 뜨는 결함이 정상처럼 보인다.</summary>
+    public ViHudSummary? Hud { get; init; }
+
     /// <summary>앵커만 옮긴 사본 — 나머지 속성을 빠짐없이 잇는다(속성이 늘면 여기 한 곳만 고친다).</summary>
     internal ViOverlayLabel MovedTo(double x, double y) => new()
     {
@@ -140,6 +146,7 @@ public sealed class ViOverlayLabel : ViOverlayItem
         HasBackground = HasBackground,
         LineColors = LineColors,
         IsHud = IsHud,
+        Hud = Hud,
         Color = Color,
         IsDashed = IsDashed,
     };
