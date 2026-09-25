@@ -35,7 +35,7 @@ public sealed class CvRingFillOpt : ICvShapeSource
 
     [CvCategory("cv:CatAccept", 2)]
     [CvName("cv:UseOtsu")]
-    [CvDesc("cv:UseOtsuDesc")]
+    [CvDesc("cv:RingUseOtsuDesc")]
     public bool UseOtsu { get; set; }
 
     [CvCategory("cv:CatAccept", 2)]

@@ -1687,5 +1687,34 @@ public class SmokeTests
         Check(clipped is { } c && Math.Abs(c.TotalPx - inside!.Value.TotalPx) < inside.Value.TotalPx * 0.02,
             $"the denominator is the whole band either way — that is what makes two runs comparable (in={inside!.Value.TotalPx} clipped={clipped!.Value.TotalPx})");
     }
+
+    // === 9-D) 밝은 쪽을 ">=" 로 세면 자동 문턱에서 아래 무리 한 칸이 통째로 채움이 된다 (거짓 OK) ===
+    // Otsu 가 돌려주는 값은 아래 무리의 꼭대기이고 OpenCV 이진화 규칙은 "문턱보다 큰 것" 이 전경이다. 잡음 없는
+    // 두 단계 영상에서는 문턱이 곧 어두운 값이라, ">=" 로 세면 반만 찬 밴드가 100% 가 됐다.
+    // 같은 영상의 Dark 는 "<=" 라 처음부터 맞았다 — 같은 런의 대조군이고, 두 극성의 합이 100% 여야 한다.
+    using (var img = new Mat(300, 300, MatType.CV_8UC1, new Scalar(30)))
+    {
+        Cv2.Rectangle(img, new OpenCvSharp.Rect(0, 0, 150, 300), new Scalar(220), -1);   // 밴드의 왼쪽 반만 재료(밝음)
+        var bright = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, UseOtsu = true, Polarity = CvBlobPolarity.Bright });
+        var dark = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, UseOtsu = true, Polarity = CvBlobPolarity.Dark });
+        Check(bright is { } b && b.RatePct > 45 && b.RatePct < 55,
+            $"a half-filled band reads about half with the automatic threshold — counting '>=' took the whole dark class as fill: {bright}");
+        Check(dark is { } d && d.RatePct > 45 && d.RatePct < 55, $"control: the dark side was right all along: {dark}");
+        Check(bright is { } b2 && dark is { } d2 && Math.Abs(b2.RatePct + d2.RatePct - 100) < 0.01,
+            $"on a two-level image every band pixel is one of the two, so the polarities add up to 100% ({bright?.RatePct:F2} + {dark?.RatePct:F2})");
+    }
+
+    // 고정 문턱도 같은 규칙이다 — 문턱과 같은 값은 밝은 쪽이 아니다(블랍 툴과 같다).
+    using (var img = new Mat(300, 300, MatType.CV_8UC1, new Scalar(128)))
+    {
+        var bright = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, Threshold = 128, Polarity = CvBlobPolarity.Bright });
+        var dark = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, Threshold = 128, Polarity = CvBlobPolarity.Dark });
+        Check(bright is { RatePct: 0 } && dark is { RatePct: 100 },
+            $"a pixel equal to the fixed threshold is dark, as Cv2.Threshold and the blob tool read it (bright={bright?.RatePct}, dark={dark?.RatePct})");
+    }
     }
 }
