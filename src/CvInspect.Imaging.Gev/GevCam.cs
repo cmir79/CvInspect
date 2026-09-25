@@ -569,26 +569,31 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
 
-        // **이 그랩의 시작선을 장치 시계로 찍어 둔다.** 이보다 이른 장은 이 그랩의 답이 아니다.
-        // 시작 직전이어야 한다 — 뒤에 찍으면 우리 장까지 시작선보다 이르게 나온다.
-        var startedAt = await LatchDeviceTimestampAsync(nodes, ct).ConfigureAwait(false);
-
-        await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
-
         // 호출이 준 시한이 설정값을 이긴다 — 호출 자리의 사정이 더 최신이다. 안 주면 설정값을 쓴다.
         // InfiniteTimeSpan 은 "내 시한을 걸지 말라" 는 뜻이라 수신 대기에 상한을 두지 않는다.
         var budgetMs = timeout is { } want
             ? (want == Timeout.InfiniteTimeSpan ? Timeout.Infinite : (int)Math.Max(1, want.TotalMilliseconds))
             : Math.Max(1, _gev.GrabTimeoutMs);
 
-        // 수신은 반드시 자기 토큰으로 끊는다 — 밖에서 시한을 씌우면 버려진 대기자가 다음 프레임을
-        // 삼키고 그 버퍼가 영영 풀로 돌아오지 않는다.
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(budgetMs);
+        // **이 그랩의 시작선을 장치 시계로 찍어 둔다.** 이보다 이른 장은 이 그랩의 답이 아니다.
+        // 시작 직전이어야 한다 — 뒤에 찍으면 우리 장까지 시작선보다 이르게 나온다.
+        var startedAt = await LatchDeviceTimestampAsync(nodes, ct).ConfigureAwait(false);
 
         GevFrame? frame = null;
         try
         {
+            // ⚠ **시작은 멈춤을 보내는 try 안에서 건다.** 명령은 응답을 기다리기 전에 이미 장치로 나가므로,
+            // 그 응답을 기다리는 사이 부른 쪽이 취소하면 장치는 취득을 시작했는데 취소 예외가 여기서 나온다
+            // (TryExecuteAsync 는 취소를 삼키지 않는다). 시작을 try 앞에 두면 그때 아래 finally 가 안 돌아
+            // AcquisitionStop 도 번호 기준 초기화도 빠진다 — 겹침 표시를 본문 밖에서 잡는 것과 같은 모양이다.
+            // 시작이 장치에 닿지 않았더라도 멈춤은 무해하다(멈춰 있는 장치에 멈춤을 한 번 더 보낼 뿐).
+            await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
+
+            // 수신은 반드시 자기 토큰으로 끊는다 — 밖에서 시한을 씌우면 버려진 대기자가 다음 프레임을
+            // 삼키고 그 버퍼가 영영 풀로 돌아오지 않는다.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(budgetMs);
+
             frame = await stream.ReceiveAsync(deadline.Token).ConfigureAwait(false);
 
             // 배수와 경합해 옛 프레임이 손에 들어올 수 있다 — 시작선보다 이른 장을 버린다.
@@ -618,6 +623,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // 검사 호스트 로그의 69%), 더 나쁘게는 그다음 StartContinuous 의 Continuous 전환까지 막힌다.
             // 그러면 장치는 SingleFrame 그대로라 한 장만 보내고, 수신 대기에는 시한이 없어 펌프가
             // 로그 한 줄 없이 영영 선다.
+            // ⚠ 그 "잠금" 이 어디서 판정되는지: 장치 XML 이 잠금을 레지스터 값으로 선언하고(예: Crevis
+            // AcquisitionMode 의 pIsLocked = AcqEnabledReg = 1), 취득 계층은 그 값을 **쓴 값을 기억하는 캐시**에서
+            // 읽어 **호스트에서** 거절한다 — 현장 258줄도 그쪽이다: 그 경고는 GenApiException 만 잡는 자리
+            // (TrySetEnumAsync)에서 났고 그랩은 260/260 성공했다. 장치가 거절했다면 상태 예외가 그 자리를 빠져나가
+            // 그랩이 실패했을 것이다. 장치가 SingleFrame 을 마치고 스스로 그 레지스터를 내려도 캐시는 1 이라, 여기서 멈춤을 써
+            // 0 을 기억시켜야 풀린다. 장치 쪽에서도 거절하는지는 안 쟀다. 그리고 멈춤의 응답만 유실되면(장치는
+            // 멈췄는데 예외) 취득 계층이 캐시를 안 고쳐 잠긴 채로 남는다 — 취득 계층의 결함이다(2026-09-26 통보).
             // 취소 토큰을 쓰지 않는다 — 시한 초과나 중단으로 끊긴 그랩일수록 장치를 멈춰 두어야 한다.
             await TryExecuteAsync(nodes, "AcquisitionStop", CancellationToken.None).ConfigureAwait(false);
 
