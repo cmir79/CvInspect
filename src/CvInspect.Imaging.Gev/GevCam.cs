@@ -451,10 +451,20 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// <see cref="FrameAcquired"/> 구독자도 이 장을 받는다(같은 취득이다).
     ///
     /// <b>이 백엔드가 표식을 다는 이유</b>: 프레임이 취득 계층의 다른 스레드로 들어오므로 "이 그랩의 장" 과
-    /// "때마침 온 장" 을 밖에서는 가릴 수 없다. 여기서는 가른다 — 찍기 전에 대기열을 비우고, 받은 장의
-    /// 번호를 마지막으로 내보낸 번호와 <b>16비트 거리</b>로 대 본다(되돌이를 도는 번호라 크기 비교는
-    /// 한 바퀴 뒤 프레임을 전부 옛것으로 기각한다).</summary>
+    /// "때마침 온 장" 을 밖에서는 가릴 수 없다. 여기서는 가른다 — 찍기 전에 대기열을 비우고, 취득을 걸기
+    /// 직전에 장치 시계로 찍은 <b>시작선보다 이른 장</b>을 버린다. 시계를 못 찍는 장치에서는 프레임 번호로
+    /// 가른다(<see cref="IsStale"/>).
+    ///
+    /// <b>시한 만료는 <see cref="TimeoutException"/> 으로 던진다 — null 이 아니다.</b> <see cref="GrabOne"/> 과
+    /// 몸통이 같고, 이 백엔드는 왜 안 왔는지 짚을 곳을 안다(문구가 열 때 남긴 'camera state' 줄 — 트리거 모드·
+    /// 청크 모드 — 을 가리킨다). null 로 접으면 그 안내가 사라진다.
+    /// <b>null 은 받은 장을 쓸 수 없어 버린 경우다</b>(지원하지 않는 픽셀 포맷 — 경고를 남긴다). 그때는 시한 전에
+    /// 돌아오고, 취득은 이미 멈춘 뒤다.</summary>
     public Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default)
+        // ⚠ 겹침 표시(_grabCts)는 반드시 **본문 안에서** 세우고 같은 본문의 finally 에서 푼다(RunGrab).
+        // 토큰을 넘긴 Task.Run 은 시작 전에 취소되면 본문을 통째로 건너뛴다 — 표시를 여기(Task.Run 앞)서 세우면
+        // 그 finally 가 안 돌아 표시가 영영 남고, 그 뒤 이 인스턴스의 그랩이 전부 "이미 기다리는 그랩이 있다" 로
+        // 던진다(닫아도 안 풀린다). 회귀: SmokeTests.GrabFrameAsync 10-G-8.
         => Task.Run(() => RunGrab(timeout, ct), ct);
 
     /// <summary>단발 그랩 한 번 — <see cref="GrabOne"/> 과 <see cref="GrabFrameAsync"/> 의 공통 몸통.

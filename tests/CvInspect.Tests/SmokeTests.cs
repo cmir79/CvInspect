@@ -845,7 +845,8 @@ public class SmokeTests
                 "a restarted clock would take grab 150ms + timeout 250ms)");
         }
 
-        // 10-G-4) 시한 만료도 null 이다 — 사유 없이 장이 없었다는 뜻으로 같다.
+        // 10-G-4) 기본 절차에서는 시한 만료도 null 이다 — 왜 안 왔는지 모르므로 던질 사유가 없다.
+        //         (사유를 아는 구현은 던질 수 있다 — GevCam 은 TimeoutException. ICamGrabAsync 문서 참조.)
         {
             using var cam = new FakeCam { GrabDelayMs = 2000 };
             cam.Open();
@@ -885,6 +886,36 @@ public class SmokeTests
             var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
             Check(frame is not null && cam.NativeCalls == 1 && cam.GrabCalls == 0,
                 $"ICamGrabAsync wins over the default path (native={cam.NativeCalls}, GrabOne={cam.GrabCalls})");
+        }
+
+        // 10-G-8) **시작 전에 취소된 호출이 겹침 표시를 남기지 않는다.** 토큰을 넘긴 Task.Run 은 시작 전에
+        //         취소되면 본문을 통째로 건너뛴다. 그래서 표시를 Task.Run 앞에서 세우고 본문 finally 에서만 풀면
+        //         표시가 영영 남아, 그 인스턴스의 그랩이 전부 "이미 기다리는 그랩이 있다" 로 던진다(닫아도 안 풀린다).
+        //         GevCam 은 표시를 본문 안(열림 검사 뒤)에서 세워 이 모양이 아니다 — 리팩터가 그 순서를 뒤집지 못하게 못 박는다.
+        //         ⚠ 열지 않은 카메라라 이 절이 잡는 것은 **표시를 열림 검사 앞으로 옮기는** 리팩터까지다(카메라 없이 닿는 범위).
+        {
+            using var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" });
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            // 한 번이면 된다 — 표시가 한 번만 새도 그 뒤 호출이 전부 거절된다.
+            var canceled = false;
+            try { await cam.GrabFrameAsync(second, cancelled.Token); }
+            catch (OperationCanceledException) { canceled = true; }
+            Check(canceled, "a grab called with an already-cancelled token ends as cancelled");
+
+            string? asyncReason = null;
+            try { await cam.GrabFrameAsync(second); }
+            catch (InvalidOperationException ex) { asyncReason = ex.Message; }
+            Check(asyncReason is not null && asyncReason.Contains("not opened"),
+                "after cancelled calls the next GrabFrameAsync fails for the real reason (not opened), " +
+                $"not because a cancelled call left the one-grab-at-a-time mark set (got: {asyncReason ?? "no exception"})");
+
+            string? syncReason = null;
+            try { cam.GrabOne(); }
+            catch (InvalidOperationException ex) { syncReason = ex.Message; }
+            Check(syncReason is not null && syncReason.Contains("not opened"),
+                $"and GrabOne, which shares that mark, is not locked out either (got: {syncReason ?? "no exception"})");
         }
     }
     }

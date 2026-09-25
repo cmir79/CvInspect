@@ -9,7 +9,9 @@ public static class CamGrabExt
     /// 장을 집고, 구독을 푼다. 소비자마다 손으로 짜던 그 네 단계다.
     ///
     /// 돌려주는 값과 던지는 것의 경계는 <see cref="ICamGrabAsync.GrabFrameAsync"/> 에 적힌 그대로다 —
-    /// <c>null</c> 은 시한 만료나 "애초에 답 못 하는 구현" 이고, 답해야 하는데 못 하는 상태는 던진다.
+    /// <c>null</c> 은 "이 호출의 장이 없었고 던질 사유도 없다" 이고, 답해야 하는데 못 하는 상태는 던진다.
+    /// <b>기본 절차의 시한 만료는 <c>null</c> 이지만, 표식을 단 구현은 시한 만료를 사유와 함께
+    /// <see cref="TimeoutException"/> 으로 던질 수 있다</b>(<c>GevCam</c>) — 백엔드를 가리지 않는 호출자는 둘 다 받는다.
     ///
     /// <b>기본 절차가 못 하는 것</b>(그래서 콜백으로 프레임을 받는 구현은 <see cref="ICamGrabAsync"/> 를 단다):
     /// <list type="bullet">
