@@ -24,13 +24,15 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// <summary>정지 직후 이만큼 안에 온 드롭은 정지 경계로 본다 — 마지막 프레임 하나가 잘릴 뿐이다.</summary>
     private static readonly long StopBoundaryTicks = TimeSpan.FromSeconds(2).Ticks;
 
-    /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
+    /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 없음(멈춘 적이 없거나, 그 뒤 연속 취득을 다시 걸었다).
+    /// <see cref="StartContinuous"/> 가 지운다 — 다시 건 라이브의 드롭은 그 라이브의 것이다.</summary>
     private long _stoppedAtTicks;
 
     /// <summary>장을 못 받고 끝난 단발 그랩을 멈춘 시각(UTC ticks). 0 이면 없음.
     /// 연속 정지 표식과 따로 두는 이유: <b>다음 단발 그랩이 취득을 걸 때 지워야</b> 하기 때문이다. 안 지우면 시한 초과 뒤
     /// 곧바로 다시 부르는 루프(재시도·트리거 대기 폴링)에서 2초 창이 늘 열려, 다음 그랩의 진짜 손실까지 "손실 아님" 으로 묻힌다.
-    /// 연속 정지 표식은 뒤따르는 단발 그랩이 지우면 안 된다 — 라이브를 멈추자마자 찍는 티칭 조작에서 라이브 꼬리가 경고로 나온다.</summary>
+    /// 연속 정지 표식은 뒤따르는 단발 그랩이 지우면 안 된다 — 라이브를 멈추자마자 찍는 티칭 조작에서 라이브 꼬리가 경고로 나온다.
+    /// ⚠ 이 비대칭은 일부러다: 단발 그랩은 제 창만 닫고, <see cref="StartContinuous"/> 는 둘 다 닫는다(그쪽 주석에 실측).</summary>
     private long _grabStoppedAtTicks;
 
     /// <summary>
@@ -859,7 +861,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
         //   노출 5 ms·d=25: 끔 27회 중 4회 첫 장이 잘렸다. 켬 0/21. 노출 100 ms·d=100: 끔 24회 중 2회, 켬 0/26.
         // 곧장(d≈0) 걸면 세 노출 모두 35회 중 0 이었다 — 위험한 것은 사용자가 잠깐 뒤에 라이브를 누르는 경우다.
         // 상한은 노출 + 325 ms 이고, 부르는 스레드가 그만큼 선다(취소 직후에 라이브를 걸 때만).
-        if (_pump == null && SettleWaitMs() is var settleMs and > 0)
+        // 열려 있고 아직 안 돌 때만 — 닫힌·해제된 카메라가 대기부터 하고 던지면 안 된다(락 밖이라 대략의 판정이면 된다).
+        if (!_disposed && _dev != null && _pump == null && SettleWaitMs() is var settleMs and > 0)
             Thread.Sleep(settleMs);
 
         lock (_sync)

@@ -47,6 +47,9 @@ public interface ICamGrabAsync
     /// <exception cref="ObjectDisposedException">이미 해제됐다.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> 로 취소됐다 — 시한 만료와 갈라 알 수 있다.</exception>
     /// <remarks>그 밖에 전송·장치 계층의 실패는 구현 고유의 예외로 올 수 있다(<c>GevCam</c>: 취득 라이브러리의 예외 계열 —
-    /// 그랩을 걸기 전에 제어를 잃었으면 제어 상실 예외 등).</remarks>
+    /// 그랩을 걸기 전에 제어를 잃었으면 제어 상실 예외 등).
+    ///
+    /// <paramref name="timeout"/> 은 <b>장을 기다리는 시간</b>이다. 구현은 취득을 걸기 전에 잠깐 기다릴 수 있고, 그 대기는 시한
+    /// 밖이다 — 호출 전체가 시한보다 길어질 수 있다(<c>GevCam</c>: 장을 못 받고 끝난 그랩 바로 뒤, 앞 시작으로부터 노출 + 325 ms 이내).</remarks>
     Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default);
 }

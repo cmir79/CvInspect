@@ -107,8 +107,10 @@ block never arrived cut — it was either delivered whole or not sent at all —
 block of a start sent shortly after it (next section). Plain timeouts cut nothing in the runs made.
 Other models are unmeasured. If both counters climb only around stops or right after a cancelled grab,
 read them as cut blocks rather than loss. For a drop cut by our own stop this package logs an Info line
-instead of a warning until the next acquisition starts; the GigE library still warns once per open, the
-first time a block ends short.
+instead of a warning, for up to two seconds: a stopped single grab's window closes when the next single
+grab or live acquisition starts, and a stopped live acquisition's window closes when live is started again
+(a single grab right after a live stop keeps it on purpose, so the live stream's cut tail is not reported
+as a loss). The GigE library still warns once per open, the first time a block ends short.
 
 A grab whose own frame the camera cuts now fails — `TimeoutException`, with a `frame N dropped:
 Incomplete` warning that is correct, because it is that grab's frame. **Before 0.29.0 that frame was
