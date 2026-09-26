@@ -8,6 +8,7 @@ namespace CvInspect.Vision.Opts;
 /// <summary>
 /// 블랍 검출 파라미터 — 극성 이진화(Otsu/고정 문턱) → 연결요소 최대 면적 블랍.
 /// 위치 선탐지·존재 확인 등 범용 (검사가 용도를 조립). 좌표는 대상 이미지 픽셀 공간.
+/// ⚠ 존재 확인·면적 판정에는 자동 문턱을 끈다 — <see cref="UseOtsu"/> 참조(제품이 없는 영역에서 큰 블랍을 만든다).
 /// </summary>
 public sealed class CvBlobOpt : ICvShapeSource
 {
@@ -30,9 +31,17 @@ public sealed class CvBlobOpt : ICvShapeSource
     [CvDesc("cv:FillHolesDesc")]
     public bool FillHoles { get; set; }
 
+    /// <summary>자동 문턱(Otsu). <b>영역에 제품과 배경 두 무리가 다 있을 때만 맞다.</b>
+    ///
+    /// Otsu 는 히스토그램을 언제나 둘로 가른다. 제품이 없어 배경뿐이거나 제품이 영역을 가득 채우면 한 무리의
+    /// 잡음·조명 기울기를 반으로 갈라, 8-연결로 이어진 큰 블랍 하나를 만든다 — MinArea 로 걸러지지 않는다.
+    /// 실측(<see cref="CvBlobFinder"/> 요약): 제품 없는 영역에서 영역의 42~54% 블랍, 영역을 덮은 제품은 면적 반 이하.
+    /// 그래서 <b>있음·없음이나 면적 하한으로 판정하는 검사는 끄고 고정 문턱(<see cref="Threshold"/>)을 쓴다</b> —
+    /// 자동이 틀리는 방향이 "없는 것을 있다고" 쪽이라 그 검사의 fail-safe 와 반대다.
+    /// 기본값은 켜짐이다(종전 판 그대로). 위치만 잡는 용도라면 조명 변동에 유연하다.</summary>
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:UseOtsu")]
-    [CvDesc("cv:UseOtsuDesc")]
+    [CvDesc("cv:BlobUseOtsuDesc")]
     public bool UseOtsu { get; set; } = true;
 
     [CvCategory("cv:CatThreshold", 2)]
