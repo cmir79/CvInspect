@@ -98,10 +98,11 @@ raising the timeouts does not reduce it. The rule is what that run settled; it w
 transport, not through this package.
 
 From 0.29.0 (GevSharp 0.4.1) a block that ends short of what its leader announced is counted as
-incomplete instead of being handed on with a stale tail. A camera that cuts the frame in flight when
-acquisition stops therefore adds to `IncompleteFrames` at each such stop — the log line for it is
-lowered to Info, but the counter is not. On the Basler used here it added nothing (the camera finishes
-the block); other models are unmeasured. If the count climbs only with stops, it is not a loss.
+incomplete (`IncompleteFrames` is the library's incomplete-frame counter) instead of being handed on
+with a stale tail. Whether stopping acquisition cuts a block in flight depends on the camera: the
+Basler measured here finishes the block — 84 frames and five deliberately cut-short grabs, zero
+incomplete. Other models are unmeasured. If the count climbs only when acquisition is stopped, read
+it as stop-cut blocks rather than loss; the log line for such a drop is lowered to Info.
 
 ## Diagnostics
 
