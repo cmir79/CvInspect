@@ -917,6 +917,21 @@ public class SmokeTests
             Check(syncReason is not null && syncReason.Contains("not opened"),
                 $"and GrabOne, which shares that mark, is not locked out either (got: {syncReason ?? "no exception"})");
         }
+
+        // 10-G-9) GevCam 의 시한 규칙 — InfiniteTimeSpan 은 "구현의 시한에 맡긴다" 이지 "상한 없음" 이 아니다
+        //         (ICamGrabAsync 계약). 전에는 상한 없음으로 읽어 트리거를 기다리는 카메라 앞에서 영영 섰다.
+        {
+            static int Budget(TimeSpan? t) => CvInspect.Imaging.Gev.GevCam.GrabBudgetMs(t, 5000);
+            Check(Budget(Timeout.InfiniteTimeSpan) == 5000,
+                $"InfiniteTimeSpan defers to GrabTimeoutMs rather than meaning no deadline at all (got {Budget(Timeout.InfiniteTimeSpan)})");
+            Check(Budget(null) == 5000, $"GrabOne, which gives no timeout, uses GrabTimeoutMs (got {Budget(null)})");
+            Check(Budget(TimeSpan.FromMilliseconds(150)) == 150,
+                $"a timeout the caller gives wins over the setting (got {Budget(TimeSpan.FromMilliseconds(150))})");
+            Check(Budget(TimeSpan.Zero) == 1 && Budget(TimeSpan.FromMilliseconds(-5)) == 1,
+                $"zero or negative becomes the shortest wait, not a disabled one (got {Budget(TimeSpan.Zero)}, {Budget(TimeSpan.FromMilliseconds(-5))})");
+            Check(Budget(TimeSpan.MaxValue) == int.MaxValue,
+                $"a huge timeout is clamped to what a cancellation delay accepts instead of wrapping negative (got {Budget(TimeSpan.MaxValue)})");
+        }
     }
     }
 

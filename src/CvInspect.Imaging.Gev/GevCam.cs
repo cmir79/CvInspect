@@ -569,11 +569,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
         await TrySetEnumAsync(nodes, "AcquisitionMode", "SingleFrame", ct).ConfigureAwait(false);
 
-        // 호출이 준 시한이 설정값을 이긴다 — 호출 자리의 사정이 더 최신이다. 안 주면 설정값을 쓴다.
-        // InfiniteTimeSpan 은 "내 시한을 걸지 말라" 는 뜻이라 수신 대기에 상한을 두지 않는다.
-        var budgetMs = timeout is { } want
-            ? (want == Timeout.InfiniteTimeSpan ? Timeout.Infinite : (int)Math.Max(1, want.TotalMilliseconds))
-            : Math.Max(1, _gev.GrabTimeoutMs);
+        var budgetMs = GrabBudgetMs(timeout, _gev.GrabTimeoutMs);
 
         // **이 그랩의 시작선을 장치 시계로 찍어 둔다.** 이보다 이른 장은 이 그랩의 답이 아니다.
         // 시작 직전이어야 한다 — 뒤에 찍으면 우리 장까지 시작선보다 이르게 나온다.
@@ -642,6 +638,20 @@ public sealed class GevCam : ICam, ICamGrabAsync
             ResetFrameIdBaseline();
         }
     }
+
+    /// <summary>단발 그랩이 프레임을 기다릴 상한(ms).
+    ///
+    /// 호출이 준 시한이 설정값을 이긴다 — 호출 자리의 사정이 더 최신이다. 안 주면(<see cref="GrabOne"/>)
+    /// <see cref="GevCamOpt.GrabTimeoutMs"/> 다.
+    /// <b><see cref="Timeout.InfiniteTimeSpan"/> 도 설정값이다</b> — <see cref="ICamGrabAsync"/> 계약이 그 값을
+    /// "내 시한을 걸지 않는다, 구현의 시한에 맡긴다" 로 정한다. 전에는 "상한 없음" 으로 읽어, 트리거를 기다리는
+    /// 카메라 앞에서 닫거나 취소하기 전까지 영영 섰다.
+    /// 아주 큰 값은 int 로 자른다(취소 예약이 받는 상한). 0 이하는 1ms 로 올린다.
+    /// <c>internal</c> 인 것은 회귀가 장치 없이 이 규칙을 부를 수 있게 하려는 것이다.</summary>
+    internal static int GrabBudgetMs(TimeSpan? timeout, int grabTimeoutMs)
+        => timeout is { } want && want != Timeout.InfiniteTimeSpan
+            ? (int)Math.Min(int.MaxValue, Math.Max(1, want.TotalMilliseconds))
+            : Math.Max(1, grabTimeoutMs);
 
     public void StartContinuous()
     {

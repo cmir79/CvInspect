@@ -68,7 +68,9 @@ public sealed class GevCamOpt
     /// 동시에 성립한다. 밀림을 조사할 때 켠다. 카메라마다 한 줄씩 나오므로 상시로 두지 않는다.</summary>
     public int PumpStatsIntervalMs { get; set; }
 
-    /// <summary>단발 그랩이 프레임을 기다리는 상한(ms).</summary>
+    /// <summary>단발 그랩이 프레임을 기다리는 상한(ms). <c>GrabOne</c> 과, 시한을
+    /// <see cref="Timeout.InfiniteTimeSpan"/>(구현의 시한에 맡긴다)으로 준 <c>GrabFrameAsync</c> 가 쓴다.
+    /// 시한을 값으로 준 <c>GrabFrameAsync</c> 는 그 값을 쓴다.</summary>
     public int GrabTimeoutMs { get; set; } = 5000;
 
     /// <summary>설정 묶음 불러오기 같은 명령이 끝나기를 기다리는 상한(ms).</summary>
