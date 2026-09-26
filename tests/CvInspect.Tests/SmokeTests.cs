@@ -932,6 +932,31 @@ public class SmokeTests
             Check(Budget(TimeSpan.MaxValue) == int.MaxValue,
                 $"a huge timeout is clamped to what a cancellation delay accepts instead of wrapping negative (got {Budget(TimeSpan.MaxValue)})");
         }
+
+        // 10-G-10) 기본 절차의 InfiniteTimeSpan — GrabOne 이 장 없이 돌아오면 늦은 발행을 유예만큼 기다리고 null 이다.
+        //          전에는 남은 시한(= 무한)을 기다려 영영 섰다(예: 읽기에 실패한 VideoCaptureCam).
+        //          ⚠ 옛 동작은 "안 돌아온다" 라서 바깥에 감시 시한을 둔다 — 없으면 스위트가 멈출 뿐 실패로 안 나온다.
+        {
+            using var cam = new FakeCam { GrabPublishesNothing = true };
+            cam.Open();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var call = CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, Timeout.InfiniteTimeSpan);
+            var returned = await Task.WhenAny(call, Task.Delay(5000)) == call;
+            sw.Stop();
+            Check(returned, $"with InfiniteTimeSpan a grab that publishes nothing still comes back instead of waiting forever ({sw.ElapsedMilliseconds}ms)");
+            var got = returned ? await call : null;
+            Check(returned && got is null, "and it comes back as null — no frame, no reason to throw");
+            Check(sw.ElapsedMilliseconds >= CvInspect.Imaging.CamGrabExt.LatePublishGraceMs - 50,
+                $"after the late-publish grace, not at once — a frame published just after GrabOne returns must still get its chance ({sw.ElapsedMilliseconds}ms)");
+        }
+
+        // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
+        {
+            using var cam = new FakeCam { PublishAfterReturnMs = 120 };
+            cam.Open();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, Timeout.InfiniteTimeSpan);
+            Check(frame is not null, "with InfiniteTimeSpan a frame published after GrabOne returns is still delivered within the grace");
+        }
     }
     }
 

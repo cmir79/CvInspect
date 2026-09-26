@@ -87,7 +87,9 @@ through the token comes out as `OperationCanceledException`, so it stays disting
 
 The `timeout` argument wins over whatever the implementation has configured, because the call site
 knows more than the configuration did. Pass `Timeout.InfiniteTimeSpan` to defer to the
-implementation's own deadline.
+implementation's own deadline — `GevCam` then uses its `GrabTimeoutMs`. On the generic path that
+deadline is `GrabOne`'s own; if `GrabOne` comes back without a frame, a late one gets a one-second
+grace and then the call returns `null`.
 
 Implement **`ICamGrabAsync`** when your camera knows something the generic path cannot, and the
 extension will call you instead. There are two such things:
