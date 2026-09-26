@@ -969,6 +969,23 @@ public class SmokeTests
             Check(negThrew is null, $"a negative timeout becomes the shortest wait instead of throwing (threw {negThrew?.GetType().Name ?? "nothing"})");
         }
 
+        // 10-G-12) GevCam 단발 정지 창 — 장을 못 받고 끝난 그랩 뒤의 드롭은 "우리가 끊은 블록" 이지만, **다음 그랩이 취득을
+        //          걸면 창이 닫혀야** 한다. 안 닫으면 시한 초과 뒤 곧바로 다시 부르는 루프(재시도·트리거 대기 폴링)에서 창이 늘
+        //          열려, 다음 그랩의 진짜 손실까지 "손실 아님" Info 로 묻힌다(게시 전 검토가 짚은 회귀).
+        //          장치 없이 창의 규칙만 부른다 — 그랩이 창을 찍고 닫는 배선은 실기 몫이다.
+        {
+            using var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" });
+            var t0 = DateTime.UtcNow.Ticks;
+            var soon = t0 + TimeSpan.FromMilliseconds(100).Ticks;
+            Check(!cam.IsStopBoundaryDrop(soon), "with no stop yet, a drop is a loss");
+            cam.MarkGrabStopped(t0);
+            Check(cam.IsStopBoundaryDrop(soon), "right after a grab that ended without its frame, a drop is the block our stop cut");
+            Check(!cam.IsStopBoundaryDrop(t0 + TimeSpan.FromSeconds(3).Ticks), "the window closes after two seconds");
+            cam.MarkGrabStopped(0);   // 다음 그랩이 AcquisitionStart 직전에 하는 일
+            Check(!cam.IsStopBoundaryDrop(soon),
+                "once the next grab starts, a drop inside the old window belongs to that grab and must be reported as a loss");
+        }
+
         // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
         {
             using var cam = new FakeCam { PublishAfterReturnMs = 120 };

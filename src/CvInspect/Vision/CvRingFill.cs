@@ -11,7 +11,7 @@ public readonly record struct CvRingFillHit(double RatePct, double FillPx, doubl
     /// 분자에는 안 들어가므로, 이 값이 0 이 아니면 그만큼이 "안 찬 것" 으로 계산된 것이다.
     /// 0 이 아니면 대개 중심·반경 설정이나 시야가 잘못된 것이니, 낮은 충전율을 결함으로 읽기 전에 여기를 먼저 본다.
     /// 밴드가 온전히 화면 안이면 0 이고, 그때 <see cref="RatePct"/> 는 이 값을 넣기 전의 셈과 같다(밴드 밖을 셀 일이 없다).
-/// 0.29.0 부터 Bright 는 문턱과 같은 화소를 채움으로 세지 않는다 — 그 규칙은 <see cref="CvRingFill.Measure"/> 에 있다.</summary>
+    /// 0.29.0 부터 Bright 는 문턱과 같은 화소를 채움으로 세지 않는다 — 규칙은 <see cref="CvRingFill.Measure"/> 참조.</summary>
     public double OutsidePx { get; init; }
 }
 
@@ -32,6 +32,11 @@ public readonly record struct CvRingFillHit(double RatePct, double FillPx, doubl
 /// </summary>
 public static class CvRingFill
 {
+    /// <summary>중심 (<paramref name="cx"/>, <paramref name="cy"/>) 둘레 밴드의 충전율을 잰다. 밴드를 셀 수 없으면 null.
+    ///
+    /// <b>채움의 규칙</b>: Bright 는 문턱보다 큰 화소, Dark 는 문턱 이하인 화소가 채움이다 — OpenCV 이진화(Binary/BinaryInv)와
+    /// 블랍 툴과 같은 규칙이다(0.29.0 부터. 그 전에는 Bright 가 문턱과 같은 화소도 채움으로 셌다).
+    /// 자동 문턱(Otsu)은 밴드를 감싼 사각에서 내며, 두 무리가 있을 때만 맞다 — <see cref="CvRingFillOpt.UseOtsu"/> 참조.</summary>
     public static CvRingFillHit? Measure(Mat img, double cx, double cy, CvRingFillOpt opt)
     {
         if (img is null || img.Empty() || opt is null) return null;
@@ -59,8 +64,9 @@ public static class CvRingFill
 
         // 문턱 — 자동(Otsu)이면 밴드를 감싼 사각 전체에서 낸다. 이것은 편의가 아니라 이 셈이 기대는 전제다:
         // Otsu 는 분포를 **언제나** 둘로 가르므로, 재료와 무재료 두 무리가 사각 안에 다 있어야 뜻이 있다.
-        // 사각의 안쪽 구멍·모서리가 배경 무리를 대 주는 덕에, 배경과 밝기가 다른 빈 밴드·꽉 찬 밴드도 맞게 읽힌다(반만 찬
-        // 밴드는 밴드 안에 두 무리가 이미 있다). 그런데 **빈 밴드가
+        // 사각의 안쪽 구멍·모서리가 다른 무리를 대 주는 덕에, 배경이 재료 밝기이면 빈 밴드가, 무재료 밝기이면 꽉 찬 밴드가
+        // 맞게 읽힌다(반만 찬 밴드는 밴드 안에 두 무리가 이미 있다). ⚠ 배경이 제3의 밝기면 문턱이 밴드 값과 배경 값 사이로
+        // 가서, 빈 밴드가 채움 쪽에 놓이면 100% 로 읽힐 수 있다(독해 — 이 경우는 안 쟀다). 그리고 **빈 밴드가
         // 배경과 같은 밝기이거나 꽉 찬 밴드가 배경과 같은 밝기이면** 사각에 한 무리뿐이라 Otsu 가 잡음을 가른다
         // — 실측(r 40..80, 30/220, 잡음 ±5): 빈 밴드도 꽉 찬 밴드도 54.5%(Bright)·45.5%(Dark)로 읽었다. 잡음이 없으면
         // 문턱이 0 이 되어 100% 나 0% 로 간다.

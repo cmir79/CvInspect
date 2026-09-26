@@ -98,11 +98,13 @@ raising the timeouts does not reduce it. The rule is what that run settled; it w
 transport, not through this package.
 
 From 0.29.0 (GevSharp 0.4.1) a block that ends short of what its leader announced is counted as
-incomplete (`IncompleteFrames` is the library's incomplete-frame counter) instead of being handed on
-with a stale tail. Whether stopping acquisition cuts a block in flight depends on the camera: the
-Basler measured here finishes the block — 84 frames and five deliberately cut-short grabs, zero
-incomplete. Other models are unmeasured. If the count climbs only when acquisition is stopped, read
-it as stop-cut blocks rather than loss; the log line for such a drop is lowered to Info.
+incomplete instead of being handed on with a stale tail — `IncompleteFrames` goes up by one and
+`MissingPackets` by the part that never came. Whether stopping acquisition cuts a block in flight
+depends on the camera: the Basler measured here finishes the block — 84 frames and five deliberately
+cut-short grabs, zero incomplete. Other models are unmeasured. If both counters climb only when
+acquisition is stopped (live stopped, or a single grab that timed out or was cancelled), read it as
+stop-cut blocks rather than loss. For such a drop this package logs an Info line instead of a warning,
+but the GigE library still warns once per open, the first time a block ends short.
 
 ## Diagnostics
 
