@@ -986,32 +986,51 @@ public class SmokeTests
                 "once the next grab starts, a drop inside the old window belongs to that grab and must be reported as a loss");
         }
 
-        // 10-G-13) 장을 못 받고 끝난 그랩 뒤 다음 시작을 미루는 시각 — 실측 경계보다 늦어야 한다.
-        //          장치는 시작 직후의 멈춤을 한 장 주기 뒤에 실행해 그 사이 보낸 다음 시작의 장을 자른다(Basler 한 대).
-        //          안전해지는 "앞 시작으로부터의 경과" 를 노출 5·30·100 ms 에서 쟀다: 각각 75·100·175 ms 에서 끊김 0
-        //          (그 바로 아래 50·75·150 ms 에서는 끊김). 전송 70 ms 로 잡은 대기가 그 경계들을 넘는지 본다.
+        // 10-G-13) 장을 못 받고 끝난 그랩 뒤 다음 시작을 미루는 시각 — 실측 경계보다 늦고, 너무 길지 않아야 한다.
+        //          시작 직후에 멈춰 장을 못 받은 그랩 바로 뒤의 시작은 그 장이 잘렸다(Basler 한 대).
+        //          프로브의 g 는 "멈춤 응답 → 다음 시작" 간격이다(앞 시작부터는 명령 왕복 몇 ms 가 더 있다). 노출 5·30·100 ms 에서
+        //          g = 75·100·175 ms 가 끊김 0 이었고 바로 아래 50·75·150 ms 는 끊겼다 — 참 경계는 그 짝 사이다. 왕복 몫 5 ms 를
+        //          얹은 점을 넘는지 본다. 위쪽은 대기가 부풀지 않는지 — 상한이 없던 판은 트리거를 오래 기다린 그랩의 표본으로
+        //          대기가 수 초가 될 수 있었다(코드 경로로 찾은 것이고 실기에서 본 것은 아니다).
         {
             long Ms(double ms) => (long)(ms * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+            double TicksToMs(long ticks) => ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             double WaitMs(double exposureUs, double readoutMs)
-                => CvInspect.Imaging.Gev.GevCam.NextStartNotBefore(0, exposureUs, readoutMs > 0 ? Ms(readoutMs) : 0)
-                   * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-            foreach (var (exposureUs, safeMs) in new[] { (5005.0, 75.0), (29995.0, 100.0), (99995.0, 175.0) })
+                => TicksToMs(CvInspect.Imaging.Gev.GevCam.NextStartNotBefore(0, exposureUs, readoutMs > 0 ? Ms(readoutMs) : 0));
+            foreach (var (exposureUs, safeMs) in new[] { (5005.0, 80.0), (29995.0, 105.0), (99995.0, 180.0) })
                 Check(WaitMs(exposureUs, 70) >= safeMs,
                     $"with {exposureUs / 1000:F0} ms exposure the next start waits past the measured safe point {safeMs} ms (got {WaitMs(exposureUs, 70):F0} ms)");
-            Check(WaitMs(5005, 0) > WaitMs(5005, 70),
-                $"before any readout has been measured the wait falls back to a larger value ({WaitMs(5005, 0):F0} ms vs {WaitMs(5005, 70):F0} ms)");
+            Check(WaitMs(5005, 70) < 130 && WaitMs(99995, 70) < 230,
+                $"the wait stays near exposure + readout + margin, not a unit slip away ({WaitMs(5005, 70):F0} ms, {WaitMs(99995, 70):F0} ms)");
+            Check(WaitMs(5005, 0) > WaitMs(5005, 70) && WaitMs(5005, 0) < 250,
+                $"before any readout has been measured the wait falls back to a larger but bounded value ({WaitMs(5005, 0):F0} ms vs {WaitMs(5005, 70):F0} ms)");
             Check(WaitMs(99995, 70) - WaitMs(5005, 70) > 90,
-                "the wait grows with exposure — the device runs the stop about one frame period later, and a longer exposure makes the period longer");
+                "the wait grows with exposure — the measured cut window ends at previous start + 2 x exposure + 68 ms");
+            Check(WaitMs(5005, 20_000) <= 5 + CvInspect.Imaging.Gev.GevCam.MaxReadoutMs + 25 + 1,
+                $"a readout inflated by a 20 s trigger wait is capped, so the hold stays under exposure + 325 ms (got {WaitMs(5005, 20_000):F0} ms)");
+
+            // 표본 쪽 상한 — 시작 → 도착이 20초(트리거 대기)여도 저장되는 전송은 상한까지만.
+            var sample = CvInspect.Imaging.Gev.GevCam.ReadoutSample(0, Ms(20_005), 5005);
+            Check(Math.Abs(TicksToMs(sample) - CvInspect.Imaging.Gev.GevCam.MaxReadoutMs) < 1,
+                $"a 20 s start-to-arrival (trigger wait) is stored as the readout cap, not as 20 s (got {TicksToMs(sample):F0} ms)");
+            var normal = CvInspect.Imaging.Gev.GevCam.ReadoutSample(0, Ms(75), 5005);
+            Check(Math.Abs(TicksToMs(normal) - 70) < 1, $"a normal grab keeps its measured readout (got {TicksToMs(normal):F1} ms)");
+            Check(CvInspect.Imaging.Gev.GevCam.ReadoutSample(0, Ms(3), 5005) == 0,
+                "an arrival sooner than the exposure gives no sample rather than a negative one");
         }
 
         // 10-G-14) 시한 초과 문구 — 기다리는 동안 버려진 블록이 있었으면 그것을 싣고, 없으면 종전대로 카메라 상태를 가리킨다.
         //          버려진 블록이 있었는데 "트리거를 보라" 만 말하면 현장은 링크·장치 쪽 원인을 두고 트리거 설정을 뒤진다.
+        //          사유가 불완전이 아니면(청크 모드 블록 등) 잘림으로 단정하지 않고 설정 안내를 함께 싣는다 — 그때는 설정이 원인이다.
         {
-            var withDrop = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 1, 43, 11, 563);
-            var clean = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 0, 0, 0, 0);
-            Check(withDrop.Contains("dropped") && withDrop.Contains("43") && !withDrop.Contains("triggerMode"),
-                $"a timeout after a dropped block says so instead of pointing at the trigger ({withDrop})");
-            Check(clean.Contains("triggerMode"), $"a timeout with nothing dropped still points at the camera state ({clean})");
+            var withDrop = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 1, 43, "Incomplete", 11, 563);
+            var clean = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 0, 0, "Incomplete", 0, 0);
+            var unsupported = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 3, 44, "Unsupported", 0, 0);
+            Check(withDrop.Contains("dropped") && withDrop.Contains("43") && withDrop.Contains("cut or lost") && !withDrop.Contains("triggerMode"),
+                $"a timeout after a cut block says so instead of pointing at the trigger ({withDrop})");
+            Check(clean.Contains("triggerMode") && !clean.Contains("block(s)"), $"a timeout with nothing dropped still points at the camera state ({clean})");
+            Check(unsupported.Contains("Unsupported") && unsupported.Contains("ChunkModeActive") && !unsupported.Contains("cut or lost"),
+                $"a block dropped for another reason names it and keeps the settings hint, since chunk mode is a setting ({unsupported})");
         }
 
         // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).

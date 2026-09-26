@@ -99,30 +99,51 @@ transport, not through this package.
 
 From 0.29.0 (GevSharp 0.4.1) a block that ends short of what its leader announced is counted as
 incomplete instead of being handed on with a stale tail — `IncompleteFrames` goes up by one and
-`MissingPackets` by the part that never came. Cameras do cut blocks: on the Basler measured here
-(acA2500-14gm), grabs cancelled within a few milliseconds of the call cut their own block, and in
-2 of 8 bursts of such cancellations the *next* grab's frame was cut as well — with both 0.4.0 and 0.4.1
-of the GigE library. Plain timeouts cut nothing in the runs made. Other models are unmeasured. If both
-counters climb only around stops (live stopped, or a single grab that timed out or was cancelled),
-read it as stop-cut blocks rather than loss. For a drop cut by our own stop this package logs an Info
-line instead of a warning; the GigE library still warns once per open, the first time a block ends short.
+`MissingPackets` by the part that never came. Cameras do cut blocks. On the Basler measured here
+(acA2500-14gm), bursts of grabs cancelled within a few milliseconds of the call produced cut blocks, and
+in 2 of 8 such bursts the *next* normal grab's frame was cut as well — with both 0.4.0 and 0.4.1 of the
+GigE library. Later runs showed whose blocks those were: in 758 repetitions the cancelled grab's own
+block never arrived cut — it was either delivered whole or not sent at all — and what got cut was the
+block of a start sent shortly after it (next section). Plain timeouts cut nothing in the runs made.
+Other models are unmeasured. If both counters climb only around stops or right after a cancelled grab,
+read them as cut blocks rather than loss. For a drop cut by our own stop this package logs an Info line
+instead of a warning until the next acquisition starts; the GigE library still warns once per open, the
+first time a block ends short.
 
 A grab whose own frame the camera cuts now fails — `TimeoutException`, with a `frame N dropped:
 Incomplete` warning that is correct, because it is that grab's frame. **Before 0.29.0 that frame was
 returned as the grab's answer with its bottom rows left over from an earlier frame.** The timeout
-message says when blocks were dropped while the grab waited, so the cause is not mistaken for a
-trigger setting.
+message says when blocks were dropped while the grab waited, and for what reason, so the cause is not
+mistaken for a trigger setting.
 
-**Why the camera cut the next grab's frame, and what `GevCam` does about it (0.29.1).** On the Basler
-measured here, a stop that arrives right after a start is carried out about one frame period later
-(≈ 2 × exposure + 68 ms after the start, at 5, 30 and 100 ms exposure). A start sent in between has its
-frame cut in transfer by that stop. A stop that arrives after the exposure left nothing pending, and
-stopping live acquisition showed none of this in 20 tries. So after a single grab that ended without
-its frame, `GevCam` holds the next start until the previous start + exposure + measured transfer time +
-25 ms (it logs `waiting N ms before starting`). After a grab that timed out, that moment has long passed
-and nothing waits. With cancellations landing 2–7 ms after the call and the next grab 30 ms later, 80
-alternating tries cut 7 of 40 without the hold and 0 of 40 with it. Other models are unmeasured; on a
-camera that stops at once, the hold is only a short delay after an aborted grab.
+**Why a start right after a cancelled grab can lose its frames, and what `GevCam` does about it
+(0.29.1).** On the Basler measured here, when a single grab was stopped right after its start and its
+frame was not sent, a start sent shortly afterwards could have its frames cut in transfer. Measured at 5,
+30 and 100 ms exposure, 20–30 tries per point: the window in which the next start was cut ended at about
+the previous start + 2 × exposure + 68 ms, and 45–90 % of the tries inside it were cut; a next start later
+than the previous start + exposure + transfer time (about 70 ms here) was never cut. Why the camera does
+this was not observed — it has no readable acquisition-status node — so only the timing rule is a
+measurement. A stop that landed after the exposure, or 20–80 ms into a 100 ms exposure, left nothing
+behind. Stopping live acquisition after 300 ms and grabbing at once was clean in 20 of 20; a live
+acquisition stopped right after it started is unmeasured.
+
+So after a single grab that ended without its frame, `GevCam` holds the next start — of a single grab or
+of `StartContinuous` — until the previous start + exposure + measured transfer time + 25 ms, and logs
+`waiting N ms before starting`. The hold is at most exposure + 325 ms after the previous start and is not
+counted in the grab's timeout; `StartContinuous` blocks its caller for it. It is skipped when the camera
+was opened with `TriggerMode` on — that mode was not measured, and a trigger arriving while acquisition is
+stopped would be lost. After a grab that used a normal timeout, the moment has usually passed and nothing
+waits.
+
+Measured effect, alternating the hold on and off within the same runs, with cancellations 2–7 ms after
+the call: single grabs started 30 ms later at 5 ms exposure were cut in 7 of 40 tries without the hold and
+0 of 40 with it (at 100 ms exposure and 100 ms later: 3 of 20 and 0 of 20). Counting only the cancelled
+grabs whose start had reached the camera, live acquisition started 75 ms later at 30 ms exposure came up
+with *every* block cut — no complete frame for a whole second, until it was
+stopped and restarted — in 5 of 43 tries without the hold and 0 of 42 with it; at 5 and 100 ms exposure
+only its first block was cut (4 of 27 and 2 of 24 without, 0 with). Live started at once after the cancel
+was never affected (0 of 35). Other models are unmeasured; on a camera that does not do this, the hold is
+only a short delay after an aborted grab.
 
 ## Diagnostics
 
