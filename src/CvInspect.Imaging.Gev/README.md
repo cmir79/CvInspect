@@ -134,8 +134,11 @@ of `StartContinuous` — until the previous start + exposure + measured transfer
 `waiting N ms before starting`. The hold is at most exposure + 325 ms after the previous start and is not
 counted in the grab's timeout; `StartContinuous` blocks its caller for it. It is skipped when the camera
 was opened with `TriggerMode` on — that mode was not measured, and a trigger arriving while acquisition is
-stopped would be lost. After a grab that used a normal timeout, the moment has usually passed and nothing
-waits.
+stopped would be lost. `TriggerMode` is read under whichever `TriggerSelector` the camera had selected at
+open, so a frame trigger enabled under another selector is not seen and the hold still applies. After a
+grab that used a normal timeout, the moment has usually passed and nothing waits. The transfer time is
+capped at 300 ms (it is timed on the host, so a trigger wait would otherwise inflate it); a capped sample is
+logged once per open.
 
 Measured effect, alternating the hold on and off within the same runs, with cancellations 2–7 ms after
 the call: single grabs started 30 ms later at 5 ms exposure were cut in 7 of 40 tries without the hold and

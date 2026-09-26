@@ -984,6 +984,17 @@ public class SmokeTests
             cam.MarkGrabStopped(0);   // 다음 그랩이 AcquisitionStart 직전에 하는 일
             Check(!cam.IsStopBoundaryDrop(soon),
                 "once the next grab starts, a drop inside the old window belongs to that grab and must be reported as a loss");
+
+            // 라이브 정지 창의 비대칭 — 단발 그랩은 제 창만 닫고 라이브 창은 남긴다(라이브를 멈추자마자 찍는 티칭 조작에서 라이브의
+            // 잘린 꼬리를 손실로 알리지 않으려고). 라이브를 다시 걸면 둘 다 닫는다 — 실기에서 앞 라이브를 멈춘 지 2초 안에 건 라이브가
+            // 1초 내내 잘린 장만 받았는데 그 15줄이 전부 "손실 아님" 으로 내려갔다.
+            cam.MarkLiveStopped(t0);
+            cam.MarkGrabStopped(0);
+            Check(cam.IsStopBoundaryDrop(soon), "a single grab after a live stop keeps the live window, so the live tail stays 'not a loss'");
+            cam.MarkGrabStopped(t0);
+            cam.CloseStopWindows();   // StartContinuous 가 AcquisitionStart 직전에 하는 일
+            Check(!cam.IsStopBoundaryDrop(soon),
+                "starting live closes both windows, so the new live stream's drops are reported as losses");
         }
 
         // 10-G-13) 장을 못 받고 끝난 그랩 뒤 다음 시작을 미루는 시각 — 실측 경계보다 늦고, 너무 길지 않아야 한다.
@@ -1031,6 +1042,11 @@ public class SmokeTests
             Check(clean.Contains("triggerMode") && !clean.Contains("block(s)"), $"a timeout with nothing dropped still points at the camera state ({clean})");
             Check(unsupported.Contains("Unsupported") && unsupported.Contains("ChunkModeActive") && !unsupported.Contains("cut or lost"),
                 $"a block dropped for another reason names it and keeps the settings hint, since chunk mode is a setting ({unsupported})");
+            // 라이브 정지 창 안의 드롭만 있었으면 — 원인으로 단정하지 않되 빼지도 않는다. 빼면 그것이 이 그랩의 장이었을 때 문구가
+            // "트리거를 보라" 로 떨어진다(창은 시각으로만 가려 어느 블록인지 모른다).
+            var stopCutOnly = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 0, 0, "Incomplete", 0, 0, stopCutDrops: 1);
+            Check(stopCutOnly.Contains("within 2 s of stopping live") && stopCutOnly.Contains("may have been") && stopCutOnly.Contains("triggerMode"),
+                $"a drop inside the live-stop window is still mentioned as possibly this grab's frame ({stopCutOnly})");
         }
 
         // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
