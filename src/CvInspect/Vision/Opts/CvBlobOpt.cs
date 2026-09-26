@@ -38,11 +38,14 @@ public sealed class CvBlobOpt : ICvShapeSource
     /// 실측(<see cref="CvBlobFinder"/> 요약): 제품 없는 영역에서 영역의 42~54% 블랍, 영역을 덮은 제품은 면적 반 이하.
     /// 그래서 <b>있음·없음이나 면적 하한으로 판정하는 검사는 끄고 고정 문턱(<see cref="Threshold"/>)을 쓴다</b> —
     /// 자동이 틀리는 방향이 "없는 것을 있다고" 쪽이라 그 검사의 fail-safe 와 반대다.
-    /// 기본값은 켜짐이다(종전 판 그대로). 위치만 잡는 용도라면 조명 변동에 유연하다.</summary>
+    /// <b>기본값은 꺼짐이다</b>(0.29.0 부터 — 그 전에는 켜짐). 블랍의 주된 쓰임이 존재 확인이라 기본값이 안전한 쪽이어야 한다.
+    /// 소비자 조사에서 이 판단을 이미 내려 코드에서 끈 검사가 둘, 기본값에 기대 가이드가 빠진 제품을 합격시키는 검사가
+    /// 하나 나왔다. 위치만 잡는 용도라면 켜는 것이 조명 변동에 유연하다 — 그때는 명시적으로 켠다.
+    /// ⚠ 이 키가 없는 옛 저장 파일은 이제 꺼짐으로 읽힌다(값을 적어 둔 파일은 그대로).</summary>
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:UseOtsu")]
     [CvDesc("cv:BlobUseOtsuDesc")]
-    public bool UseOtsu { get; set; } = true;
+    public bool UseOtsu { get; set; }
 
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:BlobThreshold")]

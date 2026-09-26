@@ -1756,5 +1756,34 @@ public class SmokeTests
         Check(bright is { RatePct: 0 } && dark is { RatePct: 100 },
             $"a pixel equal to the fixed threshold is dark, as Cv2.Threshold and the blob tool read it (bright={bright?.RatePct}, dark={dark?.RatePct})");
     }
+
+    // === 9-E) 블랍 기본값은 고정 문턱이다 — 자동 문턱은 부품 없는 영역에서 큰 블랍을 만든다 (거짓 있음) ===
+    // Otsu 는 한 무리뿐인 영역도 반으로 가르고, 반쯤 켜진 잡음 화소가 8-연결로 이어져 영역의 절반 가까운 블랍 하나가 된다.
+    // 블랍의 주된 쓰임이 존재 확인이라 기본값을 고정 문턱으로 바꿨다(0.29.0). 같은 영상에 자동을 켠 것이 대조군이다 —
+    // 그 블랍이 안 나오면 이 영상이 위험한 모양이 아니라는 뜻이라, 기본값 검사가 아무것도 증명하지 못한다.
+    using (var empty = new Mat(400, 400, MatType.CV_8UC1))
+    {
+        var rnd = new Random(1234);
+        for (var y = 0; y < 400; y++)
+            for (var x = 0; x < 400; x++)
+                empty.Set(y, x, (byte)(30 + rnd.Next(-5, 6)));
+        var region = new CvBlobOpt { UseSearchRegion = true, SearchX = 100, SearchY = 100, SearchW = 200, SearchH = 200 };
+        Check(!region.UseOtsu, "the blob default is the fixed threshold, not Otsu");
+        Check(CvBlobFinder.Find(empty, region) is null, "with the default, a region holding only background yields no blob");
+
+        region.UseOtsu = true;
+        var otsu = CvBlobFinder.Find(empty, region);
+        Check(otsu is { Area: > 10000 },
+            $"control: Otsu on the same empty region invents a blob of about half the region, which is why the default changed ({otsu})");
+    }
+
+    // 기본값이 정상 경우를 깨지 않는다 — 두 무리가 있으면 고정 문턱 128 이 부품을 찾는다.
+    using (var present = new Mat(400, 400, MatType.CV_8UC1, new Scalar(30)))
+    {
+        Cv2.Circle(present, new OpenCvSharp.Point(200, 200), 40, new Scalar(220), -1);
+        var hit = CvBlobFinder.Find(present,
+            new CvBlobOpt { UseSearchRegion = true, SearchX = 100, SearchY = 100, SearchW = 200, SearchH = 200 });
+        Check(hit is { Area: > 4800 and < 5200 }, $"the default still finds a part that is there ({hit})");
+    }
     }
 }
