@@ -7,7 +7,7 @@
          patch 로 확정한다. 예외 하나 — 바로 앞 minor 에서 낸 기능을 마무리하는 opt-in 추가(기본값이면 종전 동작)는
          patch 로 내고 노트에 그렇다고 적는다. 커밋마다 올리지 않는다. 불변인 것 하나: 이미 nuget.org 에 올린 번호는 다시 쓰지 않는다
          (지울 수도 덮어쓸 수도 없다). -->
-    <Version>0.29.0</Version>
+    <Version>0.29.1-dev</Version>
 
     <Authors>kintaein</Authors>
 
