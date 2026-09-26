@@ -109,9 +109,20 @@ line instead of a warning; the GigE library still warns once per open, the first
 
 A grab whose own frame the camera cuts now fails — `TimeoutException`, with a `frame N dropped:
 Incomplete` warning that is correct, because it is that grab's frame. **Before 0.29.0 that frame was
-returned as the grab's answer with its bottom rows left over from an earlier frame**, which is why
-this release is worth taking even though it can look like a new failure. A retry succeeds. Why the
-camera cuts the frame after a cancelled grab has not been isolated.
+returned as the grab's answer with its bottom rows left over from an earlier frame.** The timeout
+message says when blocks were dropped while the grab waited, so the cause is not mistaken for a
+trigger setting.
+
+**Why the camera cut the next grab's frame, and what `GevCam` does about it (0.29.1).** On the Basler
+measured here, a stop that arrives right after a start is carried out about one frame period later
+(≈ 2 × exposure + 68 ms after the start, at 5, 30 and 100 ms exposure). A start sent in between has its
+frame cut in transfer by that stop. A stop that arrives after the exposure left nothing pending, and
+stopping live acquisition showed none of this in 20 tries. So after a single grab that ended without
+its frame, `GevCam` holds the next start until the previous start + exposure + measured transfer time +
+25 ms (it logs `waiting N ms before starting`). After a grab that timed out, that moment has long passed
+and nothing waits. With cancellations landing 2–7 ms after the call and the next grab 30 ms later, 80
+alternating tries cut 7 of 40 without the hold and 0 of 40 with it. Other models are unmeasured; on a
+camera that stops at once, the hold is only a short delay after an aborted grab.
 
 ## Diagnostics
 

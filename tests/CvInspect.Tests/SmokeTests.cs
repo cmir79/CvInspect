@@ -986,6 +986,34 @@ public class SmokeTests
                 "once the next grab starts, a drop inside the old window belongs to that grab and must be reported as a loss");
         }
 
+        // 10-G-13) 장을 못 받고 끝난 그랩 뒤 다음 시작을 미루는 시각 — 실측 경계보다 늦어야 한다.
+        //          장치는 시작 직후의 멈춤을 한 장 주기 뒤에 실행해 그 사이 보낸 다음 시작의 장을 자른다(Basler 한 대).
+        //          안전해지는 "앞 시작으로부터의 경과" 를 노출 5·30·100 ms 에서 쟀다: 각각 75·100·175 ms 에서 끊김 0
+        //          (그 바로 아래 50·75·150 ms 에서는 끊김). 전송 70 ms 로 잡은 대기가 그 경계들을 넘는지 본다.
+        {
+            long Ms(double ms) => (long)(ms * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+            double WaitMs(double exposureUs, double readoutMs)
+                => CvInspect.Imaging.Gev.GevCam.NextStartNotBefore(0, exposureUs, readoutMs > 0 ? Ms(readoutMs) : 0)
+                   * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            foreach (var (exposureUs, safeMs) in new[] { (5005.0, 75.0), (29995.0, 100.0), (99995.0, 175.0) })
+                Check(WaitMs(exposureUs, 70) >= safeMs,
+                    $"with {exposureUs / 1000:F0} ms exposure the next start waits past the measured safe point {safeMs} ms (got {WaitMs(exposureUs, 70):F0} ms)");
+            Check(WaitMs(5005, 0) > WaitMs(5005, 70),
+                $"before any readout has been measured the wait falls back to a larger value ({WaitMs(5005, 0):F0} ms vs {WaitMs(5005, 70):F0} ms)");
+            Check(WaitMs(99995, 70) - WaitMs(5005, 70) > 90,
+                "the wait grows with exposure — the device runs the stop about one frame period later, and a longer exposure makes the period longer");
+        }
+
+        // 10-G-14) 시한 초과 문구 — 기다리는 동안 버려진 블록이 있었으면 그것을 싣고, 없으면 종전대로 카메라 상태를 가리킨다.
+        //          버려진 블록이 있었는데 "트리거를 보라" 만 말하면 현장은 링크·장치 쪽 원인을 두고 트리거 설정을 뒤진다.
+        {
+            var withDrop = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 1, 43, 11, 563);
+            var clean = CvInspect.Imaging.Gev.GevCam.TimeoutMessage(2000, 0, 0, 0, 0);
+            Check(withDrop.Contains("dropped") && withDrop.Contains("43") && !withDrop.Contains("triggerMode"),
+                $"a timeout after a dropped block says so instead of pointing at the trigger ({withDrop})");
+            Check(clean.Contains("triggerMode"), $"a timeout with nothing dropped still points at the camera state ({clean})");
+        }
+
         // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
         {
             using var cam = new FakeCam { PublishAfterReturnMs = 120 };

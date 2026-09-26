@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CvInspect.Imaging;
 using GevSharp;
 using GevSharp.GenApi;
@@ -31,6 +32,51 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// 곧바로 다시 부르는 루프(재시도·트리거 대기 폴링)에서 2초 창이 늘 열려, 다음 그랩의 진짜 손실까지 "손실 아님" 으로 묻힌다.
     /// 연속 정지 표식은 뒤따르는 단발 그랩이 지우면 안 된다 — 라이브를 멈추자마자 찍는 티칭 조작에서 라이브 꼬리가 경고로 나온다.</summary>
     private long _grabStoppedAtTicks;
+
+    /// <summary>
+    /// 다음 단발 그랩이 AcquisitionStart 를 보내도 되는 가장 이른 시각(<see cref="Stopwatch"/> 시각). 0 이면 제약 없음.
+    ///
+    /// <b>장을 못 받고 끝난 그랩(시한 초과·취소)은 장치에 "끝나지 않은 멈춤" 을 남길 수 있다.</b> 실측(Basler acA2500-14gm,
+    /// 시작 → 곧바로 멈춤 → g ms → 다음 시작, 노출 5·30·100 ms 에서 각 20~30회): 장치는 멈춤을 곧바로 실행하지 않고
+    /// <b>시작으로부터 ≈ 2×노출 + 68 ms</b> 뒤에 실행했고(세 노출 모두 이 식에 맞았다), 그 사이 들어온 다음 시작의 장을 그 멈춤이
+    /// 전송 도중에 잘랐다 — 끊김률이 g=25~50 ms 에서 80~90%, 다음 시작이 "앞 시작 + 노출 + 전송" 을 넘기면 0(각 노출에서 그 경계
+    /// 양쪽을 쟀다). 그래서 다음 시작을 <b>앞 시작 + 노출 + 전송 + 여유</b> 뒤로 미룬다. 시한을 다 채우고 끝난 그랩 뒤에는 이 시각이
+    /// 이미 지나 있어 기다림이 없다 — 대기는 곧바로 취소된 그랩 뒤에만 생긴다.
+    /// 0.4.1 전에는 그 잘린 장이 다음 그랩의 답으로 나갔고(아래 줄이 이전 프레임), 0.4.1 부터는 불완전으로 걸러져 시한 초과였다.
+    /// ⚠ 한 기종에서 잰 기전이다. Crevis 는 안 쟀다 — 멈춤을 곧바로 실행하는 기종이면 이 대기는 쓸모없는 지연일 뿐 해는 없다.
+    /// </summary>
+    private long _nextStartNotBefore;
+
+    /// <summary>최근 정상 단발 그랩에서 잰 "노출을 뺀 전송 시간"(<see cref="Stopwatch"/> 틱) — 시작 명령부터 장 도착까지에서 그때의
+    /// 노출을 뺀 값. 0 이면 아직 모른다. 노출을 바꿔도 맞게 쓰려고 지연이 아니라 전송만 기억한다.</summary>
+    private long _grabReadoutTicks;
+
+    /// <summary>이 그랩이 장을 기다리는 동안 불완전으로 버려진 블록 — 시한 초과 문구에 싣는다. 대기 중에만 센다.</summary>
+    private int _grabWaiting;
+    private int _grabWaitDrops;
+    private long _grabWaitLastDropId;
+    private int _grabWaitLastMissing;
+    private int _grabWaitLastExpected;
+
+    /// <summary>비정상 정지 뒤 다음 시작을 미루는지 — 기본 켬. <c>internal</c> 인 것은 실기 검증이 같은 런 안에서 켬/끔을 번갈아
+    /// 대조하려는 것이다(끄면 0.29.0 의 동작).</summary>
+    internal bool SettleAfterAbnormalStop { get; set; } = true;
+
+    /// <summary>전송 시간을 아직 모를 때 쓰는 값(ms) — 5 MB 영상을 1 GbE 로 보내는 데 ≈70 ms 가 걸렸다(실측). 큰 센서·느린 링크를 위해 넉넉히.</summary>
+    private const double FallbackReadoutMs = 150;
+
+    /// <summary>다음 시작 전 대기에 더하는 여유(ms). 세 노출에서 잰 경계보다 이만큼 늦게 시작한다.</summary>
+    private const double SettleMarginMs = 25;
+
+    /// <summary>장을 못 받고 끝난 그랩의 시작 시각에서, 다음 시작이 안전해지는 시각을 낸다 — 앞 시작 + 노출 + 전송 + 여유.
+    /// 전송을 모르면(<paramref name="readoutTicks"/> ≤ 0) <see cref="FallbackReadoutMs"/>. <c>internal</c> 인 것은 회귀가 장치 없이
+    /// 이 산술을 부르게 하려는 것이다.</summary>
+    internal static long NextStartNotBefore(long startTimestamp, double exposureUs, long readoutTicks)
+    {
+        var readoutMs = readoutTicks > 0 ? readoutTicks * 1000.0 / Stopwatch.Frequency : FallbackReadoutMs;
+        var waitMs = Math.Max(0, exposureUs) / 1000.0 + readoutMs + SettleMarginMs;
+        return startTimestamp + (long)(waitMs * Stopwatch.Frequency / 1000.0);
+    }
 
     /// <summary>이 스트림의 계수가 시작된 시점 — 소비자가 "리셋됐다" 를 구분하는 표식이다.</summary>
     private DateTime _streamStartedUtc;
@@ -439,6 +485,16 @@ public sealed class GevCam : ICam, ICamGrabAsync
         var body = $"frame {diag.FrameId} dropped: {diag.Reason} " +
                    $"(missing {diag.MissingPackets}/{diag.ExpectedPackets}, code 0x{diag.Code:X4})";
 
+        // 단발 그랩이 장을 기다리는 중이면 기억해 둔다 — 그 그랩이 시한 초과로 끝날 때 "트리거를 보라" 대신 이 사실을 싣는다.
+        // 이 그랩의 장이었는지는 가를 수 없다(진단에 블록 번호만 있고, 번호를 시작마다 1 부터 세는 기종도 있다) — 문구도 "일 수 있다" 로 쓴다.
+        if (Volatile.Read(ref _grabWaiting) == 1)
+        {
+            Interlocked.Exchange(ref _grabWaitLastDropId, (long)diag.FrameId);
+            Volatile.Write(ref _grabWaitLastMissing, diag.MissingPackets);
+            Volatile.Write(ref _grabWaitLastExpected, diag.ExpectedPackets);
+            Interlocked.Increment(ref _grabWaitDrops);
+        }
+
         if (IsStopBoundaryDrop(DateTime.UtcNow.Ticks))
         {
             WriteLog(CvLogLevel.Info, $"{body} — this frame was in flight when acquisition stopped, not a loss");
@@ -457,6 +513,17 @@ public sealed class GevCam : ICam, ICamGrabAsync
         var grabStoppedAt = Interlocked.Read(ref _grabStoppedAtTicks);
         return grabStoppedAt != 0 && nowTicks - grabStoppedAt < StopBoundaryTicks;
     }
+
+    /// <summary>단발 그랩 시한 초과의 문구. 기다리는 동안 버려진 블록이 있었으면 그것을 싣는다 — 그때 원인은 트리거·청크 설정이
+    /// 아니라 잘리거나 잃은 블록일 수 있는데, 옛 문구만 보면 현장은 트리거 설정을 뒤진다(소비자 지적). 이 그랩의 장이었는지는
+    /// 가를 수 없어 "일 수 있다" 로 쓴다. <c>internal</c> 인 것은 회귀가 장치 없이 두 갈래를 부르게 하려는 것이다.</summary>
+    internal static string TimeoutMessage(int budgetMs, int drops, long lastDropId, int lastMissing, int lastExpected)
+        => drops > 0
+            ? $"No frame within {budgetMs} ms. While this grab waited, {drops} block(s) from the camera were dropped " +
+              $"(last: frame {lastDropId}, missing {lastMissing}/{lastExpected} packets) — this grab's frame may have been one of them, " +
+              "cut or lost on the way, which the trigger settings do not explain. See the preceding 'frame dropped' line."
+            : $"No frame within {budgetMs} ms. Check what was logged at open: triggerMode on the 'camera state' line " +
+              "(On means the camera waits for its trigger), and a 'ChunkModeActive is On' warning if present (chunk frames are dropped).";
 
     /// <summary>장을 못 받고 끝난 단발 그랩을 멈춘 시각을 남긴다(0 이면 지운다). 다음 그랩이 취득을 걸 때 지운다.</summary>
     internal void MarkGrabStopped(long ticks) => Interlocked.Exchange(ref _grabStoppedAtTicks, ticks);
@@ -555,6 +622,22 @@ public sealed class GevCam : ICam, ICamGrabAsync
     {
         var nodes = _nodes!;
 
+        // 앞 그랩이 장을 못 받고 끝났으면(시한 초과·취소) 장치의 멈춤이 아직 실행되지 않았을 수 있다 — 그 멈춤이 이 그랩의 장을
+        // 전송 도중에 자르지 않게, 앞 시작으로부터 한 장 주기가 지날 때까지 기다린다(_nextStartNotBefore 의 실측·근거 참조).
+        // 드레인보다 앞에서 기다린다 — 그 사이에 늦게 끝난 앞 장(있으면)이 드레인에 걸린다.
+        if (SettleAfterAbnormalStop)
+        {
+            var waitTicks = Interlocked.Read(ref _nextStartNotBefore) - Stopwatch.GetTimestamp();
+            if (waitTicks > 0)
+            {
+                var waitMs = (int)Math.Ceiling(waitTicks * 1000.0 / Stopwatch.Frequency);
+                WriteLog(CvLogLevel.Info,
+                    $"waiting {waitMs} ms before starting: the previous grab stopped without its frame, and a start sent sooner " +
+                    "can have its frame cut by that stop");
+                await Task.Delay(waitMs, ct).ConfigureAwait(false);
+            }
+        }
+
         // 새로 찍기 전에 남은 것을 버린다 — 안 버리면 이 그랩이 옛 프레임을 가져간다.
         // ⚠ **이 줄은 청소가 아닐 수 있다 — 하중을 받는 자리로 의심하라.** 아래 번호 검사와 함께
         // "늦게 도착한 옛 장" 을 막는 두 겹 중 앞쪽이다. 성능을 이유로 걷어내면 뒤쪽 검사만 남는다.
@@ -595,20 +678,28 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
         GevFrame? frame = null;
         var delivered = false;
+        var startSent = false;
+        long startSentAt = 0;
+        // 이 그랩이 쓴 노출 — 전송 시간을 재고(도착까지 지연 − 노출) 다음 시작 대기를 계산할 때 쓴다. 자동 노출이면 실제와 다를 수 있다.
+        var exposureUs = _setExposureUs ?? _opt.ExposureTimeUs;
         try
         {
             // ⚠ **시작은 멈춤을 보내는 try 안에서 건다.** 명령은 응답을 기다리기 전에 이미 장치로 나가므로,
             // 그 응답을 기다리는 사이 부른 쪽이 취소하면 장치는 취득을 시작했는데 취소 예외가 여기서 나온다
             // (TryExecuteAsync 는 취소를 삼키지 않는다). 시작을 try 앞에 두면 그때 아래 finally 가 안 돌아
             // AcquisitionStop 도 번호 기준 초기화도 빠진다 — 겹침 표시를 본문 밖에서 잡는 것과 같은 모양이다.
-            // 시작이 장치에 닿지 않았더라도 멈춤이 장치 상태를 망가뜨리지는 않는다(아는 한). ⚠ 다만 "시작 → 몇 ms 안에 멈춤" 뒤
-            // **바로 다음 그랩의 장이 장치에서 끊긴** 일이 있다 — Basler 한 대에서 그런 취소 20번 묶음 8번 중 2번, 취득 라이브러리 판과
-            // 무관. 기전(앞 멈춤이 남아 있는가)은 안 가렸다. 0.4.1 전에는 그 끊긴 장이 다음 그랩의 답으로 나갔고, 지금은 불완전으로
-            // 걸러져 그 그랩이 시한 초과로 끝난다(시끄러운 쪽이 옳다). 재현: 부른 뒤 0~3ms 취소 ×20 → 곧바로 그랩, 여러 묶음.
+            // 시작이 장치에 닿지 않았더라도 멈춤이 장치 상태를 망가뜨리지는 않는다(아는 한). ⚠ 다만 시작 직후의 멈춤은 장치가 한 장
+            // 주기 뒤에 실행해, 그 사이 보낸 **다음 그랩의 장을 자를 수 있다** — 그래서 장을 못 받고 끝난 그랩 뒤에는 다음 시작을
+            // 미룬다(_nextStartNotBefore 에 실측과 근거).
             // 앞 그랩이 남긴 단발 정지 창은 여기서 닫는다 — 이제부터 오는 드롭은 이 그랩의 것이라 손실이면 경고여야 한다.
             // (앞 그랩이 끊은 블록이 이보다 늦게 닫히면 — 트레일러 없는 블록은 마지막 패킷 뒤 보존 시간만큼 걸린다 — 그 한
             // 줄은 경고로 나온다. 진짜 손실을 묻는 것보다 그 편이 낫다.)
             MarkGrabStopped(0);
+            // 시작을 "보냈다" 는 응답 전에 이미 참이다 — 응답 대기 중 취소돼도 장치는 시작했을 수 있다.
+            startSentAt = Stopwatch.GetTimestamp();
+            startSent = true;
+            Interlocked.Exchange(ref _grabWaitDrops, 0);
+            Interlocked.Exchange(ref _grabWaiting, 1);
             await TryExecuteAsync(nodes, "AcquisitionStart", ct).ConfigureAwait(false);
 
             // 수신은 반드시 자기 토큰으로 끊는다 — 밖에서 시한을 씌우면 버려진 대기자가 다음 프레임을
@@ -627,15 +718,15 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
             // "받았다" 는 수신 기준이다 — 변환이 던져도 블록은 다 왔고 SingleFrame 은 끝났으니 끊을 것이 없다.
             delivered = true;
+            // 전송 시간(도착까지 지연 − 노출)을 기억한다 — 다음에 비정상 정지가 나면 기다릴 시간의 바탕이다.
+            var readout = Stopwatch.GetTimestamp() - startSentAt - (long)(Math.Max(0, exposureUs) / 1e6 * Stopwatch.Frequency);
+            if (readout > 0) Interlocked.Exchange(ref _grabReadoutTicks, readout);
             return Emit(frame);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // 시한 초과의 원인은 대개 카메라 상태다 — 열 때 남긴 것을 함께 보게 한다('camera state' 줄의 트리거 모드와,
-            // 청크 모드가 켜져 있으면 따로 남긴 경고).
-            throw new TimeoutException(
-                $"No frame within {budgetMs} ms. Check what was logged at open: triggerMode on the 'camera state' line " +
-                "(On means the camera waits for its trigger), and a 'ChunkModeActive is On' warning if present (chunk frames are dropped).");
+            throw new TimeoutException(TimeoutMessage(budgetMs, Volatile.Read(ref _grabWaitDrops),
+                Interlocked.Read(ref _grabWaitLastDropId), Volatile.Read(ref _grabWaitLastMissing), Volatile.Read(ref _grabWaitLastExpected)));
         }
         finally
         {
@@ -664,7 +755,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // **장을 받은 그랩에서는 찍지 않는다**(끊을 블록이 없다). 창은 다음 그랩이 취득을 걸 때 닫힌다(위 MarkGrabStopped(0)).
             // **연결이 끊긴 채 끝난 그랩(제어 상실·닫기)도 찍지 않는다** — 그때의 드롭은 우리 멈춤이 아니라 고장이 끊은 것이고,
             // 그 줄이 무슨 일이 있었는지의 증거다(펌프 자멸 때 정지 표식을 안 건드리는 것과 같은 규칙).
+            Interlocked.Exchange(ref _grabWaiting, 0);
             if (!delivered && IsConnected) MarkGrabStopped(DateTime.UtcNow.Ticks);
+            // 시작을 보냈는데 장을 못 받고 끝났으면, 이 멈춤이 다음 그랩의 장을 자르지 않을 때까지 다음 시작을 미룬다
+            // (_nextStartNotBefore 참조). 시작을 안 보냈으면 장치에 남는 것이 없다.
+            if (!delivered && startSent)
+                Interlocked.Exchange(ref _nextStartNotBefore,
+                    NextStartNotBefore(startSentAt, exposureUs, Interlocked.Read(ref _grabReadoutTicks)));
             await TryExecuteAsync(nodes, "AcquisitionStop", CancellationToken.None).ConfigureAwait(false);
 
             // ⚠ **멈췄으면 번호 기준을 버린다.** 취득을 멈춘 뒤 다시 걸었을 때 장치가 프레임 번호를
