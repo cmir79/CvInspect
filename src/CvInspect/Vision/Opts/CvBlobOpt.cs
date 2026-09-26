@@ -8,6 +8,7 @@ namespace CvInspect.Vision.Opts;
 /// <summary>
 /// 블랍 검출 파라미터 — 극성 이진화(Otsu/고정 문턱) → 연결요소 최대 면적 블랍.
 /// 위치 선탐지·존재 확인 등 범용 (검사가 용도를 조립). 좌표는 대상 이미지 픽셀 공간.
+/// ⚠ 존재 확인·면적 판정에는 자동 문턱을 끈다 — <see cref="UseOtsu"/> 참조(제품이 없는 영역에서 큰 블랍을 만든다).
 /// </summary>
 public sealed class CvBlobOpt : ICvShapeSource
 {
@@ -30,11 +31,26 @@ public sealed class CvBlobOpt : ICvShapeSource
     [CvDesc("cv:FillHolesDesc")]
     public bool FillHoles { get; set; }
 
+    /// <summary>자동 문턱(Otsu). <b>영역에 제품과 배경 두 무리가 다 있을 때만 맞다.</b>
+    ///
+    /// Otsu 는 히스토그램을 언제나 둘로 가른다. 제품이 없어 배경뿐이거나 제품이 영역을 가득 채우면 한 무리의
+    /// 잡음·조명 기울기를 반으로 갈라, 8-연결로 이어진 큰 블랍 하나를 만든다 — MinArea 로 걸러지지 않는다.
+    /// 실측(<see cref="CvBlobFinder"/> 요약): 제품 없는 영역에서 영역의 42~54% 블랍, 영역을 덮은 제품은 면적이 절반 안팎(42~54%).
+    /// 그래서 <b>있음·없음이나 면적 하한으로 판정하는 검사는 끄고 고정 문턱(<see cref="Threshold"/>)을 쓴다</b> —
+    /// 자동이 틀리는 방향이 "없는 것을 있다고" 쪽이라 그 검사의 fail-safe 와 반대다.
+    /// <b>기본값은 꺼짐이다</b>(0.29.0 부터 — 그 전에는 켜짐). 블랍의 주된 쓰임이 존재 확인이라 기본값이 안전한 쪽이어야 한다.
+    /// 위치만 잡는 용도라면 켜는 것이 조명 변동에 유연하다 — 그때는 명시적으로 켠다.
+    /// ⚠ <b>기본값은 저장된 레시피를 바꾸지 않는다.</b> 모든 속성을 적는 저장(System.Text.Json 기본 설정 등)이면 이 값도 적히므로, 0.29.0 전에 저장한 레시피는
+    /// 적힌 값(대개 켜짐)을 그대로 쓴다 — 존재·면적 판정 레시피는 직접 끄고 <see cref="Threshold"/> 를 잡아야 한다.
+    /// 기본값이 닿는 것은 저장 파일 없이 코드로 만든 옵션과, 이 키가 빠진 파일(꺼짐으로 읽힘)뿐이다.</summary>
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:UseOtsu")]
-    [CvDesc("cv:UseOtsuDesc")]
-    public bool UseOtsu { get; set; } = true;
+    [CvDesc("cv:BlobUseOtsuDesc")]
+    public bool UseOtsu { get; set; }
 
+    /// <summary>고정 문턱(0~255) — <see cref="UseOtsu"/> 가 꺼졌을 때 쓴다. Bright 는 이 값보다 큰 화소, Dark 는 이 값 이하인
+    /// 화소가 제품이다(<c>Cv2.Threshold</c> 의 Binary/BinaryInv). <b>128 은 자리값이지 맞춘 값이 아니다</b> — 제품과 배경
+    /// 밝기 사이로 잡고, 제품이 없는 샘플에서 블랍이 안 나오는지 확인한다.</summary>
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:BlobThreshold")]
     [CvDesc("cv:BlobThresholdDesc")]

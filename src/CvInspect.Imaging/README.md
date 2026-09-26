@@ -58,8 +58,8 @@ the library was missing something. `GrabFrameAsync` does it for you:
 ```csharp
 using CvInspect.Imaging;
 
-var frame = await cam.GrabFrameAsync(TimeSpan.FromSeconds(2));
-if (frame is null) { /* nothing arrived in time */ }
+var frame = await cam.GrabFrameAsync(TimeSpan.FromSeconds(2));   // GevCam throws TimeoutException on timeout — see below
+if (frame is null) { /* no frame, and no reason to throw — see below */ }
 else using (var mat = frame.AsMat()) { /* inspect */ }
 ```
 
@@ -70,26 +70,40 @@ The frame **also goes out on `FrameAcquired`** — it is the same acquisition, a
 subscribed should not miss this one frame. What you get back is that very instance, not merely
 some frame that arrived around the same time.
 
-**`null` versus an exception is the contract here.** `null` means *no frame, and no reason to give*:
-the timeout expired, or the implementation can never answer and has already logged why (`DeadCam`).
-Anything that *should* be able to answer but cannot — closed, disposed, control lost, continuous
-acquisition running, another grab already waiting — **throws**, exactly as `GrabOne` does. Folding
-those into `null` would collapse the reason channel and leave the caller waiting for a frame that is
-never coming.
+**`null` versus an exception is the contract here.** `null` means *no frame for this call, and no
+reason to throw*: the generic path's timeout expired, the implementation can never answer and has
+already logged why (`DeadCam`), or it received a frame it could not use and logged why (`GevCam` with
+an unsupported pixel format). **`null` can come before the timeout**, so do not read it as "timed out".
+Anything that *should* be able to answer but cannot — not open, closed, disposed, control lost,
+continuous acquisition running, another grab already waiting — **throws**, exactly as `GrabOne` does.
+Folding those into `null` would collapse the reason channel and leave the caller waiting for a frame
+that is never coming.
+
+**Timeouts are where backends differ.** The generic path cannot tell why nothing came, so it returns
+`null`. `GevCam` knows where to look and throws a `TimeoutException` whose message points at what it
+logged at open (trigger mode on the camera-state line, and a separate warning when chunk mode is on) —
+the same body `GrabOne` runs. Code
+that must work on any backend treats `null` and `TimeoutException` alike as "no frame"; cancellation
+through the token comes out as `OperationCanceledException`, so it stays distinguishable from both.
 
 The `timeout` argument wins over whatever the implementation has configured, because the call site
 knows more than the configuration did. Pass `Timeout.InfiniteTimeSpan` to defer to the
-implementation's own deadline.
+implementation's own deadline — `GevCam` then uses its `GrabTimeoutMs`. On the generic path that
+deadline is `GrabOne`'s own; if `GrabOne` comes back without a frame, a late one gets a one-second
+grace and then the call returns `null`.
 
 Implement **`ICamGrabAsync`** when your camera knows something the generic path cannot, and the
 extension will call you instead. There are two such things:
 
 - **Which frame is *this* grab's.** The generic path takes whatever arrives while it is subscribed;
   only the implementation, holding the device's own pairing evidence (frame id, ticket), can tell that
-  from a frame that merely showed up at the same moment. `GevCam` does this by frame id.
+  from a frame that merely showed up at the same moment. `GevCam` does this with a start line latched
+  from the device clock just before it starts acquisition, and falls back to the frame id on a camera
+  that does not expose its clock.
 - **That no frame is coming at all.** The generic path cannot distinguish "not yet" from "never", so
   it waits out the timeout rather than guessing — it will not cut short a backend that publishes just
-  after `GrabOne` returns. A camera that knows the answer immediately should say so: `DeadCam` returns
+  after `GrabOne` returns. (With `Timeout.InfiniteTimeSpan` there is no caller timeout left to wait
+  out, so a late frame gets a one-second grace after `GrabOne` returns.) A camera that knows the answer immediately should say so: `DeadCam` returns
   `null` at once instead of stalling every grab for the full timeout.
 
 `GevCam`, `ReconnectingCam` (which forwards to its inner camera) and `DeadCam` implement it.

@@ -10,7 +10,8 @@ public readonly record struct CvRingFillHit(double RatePct, double FillPx, doubl
     /// <summary>밴드 화소 중 이미지 밖이라 <b>보지 못한</b> 수. 분모(<see cref="TotalPx"/>)에는 들어가고
     /// 분자에는 안 들어가므로, 이 값이 0 이 아니면 그만큼이 "안 찬 것" 으로 계산된 것이다.
     /// 0 이 아니면 대개 중심·반경 설정이나 시야가 잘못된 것이니, 낮은 충전율을 결함으로 읽기 전에 여기를 먼저 본다.
-    /// 밴드가 온전히 화면 안이면 0 이고, 그때 <see cref="RatePct"/> 는 종전 판과 같은 값이다.</summary>
+    /// 밴드가 온전히 화면 안이면 0 이고, 그때 <see cref="RatePct"/> 는 이 값을 넣기 전의 셈과 같다(밴드 밖을 셀 일이 없다).
+    /// 0.29.0 부터 Bright 는 문턱과 같은 화소를 채움으로 세지 않는다 — 규칙은 <see cref="CvRingFill.Measure"/> 참조.</summary>
     public double OutsidePx { get; init; }
 }
 
@@ -31,6 +32,11 @@ public readonly record struct CvRingFillHit(double RatePct, double FillPx, doubl
 /// </summary>
 public static class CvRingFill
 {
+    /// <summary>중심 (<paramref name="cx"/>, <paramref name="cy"/>) 둘레 밴드의 충전율을 잰다. 밴드를 셀 수 없으면 null.
+    ///
+    /// <b>채움의 규칙</b>: Bright 는 문턱보다 큰 화소, Dark 는 문턱 이하인 화소가 채움이다 — OpenCV 이진화(Binary/BinaryInv)와
+    /// 블랍 툴과 같은 규칙이다(0.29.0 부터. 그 전에는 Bright 가 문턱과 같은 화소도 채움으로 셌다).
+    /// 자동 문턱(Otsu)은 밴드를 감싼 사각에서 내며, 두 무리가 있을 때만 맞다 — <see cref="CvRingFillOpt.UseOtsu"/> 참조.</summary>
     public static CvRingFillHit? Measure(Mat img, double cx, double cy, CvRingFillOpt opt)
     {
         if (img is null || img.Empty() || opt is null) return null;
@@ -56,8 +62,17 @@ public static class CvRingFill
 
         using var roi = new Mat(img, new Rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1));
 
-        // 문턱 — 밴드 화소만 놓고 정하는 것이 옳지만, Otsu 는 Mat 단위라 사각 전체로 낸다.
-        // 밴드가 사각의 대부분을 차지하므로 실용상 같고, 고정 문턱이면 이 셈 자체가 없다.
+        // 문턱 — 자동(Otsu)이면 밴드를 감싼 사각 전체에서 낸다. 이것은 편의가 아니라 이 셈이 기대는 전제다:
+        // Otsu 는 분포를 **언제나** 둘로 가르므로, 재료와 무재료 두 무리가 사각 안에 다 있어야 뜻이 있다.
+        // 사각의 안쪽 구멍·모서리가 다른 무리를 대 주는 덕에, 배경이 재료 밝기이면 빈 밴드가, 무재료 밝기이면 꽉 찬 밴드가
+        // 맞게 읽힌다(반만 찬 밴드는 밴드 안에 두 무리가 이미 있다). ⚠ 배경이 제3의 밝기면 문턱이 밴드 값과 배경 값 사이로
+        // 가서, 빈 밴드가 채움 쪽에 놓이면 100% 로 읽힐 수 있다(독해 — 이 경우는 안 쟀다). 그리고 **빈 밴드가
+        // 배경과 같은 밝기이거나 꽉 찬 밴드가 배경과 같은 밝기이면** 사각에 한 무리뿐이라 Otsu 가 잡음을 가른다
+        // — 실측(r 40..80, 30/220, 잡음 ±5): 빈 밴드도 꽉 찬 밴드도 54.5%(Bright)·45.5%(Dark)로 읽었다. 잡음이 없으면
+        // 문턱이 0 이 되어 100% 나 0% 로 간다.
+        // 빈 부품이 합격하는 쪽(거짓 OK)과 멀쩡한 부품이 떨어지는 쪽 둘 다 난다. 그러니 문턱을 밴드 화소만으로 내도록
+        // "고치면" 안 된다 — 배경 무리가 아예 없어져 빈 밴드·꽉 찬 밴드가 언제나 이렇게 된다.
+        // 그런 부품이면 자동을 끄고 고정 문턱을 쓴다(옵션 설명에도 적었다). 고정 문턱이면 이 셈 자체가 없다.
         double thr;
         if (opt.UseOtsu)
         {
@@ -87,7 +102,7 @@ public static class CvRingFill
             System.Runtime.InteropServices.Marshal.Copy(packed.Data, buf, 0, buf.Length);
 
         // 자르지 않은 사각을 돈다. 이미지 안이면 화소를 보고, 밖이면 분모에만 넣는다 —
-        // 밴드가 온전히 화면 안이면 두 사각이 같으므로 결과는 종전 판과 한 화소도 다르지 않다.
+        // 밴드가 온전히 화면 안이면 두 사각이 같으므로 밖을 세는 규칙은 결과를 한 화소도 바꾸지 않는다.
         for (var y = uy0; y <= uy1; y++)
         {
             var dy = y - cy;
@@ -103,8 +118,12 @@ public static class CvRingFill
                 total++;
                 if (!inRow || x < x0 || x > x1) { outside++; continue; }
 
+                // 문턱과 같은 값은 밝은 쪽이 아니다 — OpenCV 이진화 규칙("문턱보다 큰 것" 이 전경)이고 블랍 툴도
+                // 같은 규칙으로 가른다. 특히 Otsu 가 돌려주는 값은 **아래 무리의 꼭대기**라, 밝은 쪽을 ">=" 로 세면
+                // 아래 무리의 한 칸이 통째로 채움이 된다. 실측: 잡음 없는 두 단계(30/220) 영상에서 문턱이 30 이 되어
+                // 반만 찬 밴드가 100% 로 읽혔다(거짓 OK). Dark 는 처음부터 "<=" 라 맞았다.
                 var v = buf[row + (x - x0)];
-                if (bright ? v >= thr : v <= thr) fill++;
+                if (bright ? v > thr : v <= thr) fill++;
             }
         }
 

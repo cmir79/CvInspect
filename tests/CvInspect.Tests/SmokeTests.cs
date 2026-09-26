@@ -845,7 +845,8 @@ public class SmokeTests
                 "a restarted clock would take grab 150ms + timeout 250ms)");
         }
 
-        // 10-G-4) 시한 만료도 null 이다 — 사유 없이 장이 없었다는 뜻으로 같다.
+        // 10-G-4) 기본 절차에서는 시한 만료도 null 이다 — 왜 안 왔는지 모르므로 던질 사유가 없다.
+        //         (사유를 아는 구현은 던질 수 있다 — GevCam 은 TimeoutException. ICamGrabAsync 문서 참조.)
         {
             using var cam = new FakeCam { GrabDelayMs = 2000 };
             cam.Open();
@@ -885,6 +886,112 @@ public class SmokeTests
             var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second);
             Check(frame is not null && cam.NativeCalls == 1 && cam.GrabCalls == 0,
                 $"ICamGrabAsync wins over the default path (native={cam.NativeCalls}, GrabOne={cam.GrabCalls})");
+        }
+
+        // 10-G-8) **시작 전에 취소된 호출이 겹침 표시를 남기지 않는다.** 토큰을 넘긴 Task.Run 은 시작 전에
+        //         취소되면 본문을 통째로 건너뛴다. 그래서 표시를 Task.Run 앞에서 세우고 본문 finally 에서만 풀면
+        //         표시가 영영 남아, 그 인스턴스의 그랩이 전부 "이미 기다리는 그랩이 있다" 로 던진다(닫아도 안 풀린다).
+        //         GevCam 은 표시를 본문 안(열림 검사 뒤)에서 세워 이 모양이 아니다 — 리팩터가 그 순서를 뒤집지 못하게 못 박는다.
+        //         ⚠ 열지 않은 카메라라 이 절이 잡는 것은 **표시를 열림 검사 앞으로 옮기는** 리팩터까지다(카메라 없이 닿는 범위).
+        {
+            using var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" });
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            // 한 번이면 된다 — 표시가 한 번만 새도 그 뒤 호출이 전부 거절된다.
+            var canceled = false;
+            try { await cam.GrabFrameAsync(second, cancelled.Token); }
+            catch (OperationCanceledException) { canceled = true; }
+            Check(canceled, "a grab called with an already-cancelled token ends as cancelled");
+
+            string? asyncReason = null;
+            try { await cam.GrabFrameAsync(second); }
+            catch (InvalidOperationException ex) { asyncReason = ex.Message; }
+            Check(asyncReason is not null && asyncReason.Contains("not opened"),
+                "after cancelled calls the next GrabFrameAsync fails for the real reason (not opened), " +
+                $"not because a cancelled call left the one-grab-at-a-time mark set (got: {asyncReason ?? "no exception"})");
+
+            string? syncReason = null;
+            try { cam.GrabOne(); }
+            catch (InvalidOperationException ex) { syncReason = ex.Message; }
+            Check(syncReason is not null && syncReason.Contains("not opened"),
+                $"and GrabOne, which shares that mark, is not locked out either (got: {syncReason ?? "no exception"})");
+        }
+
+        // 10-G-9) GevCam 의 시한 규칙 — InfiniteTimeSpan 은 "구현의 시한에 맡긴다" 이지 "상한 없음" 이 아니다
+        //         (ICamGrabAsync 계약). 전에는 상한 없음으로 읽어 트리거를 기다리는 카메라 앞에서 영영 섰다.
+        {
+            static int Budget(TimeSpan? t) => CvInspect.Imaging.Gev.GevCam.GrabBudgetMs(t, 5000);
+            Check(Budget(Timeout.InfiniteTimeSpan) == 5000,
+                $"InfiniteTimeSpan defers to GrabTimeoutMs rather than meaning no deadline at all (got {Budget(Timeout.InfiniteTimeSpan)})");
+            Check(Budget(null) == 5000, $"GrabOne, which gives no timeout, uses GrabTimeoutMs (got {Budget(null)})");
+            Check(Budget(TimeSpan.FromMilliseconds(150)) == 150,
+                $"a timeout the caller gives wins over the setting (got {Budget(TimeSpan.FromMilliseconds(150))})");
+            Check(Budget(TimeSpan.Zero) == 1 && Budget(TimeSpan.FromMilliseconds(-5)) == 1,
+                $"zero or negative becomes the shortest wait, not a disabled one (got {Budget(TimeSpan.Zero)}, {Budget(TimeSpan.FromMilliseconds(-5))})");
+            Check(Budget(TimeSpan.MaxValue) == int.MaxValue,
+                $"a huge timeout is clamped to what a cancellation delay accepts instead of wrapping negative (got {Budget(TimeSpan.MaxValue)})");
+        }
+
+        // 10-G-10) 기본 절차의 InfiniteTimeSpan — GrabOne 이 장 없이 돌아오면 늦은 발행을 유예만큼 기다리고 null 이다.
+        //          전에는 남은 시한(= 무한)을 기다려 영영 섰다(예: 읽기에 실패한 VideoCaptureCam).
+        //          ⚠ 옛 동작은 "안 돌아온다" 라서 바깥에 감시 시한을 둔다 — 없으면 스위트가 멈출 뿐 실패로 안 나온다.
+        {
+            using var cam = new FakeCam { GrabPublishesNothing = true };
+            cam.Open();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var call = CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, Timeout.InfiniteTimeSpan);
+            var returned = await Task.WhenAny(call, Task.Delay(5000)) == call;
+            sw.Stop();
+            Check(returned, $"with InfiniteTimeSpan a grab that publishes nothing still comes back instead of waiting forever ({sw.ElapsedMilliseconds}ms)");
+            var got = returned ? await call : null;
+            Check(returned && got is null, "and it comes back as null — no frame, no reason to throw");
+            Check(sw.ElapsedMilliseconds >= CvInspect.Imaging.CamGrabExt.LatePublishGraceMs - 50,
+                $"after the late-publish grace, not at once — a frame published just after GrabOne returns must still get its chance ({sw.ElapsedMilliseconds}ms)");
+        }
+
+        // 10-G-11) 기본 절차는 범위 밖 시한을 그랩을 띄우기 **전에** 다듬는다 — GevCam(10-G-9)과 같은 규칙.
+        //          전에는 그랩을 띄운 뒤 Task.Delay 가 ArgumentOutOfRangeException 을 던져, 그랩만 고아로 돌고 그 장은
+        //          다른 구독자에게 갔다. 같은 호출이 GevCam 에서는 성공하고 여기서는 던졌다.
+        {
+            using var cam = new FakeCam();
+            cam.Open();
+            Exception? hugeThrew = null;
+            CvInspect.Imaging.CamFrame? got = null;
+            try { got = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.MaxValue); }
+            catch (Exception ex) { hugeThrew = ex; }
+            Check(hugeThrew is null && got is not null,
+                $"a huge timeout is clamped instead of throwing after the grab already started (threw {hugeThrew?.GetType().Name ?? "nothing"})");
+
+            Exception? negThrew = null;
+            try { await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(-5)); }
+            catch (Exception ex) { negThrew = ex; }
+            Check(negThrew is null, $"a negative timeout becomes the shortest wait instead of throwing (threw {negThrew?.GetType().Name ?? "nothing"})");
+        }
+
+        // 10-G-12) GevCam 단발 정지 창 — 장을 못 받고 끝난 그랩 뒤의 드롭은 "우리가 끊은 블록" 이지만, **다음 그랩이 취득을
+        //          걸면 창이 닫혀야** 한다. 안 닫으면 시한 초과 뒤 곧바로 다시 부르는 루프(재시도·트리거 대기 폴링)에서 창이 늘
+        //          열려, 다음 그랩의 진짜 손실까지 "손실 아님" Info 로 묻힌다(게시 전 검토가 짚은 회귀).
+        //          장치 없이 창의 규칙만 부른다 — 그랩이 창을 찍고 닫는 배선은 실기 몫이다.
+        {
+            using var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" });
+            var t0 = DateTime.UtcNow.Ticks;
+            var soon = t0 + TimeSpan.FromMilliseconds(100).Ticks;
+            Check(!cam.IsStopBoundaryDrop(soon), "with no stop yet, a drop is a loss");
+            cam.MarkGrabStopped(t0);
+            Check(cam.IsStopBoundaryDrop(soon), "right after a grab that ended without its frame, a drop is the block our stop cut");
+            Check(!cam.IsStopBoundaryDrop(t0 + TimeSpan.FromSeconds(3).Ticks), "the window closes after two seconds");
+            cam.MarkGrabStopped(0);   // 다음 그랩이 AcquisitionStart 직전에 하는 일
+            Check(!cam.IsStopBoundaryDrop(soon),
+                "once the next grab starts, a drop inside the old window belongs to that grab and must be reported as a loss");
+        }
+
+        // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
+        {
+            using var cam = new FakeCam { PublishAfterReturnMs = 120 };
+            cam.Open();
+            var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, Timeout.InfiniteTimeSpan);
+            Check(frame is not null, "with InfiniteTimeSpan a frame published after GrabOne returns is still delivered within the grace");
         }
     }
     }
@@ -1655,6 +1762,68 @@ public class SmokeTests
             $"the part that was never seen counts as unfilled instead of vanishing from the denominator: {clipped}");
         Check(clipped is { } c && Math.Abs(c.TotalPx - inside!.Value.TotalPx) < inside.Value.TotalPx * 0.02,
             $"the denominator is the whole band either way — that is what makes two runs comparable (in={inside!.Value.TotalPx} clipped={clipped!.Value.TotalPx})");
+    }
+
+    // === 9-D) 밝은 쪽을 ">=" 로 세면 자동 문턱에서 아래 무리 한 칸이 통째로 채움이 된다 (거짓 OK) ===
+    // Otsu 가 돌려주는 값은 아래 무리의 꼭대기이고 OpenCV 이진화 규칙은 "문턱보다 큰 것" 이 전경이다. 잡음 없는
+    // 두 단계 영상에서는 문턱이 곧 어두운 값이라, ">=" 로 세면 반만 찬 밴드가 100% 가 됐다.
+    // 같은 영상의 Dark 는 "<=" 라 처음부터 맞았다 — 같은 런의 대조군이고, 두 극성의 합이 100% 여야 한다.
+    using (var img = new Mat(300, 300, MatType.CV_8UC1, new Scalar(30)))
+    {
+        Cv2.Rectangle(img, new OpenCvSharp.Rect(0, 0, 150, 300), new Scalar(220), -1);   // 밴드의 왼쪽 반만 재료(밝음)
+        var bright = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, UseOtsu = true, Polarity = CvBlobPolarity.Bright });
+        var dark = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, UseOtsu = true, Polarity = CvBlobPolarity.Dark });
+        // 살아있음 — 이 절이 ">=" 를 가르는 것은 Otsu 가 어두운 값(30)을 문턱으로 돌려주기 때문이다. 그 값이 움직이면
+        // 절이 조용히 공허해지므로 먼저 못 박는다.
+        Check(bright?.ThresholdUsed == 30,
+            $"Otsu returned the top of the dark class, which is what makes '>=' visible here (got {bright?.ThresholdUsed})");
+        Check(bright is { } b && b.RatePct > 45 && b.RatePct < 55,
+            $"a half-filled band reads about half with the automatic threshold — counting '>=' took the whole dark class as fill: {bright}");
+        Check(dark is { } d && d.RatePct > 45 && d.RatePct < 55, $"control: the dark side was right all along: {dark}");
+        Check(bright is { } b2 && dark is { } d2 && Math.Abs(b2.RatePct + d2.RatePct - 100) < 0.01,
+            $"on a two-level image every band pixel is one of the two, so the polarities add up to 100% ({bright?.RatePct:F2} + {dark?.RatePct:F2})");
+    }
+
+    // 고정 문턱도 같은 규칙이다 — 문턱과 같은 값은 밝은 쪽이 아니다(블랍 툴과 같다).
+    using (var img = new Mat(300, 300, MatType.CV_8UC1, new Scalar(128)))
+    {
+        var bright = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, Threshold = 128, Polarity = CvBlobPolarity.Bright });
+        var dark = CvRingFill.Measure(img, 150, 150,
+            new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, Threshold = 128, Polarity = CvBlobPolarity.Dark });
+        Check(bright is { RatePct: 0 } && dark is { RatePct: 100 },
+            $"a pixel equal to the fixed threshold is dark, as Cv2.Threshold and the blob tool read it (bright={bright?.RatePct}, dark={dark?.RatePct})");
+    }
+
+    // === 9-E) 블랍 기본값은 고정 문턱이다 — 자동 문턱은 부품 없는 영역에서 큰 블랍을 만든다 (거짓 있음) ===
+    // Otsu 는 한 무리뿐인 영역도 반으로 가르고, 반쯤 켜진 잡음 화소가 8-연결로 이어져 영역의 절반 가까운 블랍 하나가 된다.
+    // 블랍의 주된 쓰임이 존재 확인이라 기본값을 고정 문턱으로 바꿨다(0.29.0). 같은 영상에 자동을 켠 것이 대조군이다 —
+    // 그 블랍이 안 나오면 이 영상이 위험한 모양이 아니라는 뜻이라, 기본값 검사가 아무것도 증명하지 못한다.
+    using (var empty = new Mat(400, 400, MatType.CV_8UC1))
+    {
+        var rnd = new Random(1234);
+        for (var y = 0; y < 400; y++)
+            for (var x = 0; x < 400; x++)
+                empty.Set(y, x, (byte)(30 + rnd.Next(-5, 6)));
+        var region = new CvBlobOpt { UseSearchRegion = true, SearchX = 100, SearchY = 100, SearchW = 200, SearchH = 200 };
+        Check(!region.UseOtsu, "the blob default is the fixed threshold, not Otsu");
+        Check(CvBlobFinder.Find(empty, region) is null, "with the default, a region holding only background yields no blob");
+
+        region.UseOtsu = true;
+        var otsu = CvBlobFinder.Find(empty, region);
+        Check(otsu is { Area: > 10000 },
+            $"control: Otsu on the same empty region invents a blob of about half the region, which is why the default changed ({otsu})");
+    }
+
+    // 기본값이 정상 경우를 깨지 않는다 — 두 무리가 있으면 고정 문턱 128 이 부품을 찾는다.
+    using (var present = new Mat(400, 400, MatType.CV_8UC1, new Scalar(30)))
+    {
+        Cv2.Circle(present, new OpenCvSharp.Point(200, 200), 40, new Scalar(220), -1);
+        var hit = CvBlobFinder.Find(present,
+            new CvBlobOpt { UseSearchRegion = true, SearchX = 100, SearchY = 100, SearchW = 200, SearchH = 200 });
+        Check(hit is { Area: > 4800 and < 5200 }, $"the default still finds a part that is there ({hit})");
     }
     }
 }
