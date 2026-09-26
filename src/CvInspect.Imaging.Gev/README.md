@@ -99,12 +99,19 @@ transport, not through this package.
 
 From 0.29.0 (GevSharp 0.4.1) a block that ends short of what its leader announced is counted as
 incomplete instead of being handed on with a stale tail — `IncompleteFrames` goes up by one and
-`MissingPackets` by the part that never came. Whether stopping acquisition cuts a block in flight
-depends on the camera: the Basler measured here finishes the block — 84 frames and five deliberately
-cut-short grabs, zero incomplete. Other models are unmeasured. If both counters climb only when
-acquisition is stopped (live stopped, or a single grab that timed out or was cancelled), read it as
-stop-cut blocks rather than loss. For such a drop this package logs an Info line instead of a warning,
-but the GigE library still warns once per open, the first time a block ends short.
+`MissingPackets` by the part that never came. Cameras do cut blocks: on the Basler measured here
+(acA2500-14gm), grabs cancelled within a few milliseconds of the call cut their own block, and in
+2 of 8 bursts of such cancellations the *next* grab's frame was cut as well — with both 0.4.0 and 0.4.1
+of the GigE library. Plain timeouts cut nothing in the runs made. Other models are unmeasured. If both
+counters climb only around stops (live stopped, or a single grab that timed out or was cancelled),
+read it as stop-cut blocks rather than loss. For a drop cut by our own stop this package logs an Info
+line instead of a warning; the GigE library still warns once per open, the first time a block ends short.
+
+A grab whose own frame the camera cuts now fails — `TimeoutException`, with a `frame N dropped:
+Incomplete` warning that is correct, because it is that grab's frame. **Before 0.29.0 that frame was
+returned as the grab's answer with its bottom rows left over from an earlier frame**, which is why
+this release is worth taking even though it can look like a new failure. A retry succeeds. Why the
+camera cuts the frame after a cancelled grab has not been isolated.
 
 ## Diagnostics
 
