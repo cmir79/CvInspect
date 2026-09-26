@@ -6,8 +6,9 @@ public static class CamGrabExt
     /// <summary>시한을 <see cref="Timeout.InfiniteTimeSpan"/> 으로 준 기본 절차에서, <see cref="ICam.GrabOne"/> 이
     /// 장 없이 돌아온 뒤 늦은 발행을 기다리는 유예(ms).
     ///
-    /// 늦은 발행은 프레임이 벤더 콜백으로 들어오는 구현에서 반환 직후에 온다. 이 패키지의 구현은 전부 돌아오기 전에
-    /// 발행하므로(VirtualCam·VideoCaptureCam 은 동기, GevCam 은 자기 구현) 이 유예는 <b>밖의 구현을 위한 여유값</b>이다 —
+    /// 늦은 발행은 프레임이 벤더 콜백으로 들어오는 구현에서 반환 직후에 온다. 이 툴킷의 구현은 돌아오기 전에 발행하거나
+    /// 이 절차를 타지 않으므로(VirtualCam·VideoCaptureCam 은 동기 발행, DeadCam·GevCam 은 자기 구현, ReconnectingCam 은
+    /// 안쪽으로 넘긴다) 이 유예는 <b>밖의 구현을 위한 여유값</b>이다 —
     /// 잰 지연이 아니다(회귀가 흉내내는 지연은 120ms). 넉넉히 잡은 대가는 "장이 끝내 안 오는" 그랩에서만 이만큼 늦는 것뿐이다.
     /// 시한을 값으로 준 호출은 이 유예가 아니라 남은 시한을 기다린다.</summary>
     internal const int LatePublishGraceMs = 1000;
@@ -26,7 +27,8 @@ public static class CamGrabExt
     /// <list type="bullet">
     /// <item><b>짝을 구조적으로 보장하지 못한다.</b> 구독이 걸려 있는 동안 도착한 <b>아무 장</b>이나 집는다 —
     /// 이 호출이 부른 그랩의 장인지는 모른다. 가릴 수 있는 것은 장치 쪽 짝짓기 근거를 쥔 구현 자신뿐이다.</item>
-    /// <item><b>"영영 안 온다" 를 알지 못한다.</b> 그래서 장이 없으면 시한을 끝까지 기다린다 —
+    /// <item><b>"영영 안 온다" 를 알지 못한다.</b> 그래서 장이 없으면 시한을 끝까지 기다린다(시한이
+    /// <see cref="Timeout.InfiniteTimeSpan"/> 이면 기다릴 시한이 없으므로 GrabOne 이 돌아온 뒤 1초 유예만) —
     /// 그 답을 즉시 아는 구현은 <see cref="ICamGrabAsync"/> 를 달아 스스로 답한다.</item>
     /// <item><b>시한이 끝나도 진행 중인 그랩을 끊지 못한다.</b> <see cref="ICam.GrabOne"/> 에는 취소 인자가
     /// 없다. 시한이 다하면 여기서는 <c>null</c> 로 돌아가지만 그랩은 계속 돌고, 늦게 도착한 장은
@@ -35,7 +37,8 @@ public static class CamGrabExt
     /// <param name="cam">찍을 카메라.</param>
     /// <param name="timeout">이 호출의 시한. 구현 설정값보다 우선한다.
     /// <see cref="Timeout.InfiniteTimeSpan"/> 이면 구현 자신의 시한에 맡긴다 — 기본 절차에서는 <see cref="ICam.GrabOne"/>
-    /// 의 시한이 그랩을 묶고, 그 그랩이 장 없이 돌아오면 늦은 발행을 1초 유예만 기다린 뒤 <c>null</c> 이다.</param>
+    /// 의 시한이 그랩을 묶고, 그 그랩이 장 없이 돌아오면 늦은 발행을 1초 유예만 기다린 뒤 <c>null</c> 이다.
+    /// 0 이하는 1ms 로, 아주 큰 값은 int 밀리초 상한으로 다듬는다(<c>GevCam</c> 과 같은 규칙).</param>
     /// <param name="ct">취소. 시한 만료(<c>null</c>)와 달리 <see cref="OperationCanceledException"/> 으로 나간다.</param>
     public static async Task<CamFrame?> GrabFrameAsync(this ICam cam, TimeSpan timeout, CancellationToken ct = default)
     {
@@ -47,6 +50,16 @@ public static class CamGrabExt
         var tcs = new TaskCompletionSource<CamFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnFrame(object? _, CamFrame f) => tcs.TrySetResult(f);
 
+        // 시한은 그랩을 띄우기 **전에** 다듬는다. 뒤에 Task.Delay 가 범위 밖 값(음수·아주 큰 값)으로 던지면 그랩만
+        // 고아로 돌아, 그 장은 다른 구독자에게 가고 GrabOne 의 예외는 아무도 안 본다.
+        var wait = timeout == Timeout.InfiniteTimeSpan
+            ? timeout
+            : TimeSpan.FromMilliseconds(Math.Min(int.MaxValue, Math.Max(1, timeout.TotalMilliseconds)));
+
+        // 기다림은 부른 쪽 토큰에 직접 걸지 않고 연결한 취소원에 건다 — 끝날 때 끊어 등록을 돌려준다. 무한 시한의
+        // Task.Delay 는 스스로 끝나지 않아, 부른 쪽 토큰에 바로 걸면 호출마다 등록이 하나씩 남는다(오래 사는 토큰이면 쌓인다).
+        using var waits = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
         cam.FrameAcquired += OnFrame;
         try
         {
@@ -56,7 +69,7 @@ public static class CamGrabExt
             var grab = Task.Run(cam.GrabOne, ct);
             // 시한 시계는 **여기서** 출발한다. 그랩이 끝난 뒤부터 다시 세면 부른 쪽이 준 상한이 실제로는
             // "그랩 시간 + 시한" 이 되어 약속을 말없이 넘는다 — 아래 둘째 대기도 이 같은 객체를 다시 쓴다.
-            var deadline = Task.Delay(timeout, ct);
+            var deadline = Task.Delay(wait, waits.Token);
 
             var first = await Task.WhenAny(tcs.Task, grab, deadline).ConfigureAwait(false);
             if (ReferenceEquals(first, grab))
@@ -73,7 +86,7 @@ public static class CamGrabExt
                 // ⚠ 시한이 InfiniteTimeSpan("구현의 시한에 맡긴다")이면 남은 시한이 없다 — 구현의 시한은 방금 돌아온
                 // GrabOne 이 이미 썼다. 그대로 deadline 을 기다리면 장 없이 돌아온 그랩(예: 읽기에 실패한
                 // VideoCaptureCam)에서 영영 선다. 그래서 늦은 발행은 유예만큼만 기다리고 null 로 닫는다.
-                var rest = timeout == Timeout.InfiniteTimeSpan ? Task.Delay(LatePublishGraceMs, ct) : deadline;
+                var rest = wait == Timeout.InfiniteTimeSpan ? Task.Delay(LatePublishGraceMs, waits.Token) : deadline;
                 first = await Task.WhenAny(tcs.Task, rest).ConfigureAwait(false);
             }
 
@@ -83,6 +96,7 @@ public static class CamGrabExt
         }
         finally
         {
+            waits.Cancel();   // 남은 기다림(무한 시한·유예)의 타이머와 등록을 돌려준다
             cam.FrameAcquired -= OnFrame;
         }
     }

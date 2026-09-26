@@ -10,7 +10,8 @@ public readonly record struct CvRingFillHit(double RatePct, double FillPx, doubl
     /// <summary>밴드 화소 중 이미지 밖이라 <b>보지 못한</b> 수. 분모(<see cref="TotalPx"/>)에는 들어가고
     /// 분자에는 안 들어가므로, 이 값이 0 이 아니면 그만큼이 "안 찬 것" 으로 계산된 것이다.
     /// 0 이 아니면 대개 중심·반경 설정이나 시야가 잘못된 것이니, 낮은 충전율을 결함으로 읽기 전에 여기를 먼저 본다.
-    /// 밴드가 온전히 화면 안이면 0 이고, 그때 <see cref="RatePct"/> 는 종전 판과 같은 값이다.</summary>
+    /// 밴드가 온전히 화면 안이면 0 이고, 그때 <see cref="RatePct"/> 는 이 값을 넣기 전의 셈과 같다(밴드 밖을 셀 일이 없다).
+/// 0.29.0 부터 Bright 는 문턱과 같은 화소를 채움으로 세지 않는다 — 그 규칙은 <see cref="CvRingFill.Measure"/> 에 있다.</summary>
     public double OutsidePx { get; init; }
 }
 
@@ -58,7 +59,8 @@ public static class CvRingFill
 
         // 문턱 — 자동(Otsu)이면 밴드를 감싼 사각 전체에서 낸다. 이것은 편의가 아니라 이 셈이 기대는 전제다:
         // Otsu 는 분포를 **언제나** 둘로 가르므로, 재료와 무재료 두 무리가 사각 안에 다 있어야 뜻이 있다.
-        // 사각의 안쪽 구멍·모서리가 배경 무리를 대 주는 덕에 반만 찬 밴드는 맞게 읽힌다. 그런데 **빈 밴드가
+        // 사각의 안쪽 구멍·모서리가 배경 무리를 대 주는 덕에, 배경과 밝기가 다른 빈 밴드·꽉 찬 밴드도 맞게 읽힌다(반만 찬
+        // 밴드는 밴드 안에 두 무리가 이미 있다). 그런데 **빈 밴드가
         // 배경과 같은 밝기이거나 꽉 찬 밴드가 배경과 같은 밝기이면** 사각에 한 무리뿐이라 Otsu 가 잡음을 가른다
         // — 실측(r 40..80, 30/220, 잡음 ±5): 빈 밴드도 꽉 찬 밴드도 54.5%(Bright)·45.5%(Dark)로 읽었다. 잡음이 없으면
         // 문턱이 0 이 되어 100% 나 0% 로 간다.
@@ -94,7 +96,7 @@ public static class CvRingFill
             System.Runtime.InteropServices.Marshal.Copy(packed.Data, buf, 0, buf.Length);
 
         // 자르지 않은 사각을 돈다. 이미지 안이면 화소를 보고, 밖이면 분모에만 넣는다 —
-        // 밴드가 온전히 화면 안이면 두 사각이 같으므로 결과는 종전 판과 한 화소도 다르지 않다.
+        // 밴드가 온전히 화면 안이면 두 사각이 같으므로 밖을 세는 규칙은 결과를 한 화소도 바꾸지 않는다.
         for (var y = uy0; y <= uy1; y++)
         {
             var dy = y - cy;

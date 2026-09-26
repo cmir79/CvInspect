@@ -950,6 +950,25 @@ public class SmokeTests
                 $"after the late-publish grace, not at once — a frame published just after GrabOne returns must still get its chance ({sw.ElapsedMilliseconds}ms)");
         }
 
+        // 10-G-11) 기본 절차는 범위 밖 시한을 그랩을 띄우기 **전에** 다듬는다 — GevCam(10-G-9)과 같은 규칙.
+        //          전에는 그랩을 띄운 뒤 Task.Delay 가 ArgumentOutOfRangeException 을 던져, 그랩만 고아로 돌고 그 장은
+        //          다른 구독자에게 갔다. 같은 호출이 GevCam 에서는 성공하고 여기서는 던졌다.
+        {
+            using var cam = new FakeCam();
+            cam.Open();
+            Exception? hugeThrew = null;
+            CvInspect.Imaging.CamFrame? got = null;
+            try { got = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.MaxValue); }
+            catch (Exception ex) { hugeThrew = ex; }
+            Check(hugeThrew is null && got is not null,
+                $"a huge timeout is clamped instead of throwing after the grab already started (threw {hugeThrew?.GetType().Name ?? "nothing"})");
+
+            Exception? negThrew = null;
+            try { await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(-5)); }
+            catch (Exception ex) { negThrew = ex; }
+            Check(negThrew is null, $"a negative timeout becomes the shortest wait instead of throwing (threw {negThrew?.GetType().Name ?? "nothing"})");
+        }
+
         // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
         {
             using var cam = new FakeCam { PublishAfterReturnMs = 120 };
@@ -1739,6 +1758,10 @@ public class SmokeTests
             new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, UseOtsu = true, Polarity = CvBlobPolarity.Bright });
         var dark = CvRingFill.Measure(img, 150, 150,
             new CvRingFillOpt { RMinPx = 60, RMaxPx = 80, UseOtsu = true, Polarity = CvBlobPolarity.Dark });
+        // 살아있음 — 이 절이 ">=" 를 가르는 것은 Otsu 가 어두운 값(30)을 문턱으로 돌려주기 때문이다. 그 값이 움직이면
+        // 절이 조용히 공허해지므로 먼저 못 박는다.
+        Check(bright?.ThresholdUsed == 30,
+            $"Otsu returned the top of the dark class, which is what makes '>=' visible here (got {bright?.ThresholdUsed})");
         Check(bright is { } b && b.RatePct > 45 && b.RatePct < 55,
             $"a half-filled band reads about half with the automatic threshold — counting '>=' took the whole dark class as fill: {bright}");
         Check(dark is { } d && d.RatePct > 45 && d.RatePct < 55, $"control: the dark side was right all along: {dark}");

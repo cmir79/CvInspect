@@ -45,5 +45,7 @@ public interface ICamGrabAsync
     /// 닫힘이나 제어 상실.</exception>
     /// <exception cref="ObjectDisposedException">이미 해제됐다.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> 로 취소됐다 — 시한 만료와 갈라 알 수 있다.</exception>
+    /// <remarks>그 밖에 전송·장치 계층의 실패는 구현 고유의 예외로 올 수 있다(<c>GevCam</c>: 취득 라이브러리의 예외 계열 —
+    /// 그랩을 걸기 전에 제어를 잃었으면 제어 상실 예외 등).</remarks>
     Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default);
 }

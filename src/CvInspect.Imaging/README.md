@@ -58,7 +58,7 @@ the library was missing something. `GrabFrameAsync` does it for you:
 ```csharp
 using CvInspect.Imaging;
 
-var frame = await cam.GrabFrameAsync(TimeSpan.FromSeconds(2));
+var frame = await cam.GrabFrameAsync(TimeSpan.FromSeconds(2));   // GevCam throws TimeoutException on timeout — see below
 if (frame is null) { /* no frame, and no reason to throw — see below */ }
 else using (var mat = frame.AsMat()) { /* inspect */ }
 ```
@@ -80,8 +80,9 @@ Folding those into `null` would collapse the reason channel and leave the caller
 that is never coming.
 
 **Timeouts are where backends differ.** The generic path cannot tell why nothing came, so it returns
-`null`. `GevCam` knows where to look and throws a `TimeoutException` whose message points at the
-camera-state line it logged at open (trigger mode, chunk mode) — the same body `GrabOne` runs. Code
+`null`. `GevCam` knows where to look and throws a `TimeoutException` whose message points at what it
+logged at open (trigger mode on the camera-state line, and a separate warning when chunk mode is on) —
+the same body `GrabOne` runs. Code
 that must work on any backend treats `null` and `TimeoutException` alike as "no frame"; cancellation
 through the token comes out as `OperationCanceledException`, so it stays distinguishable from both.
 
@@ -101,7 +102,8 @@ extension will call you instead. There are two such things:
   that does not expose its clock.
 - **That no frame is coming at all.** The generic path cannot distinguish "not yet" from "never", so
   it waits out the timeout rather than guessing — it will not cut short a backend that publishes just
-  after `GrabOne` returns. A camera that knows the answer immediately should say so: `DeadCam` returns
+  after `GrabOne` returns. (With `Timeout.InfiniteTimeSpan` there is no caller timeout left to wait
+  out, so a late frame gets a one-second grace after `GrabOne` returns.) A camera that knows the answer immediately should say so: `DeadCam` returns
   `null` at once instead of stalling every grab for the full timeout.
 
 `GevCam`, `ReconnectingCam` (which forwards to its inner camera) and `DeadCam` implement it.

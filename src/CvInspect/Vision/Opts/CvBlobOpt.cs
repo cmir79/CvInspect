@@ -39,14 +39,18 @@ public sealed class CvBlobOpt : ICvShapeSource
     /// 그래서 <b>있음·없음이나 면적 하한으로 판정하는 검사는 끄고 고정 문턱(<see cref="Threshold"/>)을 쓴다</b> —
     /// 자동이 틀리는 방향이 "없는 것을 있다고" 쪽이라 그 검사의 fail-safe 와 반대다.
     /// <b>기본값은 꺼짐이다</b>(0.29.0 부터 — 그 전에는 켜짐). 블랍의 주된 쓰임이 존재 확인이라 기본값이 안전한 쪽이어야 한다.
-    /// 소비자 조사에서 이 판단을 이미 내려 코드에서 끈 검사가 둘, 기본값에 기대 가이드가 빠진 제품을 합격시키는 검사가
-    /// 하나 나왔다. 위치만 잡는 용도라면 켜는 것이 조명 변동에 유연하다 — 그때는 명시적으로 켠다.
-    /// ⚠ 이 키가 없는 옛 저장 파일은 이제 꺼짐으로 읽힌다(값을 적어 둔 파일은 그대로).</summary>
+    /// 위치만 잡는 용도라면 켜는 것이 조명 변동에 유연하다 — 그때는 명시적으로 켠다.
+    /// ⚠ <b>기본값은 저장된 레시피를 바꾸지 않는다.</b> 저장할 때 이 값은 언제나 적히므로, 0.29.0 전에 저장한 레시피는
+    /// 적힌 값(대개 켜짐)을 그대로 쓴다 — 존재·면적 판정 레시피는 직접 끄고 <see cref="Threshold"/> 를 잡아야 한다.
+    /// 기본값이 닿는 것은 저장 파일 없이 코드로 만든 옵션과, 이 키가 빠진 파일(꺼짐으로 읽힘)뿐이다.</summary>
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:UseOtsu")]
     [CvDesc("cv:BlobUseOtsuDesc")]
     public bool UseOtsu { get; set; }
 
+    /// <summary>고정 문턱(0~255) — <see cref="UseOtsu"/> 가 꺼졌을 때 쓴다. Bright 는 이 값보다 큰 화소, Dark 는 이 값 이하인
+    /// 화소가 제품이다(<c>Cv2.Threshold</c> 의 Binary/BinaryInv). <b>128 은 자리값이지 맞춘 값이 아니다</b> — 제품과 배경
+    /// 밝기 사이로 잡고, 제품이 없는 샘플에서 블랍이 안 나오는지 확인한다.</summary>
     [CvCategory("cv:CatThreshold", 2)]
     [CvName("cv:BlobThreshold")]
     [CvDesc("cv:BlobThresholdDesc")]

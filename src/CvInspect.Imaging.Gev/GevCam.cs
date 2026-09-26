@@ -23,7 +23,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// <summary>정지 직후 이만큼 안에 온 드롭은 정지 경계로 본다 — 마지막 프레임 하나가 잘릴 뿐이다.</summary>
     private static readonly long StopBoundaryTicks = TimeSpan.FromSeconds(2).Ticks;
 
-    /// <summary>연속 취득을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
+    /// <summary>연속 취득을 멈춘 시각, 또는 장을 못 받고 끝난 단발 그랩을 멈춘 시각(UTC ticks). 0 이면 아직 멈춘 적이 없다.</summary>
     private long _stoppedAtTicks;
 
     /// <summary>이 스트림의 계수가 시작된 시점 — 소비자가 "리셋됐다" 를 구분하는 표식이다.</summary>
@@ -456,8 +456,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// 가른다(<see cref="IsStale"/>).
     ///
     /// <b>시한 만료는 <see cref="TimeoutException"/> 으로 던진다 — null 이 아니다.</b> <see cref="GrabOne"/> 과
-    /// 몸통이 같고, 이 백엔드는 왜 안 왔는지 짚을 곳을 안다(문구가 열 때 남긴 'camera state' 줄 — 트리거 모드·
-    /// 청크 모드 — 을 가리킨다). null 로 접으면 그 안내가 사라진다.
+    /// 몸통이 같고, 이 백엔드는 왜 안 왔는지 짚을 곳을 안다(문구가 열 때 남긴 것을 가리킨다 — 'camera state' 줄의
+    /// 트리거 모드와, 청크 모드가 켜져 있으면 따로 남긴 ChunkModeActive 경고). null 로 접으면 그 안내가 사라진다.
     /// <b>null 은 받은 장을 쓸 수 없어 버린 경우다</b>(지원하지 않는 픽셀 포맷 — 경고를 남긴다). 그때는 시한 전에
     /// 돌아오고, 취득은 이미 멈춘 뒤다.</summary>
     public Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default)
@@ -576,6 +576,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
         var startedAt = await LatchDeviceTimestampAsync(nodes, ct).ConfigureAwait(false);
 
         GevFrame? frame = null;
+        var delivered = false;
         try
         {
             // ⚠ **시작은 멈춤을 보내는 try 안에서 건다.** 명령은 응답을 기다리기 전에 이미 장치로 나가므로,
@@ -599,7 +600,9 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 frame = await stream.ReceiveAsync(deadline.Token).ConfigureAwait(false);
             }
 
-            return Emit(frame);
+            var emitted = Emit(frame);
+            delivered = true;
+            return emitted;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -628,6 +631,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // 예외) 캐시가 1 로 남아 잠긴 채가 되던 것은 취득 계층 0.4.1 에서 고쳐졌다 — 쓰기가 예외로 끝나면 그 레지스터의
             // 캐시와 의존 캐시를 버린다(장치 상태를 모르므로 다음 판정이 장치를 다시 읽는다).
             // 취소 토큰을 쓰지 않는다 — 시한 초과나 중단으로 끊긴 그랩일수록 장치를 멈춰 두어야 한다.
+            //
+            // 장을 못 받고 끝난 그랩(시한 초과·취소·중단)이면 전송 중이던 블록을 이 멈춤이 끊을 수 있다 — 그 드롭은
+            // 손실이 아니다. 정지 경계를 찍어 두면 OnFrameDropped 가 Info 로 낮춘다(연속 취득 정지와 같은 규칙). 취득
+            // 계층 0.4.1 부터 끊긴 블록이 드롭으로 올라오므로, 안 찍으면 부른 쪽 취소 같은 정상 경로에 "frame dropped"
+            // 경고가 붙어 네트워크를 뒤지게 만든다. **장을 받은 그랩에서는 찍지 않는다** — SingleFrame 은 이미 끝나
+            // 끊을 블록이 없고, 연속 검사 루프에서 매번 찍으면 2초 창이 늘 열려 다음 그랩의 진짜 손실까지 Info 로 묻힌다.
+            if (!delivered) Interlocked.Exchange(ref _stoppedAtTicks, DateTime.UtcNow.Ticks);
             await TryExecuteAsync(nodes, "AcquisitionStop", CancellationToken.None).ConfigureAwait(false);
 
             // ⚠ **멈췄으면 번호 기준을 버린다.** 취득을 멈춘 뒤 다시 걸었을 때 장치가 프레임 번호를

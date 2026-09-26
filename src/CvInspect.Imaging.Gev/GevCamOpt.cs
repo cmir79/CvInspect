@@ -70,7 +70,8 @@ public sealed class GevCamOpt
 
     /// <summary>단발 그랩이 프레임을 기다리는 상한(ms). <c>GrabOne</c> 과, 시한을
     /// <see cref="Timeout.InfiniteTimeSpan"/>(구현의 시한에 맡긴다)으로 준 <c>GrabFrameAsync</c> 가 쓴다.
-    /// 시한을 값으로 준 <c>GrabFrameAsync</c> 는 그 값을 쓴다.</summary>
+    /// 시한을 값으로 준 <c>GrabFrameAsync</c> 는 그 값을 쓴다. 0 이하는 1ms 로 본다 — "상한 없음" 설정은 없다
+    /// (정말 오래 기다려야 하면 <c>GrabFrameAsync</c> 에 큰 시한을 준다).</summary>
     public int GrabTimeoutMs { get; set; } = 5000;
 
     /// <summary>설정 묶음 불러오기 같은 명령이 끝나기를 기다리는 상한(ms).</summary>

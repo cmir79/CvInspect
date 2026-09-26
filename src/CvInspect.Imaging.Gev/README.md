@@ -97,6 +97,12 @@ two-camera bench run of the protocol library logged 6,392 requests against zero 
 raising the timeouts does not reduce it. The rule is what that run settled; it was measured on the
 transport, not through this package.
 
+From 0.29.0 (GevSharp 0.4.1) a block that ends short of what its leader announced is counted as
+incomplete instead of being handed on with a stale tail. A camera that cuts the frame in flight when
+acquisition stops therefore adds to `IncompleteFrames` at each such stop — the log line for it is
+lowered to Info, but the counter is not. On the Basler used here it added nothing (the camera finishes
+the block); other models are unmeasured. If the count climbs only with stops, it is not a loss.
+
 ## Diagnostics
 
 Attach `CvLog.Sink` before opening — discovery results, feature fallbacks, dropped frames and
