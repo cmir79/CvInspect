@@ -72,12 +72,24 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         }
         FrameAcquired?.Invoke(this, frame);
     }
+    /// <summary>0 보다 크면 StartContinuous 가 시작 전에 그만큼 기다리고, 그 사이 StopContinuous 가 오면 <b>시작하지 않고 예외 없이</b>
+    /// 돌아온다 — 비정상 정지 뒤 대기를 하는 GevCam 의 모양(ICam.StartContinuous: 대기 사이 온 정지가 이긴다).</summary>
+    public int HoldBeforeStartMs { get; set; }
+    private int _stops;
+
     public void StartContinuous()
     {
         if (FailNextStart) { FailNextStart = false; throw new InvalidOperationException("fake start failure"); }
+        var stopsAtCall = Volatile.Read(ref _stops);
+        if (HoldBeforeStartMs > 0) Thread.Sleep(HoldBeforeStartMs);
+        if (Volatile.Read(ref _stops) != stopsAtCall) return;
         if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
     }
-    public void StopContinuous() { if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); } }
+    public void StopContinuous()
+    {
+        Interlocked.Increment(ref _stops);
+        if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
+    }
     public void SetExposureTimeUs(double timeUs) => LastExposure = timeUs;
     public void Dispose() { Disposed = true; IsConnected = false; IsGrabbing = false; }
 

@@ -115,8 +115,10 @@ public interface ICam : IDisposable
 
     /// <summary>연속 취득 시작. <b>시작 전에 부른 쪽을 잠깐 붙잡을 수 있다</b> — 구현이 장치 사정으로 시작을 미루는 경우다
     /// (<c>GevCam</c>: 장을 못 받고 끝난 단발 그랩 바로 뒤면, 그 그랩의 시작으로부터 노출 + 325 ms 이내까지 기다린다 — 곧바로
-    /// 건 라이브의 장이 잘리는 기종이 있다). UI 스레드에서 부르면 그만큼 굳는다. 그 사이 다른 스레드에서
-    /// <see cref="StopContinuous"/> 가 오면 정지가 이긴다 — 시작하지 않고 돌아온다.</summary>
+    /// 건 라이브의 장이 잘리는 기종이 있다). UI 스레드에서 부르면 그만큼 굳는다. 부른 뒤 시작하기까지(그 대기 포함) 다른
+    /// 스레드에서 <see cref="StopContinuous"/>(또는 닫기)가 오면 그쪽이 이긴다 — <b>시작하지 않고 예외 없이 돌아온다.</b>
+    /// 그래서 정상 반환이 곧 "시작했다" 는 아니다 — 켜졌는지는 <see cref="IsGrabbing"/>·<see cref="GrabbingChanged"/> 로 본다(감싸는
+    /// 구현도 반환만 보고 켜짐을 알리면 안 된다).</summary>
     /// <exception cref="InvalidOperationException">단발 그랩이 장을 기다리는 중이다.</exception>
     void StartContinuous();
 

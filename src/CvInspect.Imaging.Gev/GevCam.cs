@@ -916,27 +916,39 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 줄을 서 멈췄다. 락 밖에서 자면 그 정지는 돌 펌프가 없어 아무것도 안 하고 돌아가고, 깨어난 시작이 라이브를 건다 — 정지를
         // 불렀는데 라이브가 돈다(0.29.1, 소비자가 원문 독해로 짚었고 실기로 재현: 노출 30 ms, 시작 부른 뒤 20 ms 에 정지 →
         // 대기한 25회 전부 정지 뒤에도 IsGrabbing, 같은 런의 대기 없던 15회는 0). 그래서 정지 횟수를 부를 때 떠 두고, 락을 잡았을 때
-        // 그 사이 정지가 왔으면 시작하지 않는다.
+        // 그 사이 정지가 왔으면 시작하지 않는다. 대기가 없었어도 같다 — 부른 뒤 락을 잡기 전에 온 정지는 이 시작보다 나중 명령이다.
+        // 닫기·다시 열기도 같은 모양이다 — 닫기는 정지 횟수를 안 올리므로 세션(스트림) 자체를 부를 때 떠 두고 견준다. 닫은 뒤 다시 연
+        // 세션에서는 아무도 라이브를 청하지 않았다.
         var stopsAtCall = Volatile.Read(ref _stopRequests);
+        var streamAtCall = _stream;
         if (!_disposed && _dev != null && IsConnected && _pump == null && _grabCts == null && SettleWaitMs() is var settleMs and > 0)
             Thread.Sleep(settleMs);
 
-        bool stoppedWhileWaiting;
+        string? notStarted = null;
         lock (_sync)
         {
             ThrowIfDisposed();
             var stream = EnsureOpen();
             if (_pump != null) return;
-            // 단발 그랩이 대기열을 기다리는 동안 펌프를 세우면 둘이 같은 대기열을 다툰다.
-            if (_grabCts != null)
-                throw new InvalidOperationException(
-                    "A single grab is waiting for its frame; continuous acquisition cannot start until it returns.");
-            stoppedWhileWaiting = _stopRequests != stopsAtCall;
-            if (!stoppedWhileWaiting) StartPumpLocked(stream);
+            // 나중 명령이 먼저 이긴다 — 기다리는 그랩 검사보다 앞에 둔다. 정지가 이미 시작을 무른 뒤에 온 그랩 때문에 이 시작이 던지면,
+            // 부른 쪽은 이미 없어진 시작의 실패를 받는다.
+            // 부를 때 안 열려 있었으면(null) 견주지 않는다 — 그때 연 것은 이 시작이 기다리던 일이다.
+            if (streamAtCall is not null && !ReferenceEquals(stream, streamAtCall))
+                notStarted = "the camera was closed or reopened after this start was requested";
+            else if (_stopRequests != stopsAtCall)
+                notStarted = "StopContinuous was called after this start was requested";
+            else
+            {
+                // 단발 그랩이 대기열을 기다리는 동안 펌프를 세우면 둘이 같은 대기열을 다툰다.
+                if (_grabCts != null)
+                    throw new InvalidOperationException(
+                        "A single grab is waiting for its frame; continuous acquisition cannot start until it returns.");
+                StartPumpLocked(stream);
+            }
         }
-        if (stoppedWhileWaiting)
+        if (notStarted is not null)
         {
-            WriteLog(CvLogLevel.Info, "continuous grab not started: StopContinuous was called while it waited to start");
+            WriteLog(CvLogLevel.Info, $"continuous grab not started: {notStarted}");
             return;
         }
         GrabbingChanged?.Invoke(this, true);
@@ -1380,18 +1392,33 @@ public sealed class GevCam : ICam, ICamGrabAsync
     internal static bool IsExposureAutoOn(string? exposureAuto)
         => exposureAuto is { Length: > 0 } v && !string.Equals(v, "Off", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>노드가 지금 쓸 수 없는가(잠김·읽기 전용·쓸 수 없는 상태). 묻다가 실패하면 모른다로 보고 거짓 — 진단이 원래 경고를 막지 않게.</summary>
+    private static async Task<bool> IsNotWritableAsync(INode node, CancellationToken ct)
+    {
+        try
+        {
+            if (await node.IsLockedAsync(ct).ConfigureAwait(false)) return true;
+            return await node.GetAccessModeAsync(ct).ConfigureAwait(false) is AccessMode.ReadOnly or AccessMode.NotAvailable or AccessMode.NotImplemented;
+        }
+        catch (GevException) { return false; }
+    }
+
     /// <summary>자동 노출이 켜진 채 노출을 쓰려 했을 때의 경고 — 원인(자동 노출)을 이름으로 대고, 두 갈래 처방을 준다. 끄라고 하지 않고
-    /// 의도를 확인하라고 쓴다(자동 노출이 의도인 현장도 있다).</summary>
-    internal static string ExposureAutoMessage(string exposureAuto, double requestedUs, bool writeRefused)
+    /// 의도를 확인하라고 쓴다(자동 노출이 의도인 현장도 있다). 거절 갈래는 <b>노드가 잠겨 있을 때만</b> 쓴다 — 거절한 것은 장치가 아니라
+    /// XML 잠금을 평가한 이 스택이다(실측 개체: 장치는 그 값을 본 적도 없다). 처방의 "노출을 안 쓰게" 는 두 출처를 다 대야 한다 —
+    /// <see cref="SetExposureTimeUs"/> 로 준 값은 이 인스턴스가 기억해 다시 열 때도 쓴다(0 이하는 기억하지 않는다).</summary>
+    internal static string ExposureAutoMessage(string exposureAuto, double exposureUs, bool writeRefused)
         => (writeRefused
-               ? $"exposure {requestedUs}us was not applied: ExposureAuto is {exposureAuto}, so the camera controls its own exposure and refused the write. "
-               : $"exposure {requestedUs}us was written, but ExposureAuto is {exposureAuto}, so the camera keeps adjusting its exposure and the value will not hold. ") +
+               ? $"exposure {exposureUs}us was not applied: the exposure node is locked while ExposureAuto is {exposureAuto}, so the write was refused. "
+               : $"exposure {exposureUs}us was written, but ExposureAuto is {exposureAuto}, so the camera keeps adjusting its exposure and the value will not hold. ") +
            "If a fixed exposure is intended, turn ExposureAuto off on the camera (or in the user set it loads). " +
-           "If automatic exposure is intended, set ExposureTimeUs to 0 so no exposure is written.";
+           "If automatic exposure is intended, leave CamOpt.ExposureTimeUs at 0 and do not call SetExposureTimeUs with a positive value " +
+           "(this camera instance keeps such a value and writes it again on reopen), so no exposure is written.";
 
     /// <summary>노출 시간(마이크로초) 적용. <b>노드 이름이 하나가 아니다</b> — 표준 세대가 갈려
-    /// 현장에 신구 이름이 둘 다 있고 취득 라이브러리는 별칭을 만들어 주지 않는다.</summary>
-    private async Task ApplyExposureAsync(GenApiNodeMap nodes, double timeUs, CancellationToken ct)
+    /// 현장에 신구 이름이 둘 다 있고 취득 라이브러리는 별칭을 만들어 주지 않는다.
+    /// <c>internal</c> 인 것은 회귀가 장치 없이(파싱한 노드 맵 + 가짜 포트) 자동 노출 갈래를 부르게 하려는 것이다.</summary>
+    internal async Task ApplyExposureAsync(GenApiNodeMap nodes, double timeUs, CancellationToken ct)
     {
         if (timeUs <= 0) return;
         var node = Find<IFloat>(nodes, "ExposureTime", "ExposureTimeAbs");
@@ -1490,23 +1517,32 @@ public sealed class GevCam : ICam, ICamGrabAsync
         }
         catch (GenApiException ex)
         {
+            // 자동 노출을 원인으로 대는 것은 **노드가 실제로 잠겨 있을 때만**이다 — 켜져 있다는 사실만으로 대면, 범위 밖 값처럼 다른
+            // 이유로 거절된 쓰기에도 "자동 노출을 끄라" 가 나가 맞지 않는 처방을 준다. 그때는 종전 문구에 자동 노출 상태만 곁들인다.
+            var auto = IsExposureAutoOn(autoBefore);
             WriteLog(CvLogLevel.Warning,
-                IsExposureAutoOn(autoBefore)
+                auto && await IsNotWritableAsync(node, ct).ConfigureAwait(false)
                     ? ExposureAutoMessage(autoBefore!, timeUs, writeRefused: true)
-                    : $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
+                    : $"failed to set exposure to {timeUs}us via '{node.Name}'" + (auto ? $" (ExposureAuto is {autoBefore})" : string.Empty),
+                ex);
             return;
         }
 
+        var autoStillOn = false;
         if (IsExposureAutoOn(autoBefore))
         {
             var autoAfter = await TryReadEnumAsync(nodes, "ExposureAuto", ct).ConfigureAwait(false);
-            if (IsExposureAutoOn(autoAfter))
-                WriteLog(CvLogLevel.Warning, ExposureAutoMessage(autoAfter!, timeUs, writeRefused: false));
+            autoStillOn = IsExposureAutoOn(autoAfter);
+            if (autoStillOn)
+                WriteLog(CvLogLevel.Warning, ExposureAutoMessage(autoAfter!, written, writeRefused: false));
             else
                 WriteLog(CvLogLevel.Info,
-                    $"ExposureAuto was {autoBefore} and reads {autoAfter ?? "(unreadable)"} after writing exposure {timeUs}us — " +
+                    $"ExposureAuto was {autoBefore} and reads {autoAfter ?? "(unreadable)"} after writing exposure {written}us — " +
                     "check that the camera now holds a fixed exposure.");
         }
+        // 자동 노출이 아직 켜져 있으면 되읽기 비교는 하지 않는다 — 값이 달라도 원인은 위 줄이 이미 댔고, 같은 원인을 "말없이 다른 값"
+        // 경고로 한 번 더 내면 원인을 흐린다.
+        if (autoStillOn) return;
 
         // 쓰기가 성공해도 카메라가 그 값을 그대로 쓴다는 보장은 없다 — 실제 값을 남긴다.
         // "썼으니 됐겠지" 가 이 바닥에서 제일 자주 틀리는 가정이다.
@@ -1950,11 +1986,15 @@ public sealed class GevCam : ICam, ICamGrabAsync
         return ticks;
     }
 
+    /// <summary>진단용 열거 읽기 — 못 읽으면 null. 부르는 자리가 전부 진단(상태 줄·자동 노출 확인)이라 <b>전송 실패도 삼킨다</b>
+    /// (GenApiException 만이 아니라 GevException 전부 — 장치 상태 오류·시한 초과는 GenApiException 이 아니다). 여는 길에서 진단 읽기
+    /// 하나가 던지면 열기 자체가 깨지고, 노출 쓰기 앞의 읽기가 던지면 쓰기까지 건너뛴다. 진짜 끊김이면 다음 단계가 제 예외로 알린다.
+    /// 취소는 삼키지 않는다.</summary>
     private static async Task<string?> TryReadEnumAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
     {
         if (nodes.GetNode(name) is not IEnumeration e) return null;
         try { return await e.GetAsync(ct).ConfigureAwait(false); }
-        catch (GenApiException) { return null; }
+        catch (GevException) { return null; }
     }
 
     /// <returns>장치가 우리가 바라는 값으로 돈다고 볼 수 있으면 <c>true</c>. <b>쓰기를 시도했는데 거절당한

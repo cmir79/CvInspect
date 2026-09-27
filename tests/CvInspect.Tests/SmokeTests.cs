@@ -684,6 +684,10 @@ public class SmokeTests
             var prevSink = CvLog.Sink;
             try
             {
+                // 먼저 빈 창구를 한 번 꽂아 보관된 줄을 흘려보낸다 — CvLog 는 창구가 없을 때 줄을 들고 있다가 꽂는 순간 재생하므로,
+                // 앞 항(10-8b 재시도, 10-10 의 정당한 "청하지 않은 정지")의 줄이 이 항의 줄로 섞인다. 전체 실행에서는 앞선 시험이
+                // 창구를 꽂아 두어 안 보이고, 이 시험만 골라 돌리면 늘 실패했다(2026-09-27 확인 — 깨끗한 HEAD 에서도 같다).
+                CvLog.Sink = static (_, _, _, _) => { };
                 CvLog.Sink = (_, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add(msg); };
                 made[0].LoseConnection(gapMs: 20);          // 실제 순서 그대로 — 취득 통지가 먼저, 연결 통지가 뒤
                 Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "control loss is recovered");
@@ -726,6 +730,7 @@ public class SmokeTests
             var prevSink = CvLog.Sink;
             try
             {
+                CvLog.Sink = static (_, _, _, _) => { };   // 보관된 앞 항의 줄을 먼저 흘려보낸다(10-10c 참조)
                 CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add($"{lvl}|{msg}"); };
                 made[0].LoseConnection();
                 Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
@@ -749,6 +754,34 @@ public class SmokeTests
             Thread.Sleep(80);
             Check(made.Count == 1 && !cam.IsGrabbing,
                 $"a stop the user asked for is not undone (instances={made.Count}, grabbing={cam.IsGrabbing})");
+        }
+
+        // 10-11) 안쪽이 시작하지 않고 돌아오면 켜짐을 알리지 않는다 — 시작 대기 중 다른 스레드의 정지가 이긴 경우.
+        //        GevCam 은 비정상 정지 뒤 시작 전에 락 밖에서 기다리고, 그 사이 정지가 오면 시작하지 않고 정상 반환한다(실기 재현:
+        //        대기한 25회 전부 정지 뒤에도 라이브가 돌던 것을 고쳤다). 그런데 이 데코레이터는 반환만 보고 켜짐을 알려, 정지를 부른 뒤에
+        //        IsGrabbing=true·마지막 통지 true 가 남았다 — 아무것도 안 돌고 의도는 내려가 있어 재연결도 못 고친다(검토가 코드로 찾은 경로).
+        //        대조: 같은 대기에서 정지가 없으면 켜짐이 정상으로 나가야 한다(검사기가 "늘 안 알림" 으로 죽지 않았는지).
+        {
+            var made = new List<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(
+                () => { var c = new FakeCam { HoldBeforeStartMs = 150 }; made.Add(c); return c; }, fastOpt);
+            var grab = new List<bool>();
+            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+            cam.Open();
+            Exception? startEx = null;
+            var starter = new Thread(() => { try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; } });
+            starter.Start();
+            Thread.Sleep(30);
+            cam.StopContinuous();
+            Check(starter.Join(2000) && startEx is null, $"a start that lost to a stop returns without throwing ({startEx?.Message ?? "ok"})");
+            Check(!cam.IsGrabbing && !made[0].IsGrabbing,
+                $"after Start then Stop, nothing is grabbing (wrapper={cam.IsGrabbing}, inner={made[0].IsGrabbing})");
+            lock (grab) Check(grab.Count == 0 || !grab[^1],
+                $"no GrabbingChanged(true) is published after the stop: [{string.Join(",", grab)}]");
+
+            cam.StartContinuous();   // 대조 — 정지가 없으면 대기 뒤 정상으로 켜진다
+            Check(cam.IsGrabbing && made[0].IsGrabbing, "control: the same held start with no stop does start and says so");
+            lock (grab) Check(grab.Count > 0 && grab[^1], $"control: GrabbingChanged(true) is published: [{string.Join(",", grab)}]");
         }
     }
     }
@@ -1060,8 +1093,9 @@ public class SmokeTests
                 "Continuous and Once both let the camera set its own exposure");
             var refused = CvInspect.Imaging.Gev.GevCam.ExposureAutoMessage("Continuous", 12005, writeRefused: true);
             var accepted = CvInspect.Imaging.Gev.GevCam.ExposureAutoMessage("Once", 12005, writeRefused: false);
-            Check(refused.Contains("ExposureAuto is Continuous") && refused.Contains("refused") && refused.Contains("ExposureTimeUs to 0"),
-                $"a refused write names ExposureAuto and gives both ways out ({refused})");
+            Check(refused.Contains("ExposureAuto is Continuous") && refused.Contains("refused") && refused.Contains("CamOpt.ExposureTimeUs at 0")
+                  && refused.Contains("SetExposureTimeUs"),
+                $"a refused write names ExposureAuto and gives both ways out, naming both exposure sources ({refused})");
             Check(accepted.Contains("ExposureAuto is Once") && accepted.Contains("will not hold") && accepted.Contains("turn ExposureAuto off"),
                 $"an accepted write under automatic exposure says the value will not hold ({accepted})");
         }
@@ -1379,6 +1413,108 @@ public class SmokeTests
         Check(CvInspect.Imaging.Gev.GevGrid.Snap(50, 0, 100) == 100,
             "a midpoint rounds away from zero, not down into a darker frame");
     }
+    }
+
+    /// <summary>
+    /// 자동 노출이 켜진 채 노출을 쓸 때 <b>어느 줄이 나가는가</b> — 문구가 아니라 갈래를 못 박는다. 장치 없이 파싱한 노드 맵과 메모리 포트로
+    /// GevCam 의 실제 쓰기 경로(<c>ApplyExposureAsync</c>)를 부른다.
+    /// 실측(Basler acA2500-14gm): 자동 노출 중에는 노출 노드가 XML 잠금으로 읽기 전용이라 쓰기가 거절되고, 노출이 스스로 29995→175910us 로
+    /// 올랐는데 옛 경고는 "읽기 전용" 만 말했다. Crevis MG-A500M-22 XML 은 잠금을 선언하지 않아 쓰기가 장치까지 간다(장치 동작 미측정) —
+    /// 그래서 잠긴 판·안 잠긴 판을 둘 다 둔다.
+    /// </summary>
+    [Fact]
+    public async Task ExposureAuto()
+    {
+        static string Xml(bool locked) => $$"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <RegisterDescription ModelName="ExposureAutoFixture" VendorName="CvInspect" ToolTip="t" StandardNameSpace="GEV"
+                SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0" MajorVersion="1" MinorVersion="0" SubMinorVersion="0"
+                ProductGuid="0f0e0d0c-0b0a-4908-8706-050403020100" VersionGuid="1f1e1d1c-1b1a-4918-8716-151413121110"
+                xmlns="http://www.genicam.org/GenApi/Version_1_1">
+              <Category Name="Root" NameSpace="Standard"><pFeature>ExposureTime</pFeature><pFeature>ExposureAuto</pFeature></Category>
+              <Float Name="ExposureTime" NameSpace="Standard">
+                {{(locked ? "<pIsLocked>ExposureAutoReg</pIsLocked>" : "")}}
+                <pValue>ExposureTimeReg</pValue>
+                <Min>10</Min>
+                <Max>1000000</Max>
+              </Float>
+              <FloatReg Name="ExposureTimeReg">
+                <Address>0x100</Address><Length>8</Length><AccessMode>RW</AccessMode><pPort>Device</pPort>
+                <Cachable>NoCache</Cachable><Endianess>BigEndian</Endianess>
+              </FloatReg>
+              <Enumeration Name="ExposureAuto" NameSpace="Standard">
+                <EnumEntry Name="Off"><Value>0</Value></EnumEntry>
+                <EnumEntry Name="Continuous"><Value>2</Value></EnumEntry>
+                <pValue>ExposureAutoReg</pValue>
+              </Enumeration>
+              <IntReg Name="ExposureAutoReg">
+                <Address>0x200</Address><Length>4</Length><AccessMode>RW</AccessMode><pPort>Device</pPort>
+                <Cachable>NoCache</Cachable><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess>
+              </IntReg>
+              <Port Name="Device"/>
+            </RegisterDescription>
+            """;
+
+        var lines = new List<(CvLogLevel Level, string Msg)>();
+        var prevSink = CvLog.Sink;
+        CvLog.Sink = static (_, _, _, _) => { };   // 보관된 앞 줄을 먼저 흘려보낸다
+        CvLog.Sink = (lvl, src, msg, _) => { if (src == "GevCam") lock (lines) lines.Add((lvl, msg)); };
+        try
+        {
+            using var cam = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { Name = "expauto", SerialNumber = "x" });
+            async Task<(MemPort Port, List<(CvLogLevel Level, string Msg)> Lines)> Run(bool locked, uint auto, double us, Action<MemPort>? arrange = null)
+            {
+                var port = new MemPort();
+                port.SetU32(0x200, auto);
+                arrange?.Invoke(port);
+                var map = GevSharp.GenApi.GenApiNodeMap.Parse(Xml(locked), port);
+                lock (lines) lines.Clear();
+                await cam.ApplyExposureAsync(map, us, CancellationToken.None);
+                lock (lines) return (port, lines.ToList());
+            }
+            string Show(List<(CvLogLevel Level, string Msg)> l) => string.Join(" / ", l.Select(x => $"{x.Level}|{x.Msg}"));
+
+            // A) 잠기는 기종·자동 노출 켬 — 거절, 원인을 자동 노출로 대는 경고 한 줄. 종전 "failed to set exposure" 줄은 없다.
+            var (pa, la) = await Run(locked: true, auto: 2, us: 12005);
+            Check(la.Count(x => x.Level == CvLogLevel.Warning) == 1 && la.Any(x => x.Msg.Contains("locked while ExposureAuto is Continuous"))
+                  && !la.Any(x => x.Msg.Contains("failed to set exposure")) && pa.GetF64(0x100) == 0,
+                $"locked + auto on: one warning naming ExposureAuto, nothing written ({Show(la)})");
+
+            // B) 대조 — 같은 잠기는 기종에서 자동 노출 끔: 쓰기가 들어가고 아무 줄도 없다(정상 구성은 조용해야 한다).
+            var (pb, lb) = await Run(locked: true, auto: 0, us: 12005);
+            Check(lb.Count == 0 && pb.GetF64(0x100) == 12005,
+                $"control: auto off writes the exposure and logs nothing ({Show(lb)}, register={pb.GetF64(0x100)})");
+
+            // C) 안 잠기는 기종·자동 노출 켬(장치가 그대로 둠) — 쓰기는 들어가지만 "유지되지 않는다" 경고, 되읽기 경고는 겹쳐 내지 않는다.
+            var (pc, lc) = await Run(locked: false, auto: 2, us: 12005);
+            Check(lc.Count == 1 && lc[0].Level == CvLogLevel.Warning && lc[0].Msg.Contains("will not hold") && pc.GetF64(0x100) == 12005,
+                $"unlocked + auto on: the write lands but one warning says it will not hold ({Show(lc)})");
+
+            // D) 안 잠기는 기종에서 노출을 쓰면 장치가 자동 노출을 끄는 경우 — 경고가 아니라 무엇이 됐는지 Info.
+            var (_, ld) = await Run(locked: false, auto: 2, us: 12005, arrange: p => p.AfterWrite = a => { if (a == 0x100) p.SetU32(0x200, 0); });
+            Check(ld.Count == 1 && ld[0].Level == CvLogLevel.Info && ld[0].Msg.Contains("reads Off after writing"),
+                $"a camera that turns auto off on a manual write gets an Info line, not a warning ({Show(ld)})");
+
+            // E) 자동 노출이 켜져 있어도 다른 이유(범위 밖)로 거절되면 자동 노출을 원인으로 대지 않는다 — 맞지 않는 처방이 된다.
+            var (_, le) = await Run(locked: false, auto: 2, us: 2_000_000);
+            Check(le.Count == 1 && le[0].Msg.Contains("failed to set exposure to 2000000us") && le[0].Msg.Contains("(ExposureAuto is Continuous)")
+                  && !le[0].Msg.Contains("locked while"),
+                $"a refusal for another reason keeps the generic line and only mentions the auto state ({Show(le)})");
+
+            // F) 자동 노출 읽기가 전송 오류로 실패해도 던지지 않고 쓰기는 그대로 한다 — 진단 읽기 하나가 열기·쓰기를 깨면 안 된다.
+            Exception? thrown = null;
+            MemPort? pf = null;
+            try { (pf, _) = await Run(locked: false, auto: 2, us: 12005, arrange: p => p.TimeoutOnReadAt = 0x200); }
+            catch (Exception ex) { thrown = ex; }
+            Check(thrown is null && pf!.GetF64(0x100) == 12005,
+                $"a transport error on the ExposureAuto read neither throws nor skips the write ({thrown?.GetType().Name ?? "no exception"})");
+
+            // G) 노출을 안 쓰는 설정(0 이하) — 자동 노출이 의도인 현장이다. 장치를 읽지도 않고 아무 줄도 없다.
+            var (pg, lg) = await Run(locked: true, auto: 2, us: 0);
+            Check(lg.Count == 0 && pg.Reads == 0 && pg.Writes == 0,
+                $"ExposureTimeUs <= 0 touches nothing and says nothing (reads={pg.Reads}, lines={Show(lg)})");
+        }
+        finally { CvLog.Sink = prevSink; }
     }
 
     /// <summary>

@@ -230,6 +230,23 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             lock (_sync) { if (_intentVersion == myVersion) _wantContinuous = wantedBefore; }
             throw;
         }
+
+        // 안쪽이 돌아오는 사이 정지(또는 닫기)가 왔으면 켜짐을 알리지 않는다 — 나중에 온 명령이 이긴다(ResumeContinuous 와 같은 규칙).
+        // 안쪽은 시작하지 않고 정상 반환할 수 있다(GevCam: 시작 전 대기 사이 온 정지가 이긴다). 여기서 그대로 켜짐을 알리면 정지 뒤에
+        // true 가 나가, 아무것도 안 도는데 IsGrabbing 이 참으로 남고 의도는 내려가 있어 재연결도 못 고친다(검토가 코드로 찾은 경로).
+        // 안쪽 IsGrabbing 은 보지 않는다 — 계약이 반환 시점의 값을 못 박지 않았고, 시작을 통지로만 알리는 구현도 있다.
+        bool superseded, sameInner;
+        lock (_sync)
+        {
+            sameInner = ReferenceEquals(_inner, cam);
+            superseded = (_intentVersion != myVersion && !_wantContinuous) || !sameInner || _closed || _disposed;
+        }
+        if (superseded)
+        {
+            // 안쪽이 이미 시작했다면 정지가 이기도록 한 번 더 멈춘다 — 이미 멈춘 안쪽에는 아무 일도 안 한다. 청산된 안쪽은 건드리지 않는다.
+            if (sameInner) Try(() => cam.StopContinuous());
+            return;
+        }
         RaiseGrabbing(true);
     }
 
