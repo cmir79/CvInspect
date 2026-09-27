@@ -33,8 +33,9 @@ public interface ICamGrabAsync
     /// (<c>DeadCam</c> 류), 받은 장을 쓸 수 없어 버리고 경고를 남긴 구현(<c>GevCam</c> — 지원하지 않는 픽셀 포맷).
     /// <b>시한 전에도 온다</b> — <c>null</c> 을 곧 "시한 만료" 로 읽으면 다른 원인을 시한으로 오독한다.</item>
     /// <item><b>시한 만료를 알리는 방식은 구현마다 다르다.</b> 왜 안 왔는지 모르는 기본 절차는 <c>null</c> 이고,
-    /// 짚을 곳을 아는 구현은 그 안내를 실어 <see cref="TimeoutException"/> 으로 던진다(<c>GevCam</c> — 문구가 열 때
-    /// 남긴 것을 가리킨다: 카메라 상태 줄의 트리거 모드, 청크 모드 경고. <see cref="ICam.GrabOne"/> 과 몸통이 같다). 백엔드를 가리지 않는 호출자는
+    /// 짚을 곳을 아는 구현은 그 안내를 실어 <see cref="TimeoutException"/> 으로 던진다(<c>GevCam</c> — 기다리는 동안 버려진 블록이
+    /// 있었으면 그것을, 없었으면 열 때 남긴 카메라 상태 줄의 트리거 모드·청크 모드 경고를 가리킨다. <see cref="ICam.GrabOne"/> 과
+    /// 몸통이 같다). 백엔드를 가리지 않는 호출자는
     /// <c>null</c> 과 <see cref="TimeoutException"/> 을 둘 다 "장이 없었다" 로 받는다.</item>
     /// <item><b>답해야 하는데 답할 수 없는 상태는 던진다</b> — 열려 있지 않음·닫힘·해제·제어 상실·연속 취득 중·
     /// 이미 기다리는 그랩이 있음. 이것을 <c>null</c> 로 접으면 사유 채널이 하나로 뭉개지고, 부른 쪽은 오지 않을
@@ -46,6 +47,9 @@ public interface ICamGrabAsync
     /// <exception cref="ObjectDisposedException">이미 해제됐다.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> 로 취소됐다 — 시한 만료와 갈라 알 수 있다.</exception>
     /// <remarks>그 밖에 전송·장치 계층의 실패는 구현 고유의 예외로 올 수 있다(<c>GevCam</c>: 취득 라이브러리의 예외 계열 —
-    /// 그랩을 걸기 전에 제어를 잃었으면 제어 상실 예외 등).</remarks>
+    /// 그랩을 걸기 전에 제어를 잃었으면 제어 상실 예외 등).
+    ///
+    /// <paramref name="timeout"/> 은 <b>장을 기다리는 시간</b>이다. 구현은 취득을 걸기 전에 잠깐 기다릴 수 있고, 그 대기는 시한
+    /// 밖이다 — 호출 전체가 시한보다 길어질 수 있다(<c>GevCam</c>: 장을 못 받고 끝난 그랩 바로 뒤, 앞 시작으로부터 노출 + 325 ms 이내).</remarks>
     Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default);
 }
