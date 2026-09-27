@@ -17,12 +17,28 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     public event EventHandler<CvInspect.Imaging.ConnArgs>? ConnectionChanged;
     public event EventHandler<bool>? GrabbingChanged;
 
+    /// <summary>열기가 성공한 <b>직후</b>(돌려주기 전) 연결을 잃는다 — 열자마자 링크가 죽는 경우를 결정적으로 만든다.</summary>
+    public bool LoseRightAfterOpen { get; init; }
+
+    /// <summary>0 보다 크면 열기가 그만큼 붙잡혔다가 성공한다 — 끊긴 장치로의 연결 시도처럼 취소할 수 없는 느린 열기.</summary>
+    public int HoldOnOpenMs { get; init; }
+
+    /// <summary>열기 안에 들어와 붙잡혀 있는가 — 시험이 "지금 열리는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
+    public volatile bool IsOpening;
+
     public void Open()
     {
         if (FailOnOpen) throw new InvalidOperationException("fake open failure");
         if (IsConnected) return;
+        if (HoldOnOpenMs > 0)
+        {
+            IsOpening = true;
+            Thread.Sleep(HoldOnOpenMs);
+            IsOpening = false;
+        }
         IsConnected = true;
         ConnectionChanged?.Invoke(this, new CvInspect.Imaging.ConnArgs(true));
+        if (LoseRightAfterOpen) LoseConnection();
     }
 
     public void Close()

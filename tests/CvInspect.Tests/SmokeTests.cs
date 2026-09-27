@@ -786,6 +786,138 @@ public class SmokeTests
     }
     }
 
+    // === 10-R) ReconnectingCam — 이 코드를 옮겨 간 소비자(VProInspect)가 옮기며 찾은 네 건(그쪽은 우리 판을 독해만 했다) ===
+    // 우리 판에서 재현하는 것이 먼저다 — 각 항은 고치기 전 코드에서 실패하는 것을 확인하고 넣었다.
+
+    private static bool WaitFor(Func<bool> cond, int ms = 2000)
+    {
+        var t0 = Environment.TickCount;
+        while (!cond() && Environment.TickCount - t0 < ms) Thread.Sleep(5);
+        return cond();
+    }
+
+    private static readonly CvInspect.Imaging.CamReconnectOpt FastReconnect = new() { BackoffMs = new[] { 20 }, ShutdownWaitMs = 1000 };
+
+    /// <summary>10-R1) 명시적 닫기·해제가 끊김을 알린다. 청산이 연결·취득 표시를 조용히 내려 두어 뒤이은 알림이 "이미 거짓이라 전이가
+    /// 아니다" 로 삼켜졌다 — 닫기가 연결 끊김을 한 번도 알리지 않았다. 통지로 상태를 거울질하는 화면은 닫은 카메라를 연결됨으로 든다.</summary>
+    [Fact]
+    public void ReconnectingCamCloseAnnouncesTheDisconnect()
+    {
+        foreach (var dispose in new[] { false, true })
+        {
+            var cam = new CvInspect.Imaging.ReconnectingCam(() => new FakeCam(), FastReconnect);
+            var conn = new List<bool>(); var grab = new List<bool>();
+            cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+            cam.Open();
+            cam.StartContinuous();
+            if (dispose) cam.Dispose(); else cam.Close();
+            var how = dispose ? "Dispose" : "Close";
+            lock (conn) Check(conn.SequenceEqual(new[] { true, false }), $"{how} announces the disconnect: connection edges [{string.Join(",", conn)}]");
+            lock (grab) Check(grab.SequenceEqual(new[] { true, false }), $"{how} announces the stop: grabbing edges [{string.Join(",", grab)}]");
+            Check(!cam.IsConnected && !cam.IsGrabbing, $"after {how} nothing is reported connected or grabbing");
+            cam.Dispose();
+        }
+    }
+
+    /// <summary>10-R2) 감싼 <see cref="CvInspect.Imaging.DeadCam"/> 은 연결됨으로 보이지 않는다. 열기가 던지지 않으면 연결됐다고 보았는데,
+    /// DeadCam 의 열기는 경고만 남기고 돌아온다 — 모르는 방식으로 만든 자리를 감싸면 죽은 자리가 연결됨으로 보였다.
+    /// 기본값(첫 열기 실패를 올린다)에서는 사유를 담아 던지고, RetryInitialOpen 이면 던지지 않되 연결됨도 알리지 않는다.</summary>
+    [Fact]
+    public void ReconnectingCamWrappedDeadCamIsNotConnected()
+    {
+        using (var cam = new CvInspect.Imaging.ReconnectingCam(
+                   () => new CvInspect.Imaging.DeadCam(new CvInspect.Imaging.CamOpt { Name = "dead" }, "no provider for Nope"), FastReconnect))
+        {
+            Exception? ex = null;
+            try { cam.Open(); } catch (Exception e) { ex = e; }
+            Check(!cam.IsConnected, "a wrapped DeadCam is not reported connected");
+            Check(ex is InvalidOperationException && ex.Message.Contains("no provider for Nope"),
+                $"the first open fails with the dead slot's reason ({(ex is null ? "no exception" : $"{ex.GetType().Name}: {ex.Message}")})");
+        }
+        using (var cam = new CvInspect.Imaging.ReconnectingCam(
+                   () => new CvInspect.Imaging.DeadCam(new CvInspect.Imaging.CamOpt { Name = "dead" }, "no provider for Nope"),
+                   new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, RetryInitialOpen = true, ShutdownWaitMs = 1000 }))
+        {
+            var conn = new List<bool>();
+            cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+            cam.Open();
+            Thread.Sleep(100);   // 재시도가 몇 번 돈다
+            lock (conn) Check(!cam.IsConnected && conn.Count == 0,
+                $"with RetryInitialOpen a DeadCam keeps retrying without ever being announced connected (connected={cam.IsConnected}, edges [{string.Join(",", conn)}])");
+        }
+    }
+
+    /// <summary>10-R3) 열린 직후·장착 전에 끊긴 세션을 유령으로 버리지 않는다. 그 상실 통지는 아직 현재 인스턴스의 것이 아니라 버려졌고,
+    /// 데코레이터는 죽은 인스턴스를 연결됨으로 들고 있었다 — 버려진 통지는 다시 오지 않으므로 영영 재연결하지 않는다.</summary>
+    [Fact]
+    public void ReconnectingCamLossDuringOpenIsNotAGhost()
+    {
+        var made = new List<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+        {
+            lock (made) { var c = new FakeCam { LoseRightAfterOpen = made.Count == 1 }; made.Add(c); return c; }
+        }, FastReconnect);
+        cam.Open();
+        made[0].LoseConnection();
+        Check(WaitFor(() => { lock (made) return made.Count >= 3 && cam.IsConnected && made[^1].IsConnected; }),
+            $"a session that dies while it is being opened is retried (instances={made.Count}, wrapper connected={cam.IsConnected}, " +
+            $"newest inner connected={made.LastOrDefault()?.IsConnected})");
+    }
+
+    /// <summary>10-R4) 닫은 뒤에 끝난 느린 열기는 버린다. 재연결이 안쪽의 느린 열기(취소할 수 없다)에 묶인 사이 닫기가 오면, 닫기는 게이트를
+    /// 시한까지만 기다리고 돌아간다. 그 뒤 열기가 끝나면 그 세션이 장착되어 닫은 카메라가 연결된 채 남았다 — 다음 닫기까지 장치
+    /// 제어권을 쥐어, 곧바로 다시 켠 프로세스가 "다른 응용이 잡고 있다" 로 열기에 실패한다.</summary>
+    [Fact]
+    public void ReconnectingCamOpenThatFinishesAfterCloseIsDiscarded()
+    {
+        var made = new List<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+        {
+            lock (made) { var c = new FakeCam { HoldOnOpenMs = made.Count == 1 ? 600 : 0 }; made.Add(c); return c; }
+        }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100 });
+        var conn = new List<bool>();
+        cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+        cam.Open();
+        made[0].LoseConnection();
+        Check(WaitFor(() => { lock (made) return made.Count == 2 && made[1].IsOpening; }), "the reconnect is stuck in the slow open before Close is called");
+        cam.Close();                                   // 게이트 대기 100 ms 를 넘기고 돌아간다 — 열기는 아직 붙잡혀 있다
+        Check(WaitFor(() => !made[1].IsOpening), "the slow open finishes");
+        Thread.Sleep(100);
+        Check(!cam.IsConnected, "a camera closed while it was being reopened stays closed");
+        Check(made[1].Disposed, "the session that finished opening after Close is discarded (closed and disposed), not kept");
+        lock (conn) Check(conn.SequenceEqual(new[] { true, false }), $"no connection is announced after Close: [{string.Join(",", conn)}]");
+    }
+
+    /// <summary>10-R5) 느린 열기 중에 해제되면 재연결 루프가 "실패" 로 끝나지 않는다. 해제가 게이트를 먼저 폐기하면, 열기를 마친 재장착
+    /// 시도의 게이트 반납이 던져 루프가 "reconnect loop failed" 오류를 남겼다 — 우리 쪽 결함이 아닌데 오류로 읽힌다.</summary>
+    [Fact]
+    public void ReconnectingCamDisposeDuringSlowOpenIsQuiet()
+    {
+        var made = new List<FakeCam>();
+        var lines = new List<string>();
+        var prevSink = CvLog.Sink;
+        CvLog.Sink = static (_, _, _, _) => { };   // 보관된 앞 줄을 먼저 흘려보낸다
+        CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add($"{lvl}|{msg}"); };
+        try
+        {
+            var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+            {
+                lock (made) { var c = new FakeCam { HoldOnOpenMs = made.Count == 1 ? 600 : 0 }; made.Add(c); return c; }
+            }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100 });
+            cam.Open();
+            made[0].LoseConnection();
+            Check(WaitFor(() => { lock (made) return made.Count == 2 && made[1].IsOpening; }), "the reconnect is stuck in the slow open before Dispose");
+            cam.Dispose();
+            Check(WaitFor(() => !made[1].IsOpening), "the slow open finishes");
+            Thread.Sleep(150);
+            lock (lines) Check(!lines.Any(l => l.StartsWith("Error|")),
+                $"disposing during a slow open leaves no error line: [{string.Join(" / ", lines)}]");
+            Check(made[1].Disposed && !cam.IsConnected, "the late session is discarded and nothing is reported connected");
+        }
+        finally { CvLog.Sink = prevSink; }
+    }
+
     /// <summary>단발 그랩을 프레임으로 받는 확장 — null 과 던지는 것의 경계가 이 API 의 계약이다.</summary>
     [Fact]
     public async Task GrabFrameAsync()

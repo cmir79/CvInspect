@@ -74,7 +74,11 @@ public interface ICam : IDisposable
     ///
     /// <b>제어권을 잃어 <see cref="IsConnected"/> 가 false 로 떨어진 뒤라면 이 호출이 다시 연다</b> —
     /// 그때는 장치 참조가 남아 있어도 "열려 있는 것" 이 아니다. 죽은 세션을 먼저 접고 새로 여는 것이
-    /// 구현의 몫이다. 조용히 돌아가면 부른 쪽은 되살아난 줄 알고 오지 않을 프레임을 기다린다.</summary>
+    /// 구현의 몫이다. 조용히 돌아가면 부른 쪽은 되살아난 줄 알고 오지 않을 프레임을 기다린다.
+    ///
+    /// <b>정상 반환했으면 <see cref="IsConnected"/> 는 참이어야 한다.</b> <see cref="ReconnectingCam"/> 은 열기 뒤 이 값으로 연결을
+    /// 판정한다 — 거짓이면 열기 실패로 보고 다시 시도한다(경고만 남기고 돌아오는 <see cref="DeadCam"/> 도 그렇게 다뤄진다). 열자마자
+    /// 연결을 잃은 경우도 같은 길로 걸러지므로, 잃었으면 상태를 먼저 내리고 통지한다(<see cref="GrabbingChanged"/> 의 구현자 안내).</summary>
     void Open();
     void Close();
 
