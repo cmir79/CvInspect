@@ -822,7 +822,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
             if (ReadoutSample(startSentAt, Stopwatch.GetTimestamp(), exposureUs) is var readout and > 0)
             {
                 Interlocked.Exchange(ref _grabReadoutTicks, readout);
-                if (readout >= MaxReadoutTicks && Interlocked.Exchange(ref _readoutClampLogged, 1) == 0)
+                // 트리거 모드로 읽힌 카메라에서는 남기지 않는다 — 트리거 대기로 늘 걸리고, 대기도 안 쓰니 정상 구성마다 뜨는 잡음이다.
+                if (readout >= MaxReadoutTicks && !_triggerModeOn && Interlocked.Exchange(ref _readoutClampLogged, 1) == 0)
                     WriteLog(CvLogLevel.Info,
                         $"a grab took more than exposure + {MaxReadoutMs:F0} ms from start to arrival (trigger wait, resends or a slow link); " +
                         $"the wait after an aborted grab counts the transfer as {MaxReadoutMs:F0} ms. Logged once per open.");
@@ -899,7 +900,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
     {
         // 앞 단발 그랩이 장을 못 받고 끝났으면 단발 그랩과 같이 기다린다 — 락 밖에서(쥔 채 자면 그동안 닫기·제어 상실 통지가 밀린다).
         // 실측(Basler acA2500-14gm, 부른 뒤 2~7 ms 에 취소한 그랩 → d ms 뒤 라이브 1초, 같은 런에서 대기 켬/끔 번갈아, 시작이 나간 회차만):
-        //   노출 30 ms·d=75: 끔 43회 중 5회는 그 라이브의 **모든 장**이 254/563 패킷에서 잘려 온전한 장이 0~1장이었다(멈췄다 다시 걸면
+        //   노출 30 ms·d=75: 끔 43회 중 5회는 그 라이브 1초의 **모든 장**(15장)이 잘려 — 첫 블록은 ≈170/563, 나머지는 254/563
+        //   패킷에서 — 온전한 장이 0 이었다(멈췄다 다시 걸면
         //   회복) — 라이브가 선 것처럼 보인다. 켬 0/42.
         //   노출 5 ms·d=25: 끔 27회 중 4회 첫 장이 잘렸다. 켬 0/21. 노출 100 ms·d=100: 끔 24회 중 2회, 켬 0/26.
         // 곧장(d≈0) 걸면 세 노출 모두 35회 중 0 이었다 — 위험한 것은 사용자가 잠깐 뒤에 라이브를 누르는 경우다.
