@@ -1049,6 +1049,23 @@ public class SmokeTests
                 $"a drop inside the live-stop window is still mentioned as possibly this grab's frame ({stopCutOnly})");
         }
 
+        // 10-G-15) 자동 노출이 켜진 채 노출을 쓰면 — 원인(ExposureAuto)을 이름으로 댄다. 실측(Basler acA2500-14gm): 자동 노출 중에는
+        //          ExposureTimeAbs 가 읽기 전용이라 쓰기가 거절되고 노출이 스스로 29995→175910us 로 올라갔는데, 옛 경고는 "읽기 전용" 만
+        //          말했다. 처방은 끄라가 아니라 두 갈래 확인이다 — 자동 노출이 의도인 현장도 있다(CamOpt 기본 10000 이 늘 쓴다).
+        {
+            Check(!CvInspect.Imaging.Gev.GevCam.IsExposureAutoOn(null) && !CvInspect.Imaging.Gev.GevCam.IsExposureAutoOn("Off")
+                  && !CvInspect.Imaging.Gev.GevCam.IsExposureAutoOn("off"),
+                "Off, or a camera without ExposureAuto, is not automatic exposure");
+            Check(CvInspect.Imaging.Gev.GevCam.IsExposureAutoOn("Continuous") && CvInspect.Imaging.Gev.GevCam.IsExposureAutoOn("Once"),
+                "Continuous and Once both let the camera set its own exposure");
+            var refused = CvInspect.Imaging.Gev.GevCam.ExposureAutoMessage("Continuous", 12005, writeRefused: true);
+            var accepted = CvInspect.Imaging.Gev.GevCam.ExposureAutoMessage("Once", 12005, writeRefused: false);
+            Check(refused.Contains("ExposureAuto is Continuous") && refused.Contains("refused") && refused.Contains("ExposureTimeUs to 0"),
+                $"a refused write names ExposureAuto and gives both ways out ({refused})");
+            Check(accepted.Contains("ExposureAuto is Once") && accepted.Contains("will not hold") && accepted.Contains("turn ExposureAuto off"),
+                $"an accepted write under automatic exposure says the value will not hold ({accepted})");
+        }
+
         // 대조군 — 유예가 늦은 발행을 잘라 내지 않는다(10-G-3 의 무한 시한판).
         {
             using var cam = new FakeCam { PublishAfterReturnMs = 120 };

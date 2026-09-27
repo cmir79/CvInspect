@@ -1375,6 +1375,20 @@ public sealed class GevCam : ICam, ICamGrabAsync
         if (_gev.SettleMs > 0) await Task.Delay(_gev.SettleMs, ct).ConfigureAwait(false);
     }
 
+    /// <summary>ExposureAuto 값이 "카메라가 노출을 스스로 정한다" 인가 — Off 가 아니면 참(Once·Continuous). 노드가 없거나 못 읽었으면(null) 거짓.
+    /// <c>internal</c> 인 것은 회귀가 장치 없이 이 판정과 아래 문구를 부르게 하려는 것이다.</summary>
+    internal static bool IsExposureAutoOn(string? exposureAuto)
+        => exposureAuto is { Length: > 0 } v && !string.Equals(v, "Off", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>자동 노출이 켜진 채 노출을 쓰려 했을 때의 경고 — 원인(자동 노출)을 이름으로 대고, 두 갈래 처방을 준다. 끄라고 하지 않고
+    /// 의도를 확인하라고 쓴다(자동 노출이 의도인 현장도 있다).</summary>
+    internal static string ExposureAutoMessage(string exposureAuto, double requestedUs, bool writeRefused)
+        => (writeRefused
+               ? $"exposure {requestedUs}us was not applied: ExposureAuto is {exposureAuto}, so the camera controls its own exposure and refused the write. "
+               : $"exposure {requestedUs}us was written, but ExposureAuto is {exposureAuto}, so the camera keeps adjusting its exposure and the value will not hold. ") +
+           "If a fixed exposure is intended, turn ExposureAuto off on the camera (or in the user set it loads). " +
+           "If automatic exposure is intended, set ExposureTimeUs to 0 so no exposure is written.";
+
     /// <summary>노출 시간(마이크로초) 적용. <b>노드 이름이 하나가 아니다</b> — 표준 세대가 갈려
     /// 현장에 신구 이름이 둘 다 있고 취득 라이브러리는 별칭을 만들어 주지 않는다.</summary>
     private async Task ApplyExposureAsync(GenApiNodeMap nodes, double timeUs, CancellationToken ct)
@@ -1387,6 +1401,17 @@ public sealed class GevCam : ICam, ICamGrabAsync
             return;
         }
         var written = timeUs;   // 실제로 장치에 쓴 값 — 격자에 맞춰 바뀌었을 수 있다
+
+        // **자동 노출이 켜져 있으면 요청한 노출은 유지되지 않는다** — 그 사실을 원인 이름과 함께 남긴다. 쓰기는 종전대로 시도한다.
+        // 실측(Basler acA2500-14gm, 2026-09-27): ExposureAuto=Continuous 이면 ExposureTimeAbs 가 XML 잠금으로 읽기 전용이 되어 쓰기가
+        // 거절됐고(열기·SetExposureTimeUs 모두 던지지 않고 경고 한 줄), 노출은 29995→175910us 로 스스로 올라갔다(밝기 평균 22→127).
+        // 옛 경고는 "읽기 전용" 만 말해 원인(자동 노출)을 못 가리켰다.
+        // Crevis MG-A500M-22(펌웨어 3.7.3.0) XML 은 ExposureTime 에 자동 노출 잠금을 선언하지 않는다 — 이 스택은 쓰기를 막지 않고, 장치가
+        // 그 값을 어떻게 다루는지(무시·덮어쓰기·자동 노출 끄기)는 안 쟀다. 그래서 쓰기를 건너뛰지 않는다: 쓰기가 자동 노출을 끄는
+        // 기종이면 지금 동작이 그 쓰기에 기대고 있다. 쓰기가 받아들여지면 자동 노출을 다시 읽어 무엇이 됐는지 남긴다.
+        // 자동 노출을 우리가 끄지도 않는다 — CamOpt.ExposureTimeUs 기본값(10000)이 늘 쓰므로, 사용자 세트의 자동 노출에 기대는 현장을
+        // 조용히 고정 노출로 바꾸게 된다. 그래서 문구는 "확인하라" 다.
+        var autoBefore = await TryReadEnumAsync(nodes, "ExposureAuto", ct).ConfigureAwait(false);
         try
         {
             await node.SetAsync(timeUs, ct).ConfigureAwait(false);
@@ -1465,8 +1490,22 @@ public sealed class GevCam : ICam, ICamGrabAsync
         }
         catch (GenApiException ex)
         {
-            WriteLog(CvLogLevel.Warning, $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
+            WriteLog(CvLogLevel.Warning,
+                IsExposureAutoOn(autoBefore)
+                    ? ExposureAutoMessage(autoBefore!, timeUs, writeRefused: true)
+                    : $"failed to set exposure to {timeUs}us via '{node.Name}'", ex);
             return;
+        }
+
+        if (IsExposureAutoOn(autoBefore))
+        {
+            var autoAfter = await TryReadEnumAsync(nodes, "ExposureAuto", ct).ConfigureAwait(false);
+            if (IsExposureAutoOn(autoAfter))
+                WriteLog(CvLogLevel.Warning, ExposureAutoMessage(autoAfter!, timeUs, writeRefused: false));
+            else
+                WriteLog(CvLogLevel.Info,
+                    $"ExposureAuto was {autoBefore} and reads {autoAfter ?? "(unreadable)"} after writing exposure {timeUs}us — " +
+                    "check that the camera now holds a fixed exposure.");
         }
 
         // 쓰기가 성공해도 카메라가 그 값을 그대로 쓴다는 보장은 없다 — 실제 값을 남긴다.
@@ -1615,13 +1654,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
             ? "deviceClock"
             : "frameId";
 
-        WriteLog(CvLogLevel.Info,
-            $"camera state: pixelFormat={pixel ?? "?"} size={w?.ToString() ?? "?"}x{h?.ToString() ?? "?"} " +
-            $"payloadSize={payload?.ToString() ?? "?"} acquisitionMode={acq ?? "?"} " +
-            $"triggerMode={trigMode ?? "(absent)"} triggerSource={trigSrc ?? "(absent)"} " +
-            $"grabKey={grabKey}");
-
         // 비정상 정지 뒤 대기가 이 둘을 쓴다(_nextStartNotBefore) — 트리거 모드면 대기를 안 걸고, 노출은 이 세션이 쓰지 않을 때의 값이다.
+        // 노출은 상태 줄에도 싣는다 — 노출 적용 뒤라 "지금 카메라가 들고 있는 값" 이다.
         _triggerModeOn = string.Equals(trigMode, "On", StringComparison.OrdinalIgnoreCase);
         _openedExposureUs = 0;
         if (Find<IFloat>(nodes, "ExposureTime", "ExposureTimeAbs") is { } exposureNode)
@@ -1631,6 +1665,16 @@ public sealed class GevCam : ICam, ICamGrabAsync
             try { _openedExposureUs = await exposureNode.GetAsync(ct).ConfigureAwait(false); }
             catch (Exception ex) when (ex is not OperationCanceledException) { }
         }
+        // 자동 노출이 켜져 있으면 설정한 노출이 유지되지 않는다 — 첫 열기 로그 한 줄로 가를 수 있게 싣는다. 경고는 노출을 쓸 때
+        // 그 자리(ApplyExposureAsync)에서 원인과 처방을 함께 낸다(노출을 안 쓰는 설정이면 자동 노출이 의도라 경고하지 않는다).
+        var exposureAuto = await TryReadEnumAsync(nodes, "ExposureAuto", ct).ConfigureAwait(false);
+
+        WriteLog(CvLogLevel.Info,
+            $"camera state: pixelFormat={pixel ?? "?"} size={w?.ToString() ?? "?"}x{h?.ToString() ?? "?"} " +
+            $"payloadSize={payload?.ToString() ?? "?"} acquisitionMode={acq ?? "?"} " +
+            $"triggerMode={trigMode ?? "(absent)"} triggerSource={trigSrc ?? "(absent)"} " +
+            $"exposure={(_openedExposureUs > 0 ? _openedExposureUs.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "us" : "?")} " +
+            $"exposureAuto={exposureAuto ?? "(absent)"} grabKey={grabKey}");
 
         if (_triggerModeOn)
             WriteLog(CvLogLevel.Warning,
