@@ -109,6 +109,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// <summary>이 세션에서 전송 표본이 상한에 걸렸다고 이미 남겼는가 — 한 번만 남긴다.</summary>
     private int _readoutClampLogged;
 
+    /// <summary><see cref="StopContinuous"/> 가 불린 횟수(<see cref="_sync"/> 아래에서 올린다). <see cref="StartContinuous"/> 가 락 밖에서
+    /// 비정상 정지 뒤 대기를 하는 사이 정지가 왔는지 가린다 — 왔으면 시작하지 않는다.</summary>
+    private int _stopRequests;
+
     /// <summary>다음 시작 전 대기에 더하는 여유(ms). 세 노출에서 잰 경계보다 이만큼 늦게 시작한다.</summary>
     private const double SettleMarginMs = 25;
 
@@ -901,16 +905,23 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 앞 단발 그랩이 장을 못 받고 끝났으면 단발 그랩과 같이 기다린다 — 락 밖에서(쥔 채 자면 그동안 닫기·제어 상실 통지가 밀린다).
         // 실측(Basler acA2500-14gm, 부른 뒤 2~7 ms 에 취소한 그랩 → d ms 뒤 라이브 1초, 같은 런에서 대기 켬/끔 번갈아, 시작이 나간 회차만):
         //   노출 30 ms·d=75: 끔 43회 중 5회는 그 라이브 1초의 **모든 장**(15장)이 잘려 — 첫 블록은 ≈170/563, 나머지는 254/563
-        //   패킷에서 — 온전한 장이 0 이었다(멈췄다 다시 걸면
-        //   회복) — 라이브가 선 것처럼 보인다. 켬 0/42.
+        //   패킷에서 — 온전한 장이 0 이었다(멈췄다 다시 걸면 회복) — 라이브가 선 것처럼 보인다. 켬 0/42.
         //   노출 5 ms·d=25: 끔 27회 중 4회 첫 장이 잘렸다. 켬 0/21. 노출 100 ms·d=100: 끔 24회 중 2회, 켬 0/26.
         // 곧장(d≈0) 걸면 세 노출 모두 35회 중 0 이었다 — 위험한 것은 사용자가 잠깐 뒤에 라이브를 누르는 경우다.
         // 상한은 노출 + 325 ms 이고, 부르는 스레드가 그만큼 선다(취소 직후에 라이브를 걸 때만).
         // 곧 시작할 수 있을 때만 — 닫힘·해제·제어 상실·기다리는 그랩이 있으면 아래에서 곧바로 던지므로 대기부터 하지 않는다
         // (락 밖이라 대략의 판정이면 된다. 대기는 닫기에 깨지 않지만 노출 + 325 ms 로 묶여 있다).
+        //
+        // ⚠ **락 밖에서 자는 사이 온 정지는 이 시작을 이긴다.** 시작이 락을 쥔 채 걸던 때(0.29.0)는 다른 스레드의 정지가 그 뒤에
+        // 줄을 서 멈췄다. 락 밖에서 자면 그 정지는 돌 펌프가 없어 아무것도 안 하고 돌아가고, 깨어난 시작이 라이브를 건다 — 정지를
+        // 불렀는데 라이브가 돈다(0.29.1, 소비자가 원문 독해로 짚었고 실기로 재현: 노출 30 ms, 시작 부른 뒤 20 ms 에 정지 →
+        // 대기한 25회 전부 정지 뒤에도 IsGrabbing, 같은 런의 대기 없던 15회는 0). 그래서 정지 횟수를 부를 때 떠 두고, 락을 잡았을 때
+        // 그 사이 정지가 왔으면 시작하지 않는다.
+        var stopsAtCall = Volatile.Read(ref _stopRequests);
         if (!_disposed && _dev != null && IsConnected && _pump == null && _grabCts == null && SettleWaitMs() is var settleMs and > 0)
             Thread.Sleep(settleMs);
 
+        bool stoppedWhileWaiting;
         lock (_sync)
         {
             ThrowIfDisposed();
@@ -920,31 +931,42 @@ public sealed class GevCam : ICam, ICamGrabAsync
             if (_grabCts != null)
                 throw new InvalidOperationException(
                     "A single grab is waiting for its frame; continuous acquisition cannot start until it returns.");
-
-            // 정지 창은 둘 다 시작을 걸기 전에 닫는다 — 이제부터 오는 드롭은 이 라이브의 것이라, 손실이면 "손실 아님" 이 아니라
-            // 경고여야 한다. 실측에서 앞 라이브를 멈춘 지 2초가 안 돼 건 라이브가 1초 내내 잘린 장만 받았는데, 그 15줄이 전부
-            // "손실 아님" 으로 내려가 로그만으로는 아무 일도 없었던 것처럼 보였다. 앞 라이브의 꼬리가 이보다 늦게 닫히면 그 한 줄은
-            // 경고로 나온다 — 진짜 손실을 묻는 것보다 그 편이 낫다(단발 그랩의 창과 같은 판단).
-            CloseStopWindows();
-            Run(async ct =>
-            {
-                // 모드 전환이 거절되면 그것을 여기서 말해야 한다 — 삼키면 장치는 옛 모드(대개 SingleFrame)
-                // 그대로라 한 장만 보내고, 수신 대기에는 시한이 없어 펌프가 로그 한 줄 없이 영영 선다.
-                // IsGrabbing 은 true 로 남고 프레임만 안 온다 — 밖에서 가를 단서가 아무것도 없는 상태다.
-                if (!await TrySetEnumAsync(_nodes!, "AcquisitionMode", "Continuous", ct).ConfigureAwait(false))
-                    WriteLog(CvLogLevel.Warning,
-                        "the camera kept its previous acquisition mode, so continuous acquisition may deliver one " +
-                        "frame and then wait forever. Close and reopen the camera to clear the acquisition lock.");
-                await TryExecuteAsync(_nodes!, "AcquisitionStart", ct).ConfigureAwait(false);
-            });
-
-            _pumpCts = new CancellationTokenSource();
-            var token = _pumpCts.Token;
-            _pump = new Thread(() => PumpLoop(stream, token)) { IsBackground = true, Name = $"{Name}.Gev" };
-            _pump.Start();
+            stoppedWhileWaiting = _stopRequests != stopsAtCall;
+            if (!stoppedWhileWaiting) StartPumpLocked(stream);
+        }
+        if (stoppedWhileWaiting)
+        {
+            WriteLog(CvLogLevel.Info, "continuous grab not started: StopContinuous was called while it waited to start");
+            return;
         }
         GrabbingChanged?.Invoke(this, true);
         WriteLog(CvLogLevel.Info, "continuous grab started");
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 연속 취득을 걸고 수신 루프를 세운다 — <see cref="StartContinuous"/> 의 몸통.</summary>
+    private void StartPumpLocked(GevStream stream)
+    {
+        // 정지 창은 둘 다 시작을 걸기 전에 닫는다 — 이제부터 오는 드롭은 이 라이브의 것이라, 손실이면 "손실 아님" 이 아니라
+        // 경고여야 한다. 실측에서 앞 라이브를 멈춘 지 2초가 안 돼 건 라이브가 1초 내내 잘린 장만 받았는데, 그 15줄이 전부
+        // "손실 아님" 으로 내려가 로그만으로는 아무 일도 없었던 것처럼 보였다. 앞 라이브의 꼬리가 이보다 늦게 닫히면 그 한 줄은
+        // 경고로 나온다 — 진짜 손실을 묻는 것보다 그 편이 낫다(단발 그랩의 창과 같은 판단).
+        CloseStopWindows();
+        Run(async ct =>
+        {
+            // 모드 전환이 거절되면 그것을 여기서 말해야 한다 — 삼키면 장치는 옛 모드(대개 SingleFrame)
+            // 그대로라 한 장만 보내고, 수신 대기에는 시한이 없어 펌프가 로그 한 줄 없이 영영 선다.
+            // IsGrabbing 은 true 로 남고 프레임만 안 온다 — 밖에서 가를 단서가 아무것도 없는 상태다.
+            if (!await TrySetEnumAsync(_nodes!, "AcquisitionMode", "Continuous", ct).ConfigureAwait(false))
+                WriteLog(CvLogLevel.Warning,
+                    "the camera kept its previous acquisition mode, so continuous acquisition may deliver one " +
+                    "frame and then wait forever. Close and reopen the camera to clear the acquisition lock.");
+            await TryExecuteAsync(_nodes!, "AcquisitionStart", ct).ConfigureAwait(false);
+        });
+
+        _pumpCts = new CancellationTokenSource();
+        var token = _pumpCts.Token;
+        _pump = new Thread(() => PumpLoop(stream, token)) { IsBackground = true, Name = $"{Name}.Gev" };
+        _pump.Start();
     }
 
     public void StopContinuous()
@@ -952,6 +974,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
         bool stopped;
         lock (_sync)
         {
+            // 돌 펌프가 없어도 센다 — 락 밖에서 대기 중인 StartContinuous 가 이것을 보고 시작을 접는다(그쪽 주석).
+            _stopRequests++;
             if (_disposed) return;
             stopped = StopPumpCore();
             if (stopped)
