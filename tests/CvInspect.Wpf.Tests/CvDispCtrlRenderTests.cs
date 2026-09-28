@@ -406,6 +406,65 @@ public class CvDispCtrlRenderTests
     });
 
     /// <summary>툴바 버튼을 툴팁 문구로 찾는다(버튼은 내부에서 만들어져 이름이 없다).</summary>
+    /// <summary>⏯ 토글은 누른 사람의 뜻이 아니라 IsRunning(VM 의 카메라 상태)을 보인다. 명령이 라이브를 켜지 못하면 IsRunning 이
+    /// 그대로라 속성 콜백이 안 돌고 버튼이 눌린 채 굳었다 — VM 이 같은 값을 다시 알려도 안 풀린다(소비자 독해, Mvs3 가 자기 토글에서
+    /// 같은 모양을 실측으로 고친 적이 있다). 대조: 명령이 동기로 켜면 눌린 채 남고, 나중에 켜지면 그때 눌린다.</summary>
+    [Fact]
+    public void PlayToggleFollowsIsRunningNotTheClick() => RunSta(() =>
+    {
+        var ctrl = new CvDispCtrl();
+        ctrl.Measure(new Size(VW, VH));
+        ctrl.Arrange(new Rect(0, 0, VW, VH));
+        ctrl.UpdateLayout();
+        var play = FindToggle(ctrl, "Play / Stop");
+        Check(play is not null, "the ⏯ toggle is found");
+        void Click() => ((System.Windows.Automation.Provider.IToggleProvider)
+            new System.Windows.Automation.Peers.ToggleButtonAutomationPeer(play!)).Toggle();
+
+        // 시작하지 못하는 명령 — 버튼이 풀려 있어야 한다
+        ctrl.ContinuousCommand = new Cmd(() => { });
+        Click();
+        Check(play!.IsChecked == false, "a start that did not happen leaves the toggle released, not stuck pressed");
+
+        // 대조: 동기로 켜는 명령 — 눌린 채 남는다
+        ctrl.ContinuousCommand = new Cmd(() => ctrl.IsRunning = true);
+        Click();
+        Check(play.IsChecked == true && ctrl.IsRunning, "control: a start that did happen leaves the toggle pressed");
+
+        // 정지하지 못하는 명령 — 라이브가 도는 동안 버튼은 눌린 채
+        ctrl.StopCommand = new Cmd(() => { });
+        Click();
+        Check(play.IsChecked == true, "a stop that did not happen leaves the toggle pressed while live runs");
+
+        // 나중에(비동기로) 켜지는 경우 — 누른 직후에는 풀려 있다가 켜지는 순간 눌린다
+        ctrl.StopCommand = new Cmd(() => ctrl.IsRunning = false);
+        Click();
+        Check(play.IsChecked == false, "control: a stop that did happen releases the toggle");
+        ctrl.ContinuousCommand = new Cmd(() => { });
+        Click();
+        Check(play.IsChecked == false, "a start still in progress shows released");
+        ctrl.IsRunning = true;
+        Check(play.IsChecked == true, "...and pressed once the view-model reports live");
+    });
+
+    private sealed class Cmd(Action run) : System.Windows.Input.ICommand
+    {
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => true;
+        public void Execute(object? parameter) => run();
+    }
+
+    private static System.Windows.Controls.Primitives.ToggleButton? FindToggle(DependencyObject root, string tooltip)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var c = VisualTreeHelper.GetChild(root, i);
+            if (c is System.Windows.Controls.Primitives.ToggleButton t && Equals(t.ToolTip, tooltip)) return t;
+            if (FindToggle(c, tooltip) is { } found) return found;
+        }
+        return null;
+    }
+
     private static System.Windows.Controls.Button? FindButton(DependencyObject root, string tooltip)
     {
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)

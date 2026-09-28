@@ -275,8 +275,19 @@ public sealed partial class CvDispCtrl : Grid
             ? ThemeBrush("SuccessBrush", 0x2E, 0x7D, 0x32)
             : ThemeBrush("DangerBrush", 0xC6, 0x28, 0x28);
         if (_syncingPlay) return;
-        if (_playBtn.IsChecked == true) ContinuousCommand?.Execute(null);
-        else StopCommand?.Execute(null);
+        try
+        {
+            if (_playBtn.IsChecked == true) ContinuousCommand?.Execute(null);
+            else StopCommand?.Execute(null);
+        }
+        finally
+        {
+            // 버튼은 누른 사람의 뜻이 아니라 IsRunning(VM 의 카메라 상태)을 보인다. 명령이 라이브를 켜지 못하면(시작 거절·예외·
+            // 명령 없음·아직 비동기로 켜는 중) IsRunning 이 그대로라 속성 변경 콜백이 안 돌고 버튼이 눌린 채 굳었다 — VM 이 같은 값을
+            // 다시 알려도 속성 값이 안 바뀌어 풀리지 않는다(소비자가 원문 독해로 짚음). 명령 뒤 곧바로 권위 있는 값으로 되돌린다:
+            // 동기로 켜졌으면 이미 같은 값이라 아무 일도 없고, 비동기로 켜지면 켜지는 순간 콜백이 다시 누른다. 정지 쪽도 같다.
+            SyncPlayState(IsRunning);
+        }
     }
 
     private void LoadImageFromFile()
