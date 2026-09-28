@@ -1460,6 +1460,27 @@ public class SmokeTests
         Check(cam.IsGrabbing && made[3].IsGrabbing, $"...and live resumes — a failed Open after a loss is not a Close (grabbing={cam.IsGrabbing})");
     }
 
+    /// <summary>10-R27) 닫기가 불렸지만 아직 게이트를 못 잡은 사이 나중에 불린 Open 이 먼저 잡은 경우 — 차례로 부른 닫기·열기와 같게 된다.
+    /// ① Open 은 붙어 있던 옛 세션을 "이미 열려 있다" 로 두지 않고 걷고 새로 연다(닫기가 이미 의도를 걷었다 — 두면 의도 없는 옛 세션이 남았다).
+    /// ② 뒤늦게 게이트를 잡은 그 닫기는 나중 Open 의 세션을 걷지 않는다(판정과 떼어 내기가 한 락). 그 틈은 스케줄링 몇 마이크로초라 시각으로는
+    /// 못 세운다 — 닫기의 앞·뒤 절반을 직접 부른다(재검토가 찾음).</summary>
+    [Fact]
+    public void ReconnectingCamOpenBetweenCloseHalvesActsLikeCloseThenOpen()
+    {
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+        cam.Open();
+        cam.StartContinuous();
+        var closeSeq = cam.BeginClose();                   // 닫기가 불렸다 — 의도를 걷었고, 세션은 아직 붙어 있다
+        Check(closeSeq > 0 && !made[0].Disposed, "premise: the Close has been called but has not removed the session yet");
+        cam.Open();                                        // 나중에 불린 Open 이 게이트를 먼저 잡았다
+        Check(made.Count == 2 && made[0].Disposed && cam.IsConnected,
+            $"①: the later Open replaces the session the Close was about to remove (instances={made.Count}, old disposed={made[0].Disposed})");
+        Check(!cam.IsGrabbing && !made[1].IsGrabbing, "①: ...with no live intent — as if Close then Open had run in order");
+        cam.FinishClose(closeSeq);                         // 그 닫기가 뒤늦게 게이트를 잡는다
+        Check(cam.IsConnected && !made[1].Disposed, "②: the earlier Close does not remove the session the later Open opened");
+    }
+
     /// <summary>9-V2) 정지 중에 구독한 단발 그랩(CamGrabExt.GrabFrameAsync: 구독 → GrabOne)은 정지된 라이브의 마지막 틱이 아니라 제 프레임을
     /// 답으로 받는다. 틱의 발행을 들어설 때만 막으면, 이미지를 읽던 옛 틱이 그랩이 구독한 뒤에 나가 답을 가로챘다(검토가 찾음 — 9-V1 을 고치며 생긴 틈).</summary>
     [Fact]

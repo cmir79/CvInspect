@@ -23,7 +23,9 @@ namespace CvInspect.Imaging;
 /// <see cref="SetExposureTimeUs"/> 는 닫힌 동안에도 기록되어 다음 Open 에 적용된다.
 ///
 /// 상실 뒤의 <see cref="Open"/> 은 재연결 루프를 기다리지 않고 곧바로 다시 연다(그만큼 막힌다). 그 열기가 실패해 던져도(<c>RetryInitialOpen</c>
-/// 이 꺼져 있을 때) <b>포기가 아니다</b> — 루프는 계속 돈다. 처음·닫은 뒤의 열기가 실패해 던지면 닫힌 상태로 돌아간다(루프 없음).
+/// 이 꺼져 있을 때) <b>포기가 아니다</b> — 루프가 돌고 있으면 계속 돌고, 라이브 의도도 남는다. ⚠ 루프가 이미 포기했으면(<c>MaxAttempts</c>) 도는 루프가
+/// 없으므로 실패한 Open 뒤에 <b>뒤에서 다시 시도하는 것은 없다</b> — Open 을 다시 부르거나 <c>RetryInitialOpen</c> 을 켠다. 처음·닫은 뒤의 열기가
+/// 실패해 던지면 닫힌 상태로 돌아간다(루프 없음).
 /// <see cref="Open"/> 과 <see cref="Close"/> 가 다른 스레드에서 겹치면 <b>나중에 불린 쪽</b>이 이긴다(게이트를 잡은 순서가 아니다).
 ///
 /// 안쪽 인스턴스의 두 요건 — ① <see cref="ICam.Open"/> 이 정상 반환하면 이미 연결돼 있어야 한다(아니면 열기 실패로 보고 다시
@@ -72,7 +74,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     private int _openWaiters;             // 게이트 앞에 줄 선 Open 수 — 관측 전용(OpenWaiters)
     private int _lifeSeq;                 // Open·Close 가 <b>불린</b> 순서 — 게이트를 잡은 순서가 아니라 이것으로 누가 이기는지 정한다
     private int _lastCloseSeq;            // 마지막으로 불린 Close 의 번호
-    private int _openedSeq;               // 마지막으로 닫힘을 풀고 연 Open 의 번호
+    private int _openedSeq;               // 게이트 안 판정을 마지막으로 지난 Open 의 번호("이미 열려 있다" 로 돌아간 것 포함) — 게이트 안에서만 쓴다
     private int _attachGen;               // 세션을 장착할 때마다 증가 — 재연결 루프가 "새 사건" 을 알아본다
 
     /// <summary>재연결 루프가 없다(돌 일이 끝났다) — 관측 전용. 시험이 "루프가 한 라운드를 마쳤다" 를 시간 대신 이것으로 기다린다:
@@ -184,9 +186,10 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // ⚠ 판별은 "들어올 때 닫혀 있었는가" 다 — "도는 루프가 없는가" 로 가르던 첫 판은, 재연결이 포기한 뒤(루프 없음) 로그가 시키는 대로
                 // 부른 Open 이 실패하면 닫아 버려 라이브 의도를 잃었다: 다음 Open 은 붙는데 라이브가 안 켜지고 아무 흔적도 없었다(재검토가 찾음).
                 // 상실 뒤의 열기가 실패한 것이면(루프가 돌든 포기했든) 닫지 않는다 — 이 예외는 포기가 아니고 의도는 남는다.
+                // (다른 Open 이 끼어들 수 없다 — 이 catch 는 아직 게이트 안이다.)
                 lock (_sync)
                 {
-                    if (!_disposed && wasClosed && _openedSeq == mySeq) MarkClosedLocked();
+                    if (!_disposed && wasClosed) MarkClosedLocked();
                 }
                 throw;
             }
@@ -204,16 +207,28 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
 
     public void Close()
     {
+        var mySeq = BeginClose();
+        if (mySeq > 0) FinishClose(mySeq);
+    }
+
+    /// <summary><see cref="Close"/> 의 앞 절반 — 닫기 의사를 호출 번호와 함께 기록한다(락 안). 해제됐으면 0.
+    /// 시험이 "닫기가 불렸지만 아직 게이트를 못 잡은" 순간을 직접 만든다(그 틈은 스케줄링 몇 마이크로초라 시각으로는 못 세운다).</summary>
+    internal int BeginClose()
+    {
         // 세션 종료 의사 — 진행 중 재연결을 취소하고 이후 기동을 막는다. 취소만 하고 기다리지 않는다.
-        int mySeq;
         lock (_sync)
         {
-            if (_disposed) return;
-            mySeq = ++_lifeSeq;
+            if (_disposed) return 0;
+            var mySeq = ++_lifeSeq;
             _lastCloseSeq = mySeq;            // 이보다 먼저 불려 게이트에 줄 선 Open 은 열지 않고 물러난다(Open)
             MarkClosedLocked();               // 의도 청산 — 다음 세션이 요청 없는 취득을 부활시키지 않게
+            return mySeq;
         }
+    }
 
+    /// <summary><see cref="Close"/> 의 뒤 절반 — 게이트를 기다려 세션을 걷는다(나중에 불린 Open 이 이미 열었으면 걷지 않는다).</summary>
+    internal void FinishClose(int mySeq)
+    {
         // 시한을 두고 기다린다 — 재연결 사다리가 게이트를 쥔 채 여는 중이면 그 열기는 취소되지 않으므로
         // (열기에 취소 토큰이 없다) 무한정 기다리면 <b>닫기가 부른 쪽의 종료 예산을 넘긴다.</b> 그러면
         // 제어권을 반납하지 못한 채 프로세스가 내려가고, 곧바로 재기동하면 장치가 하트비트 시한을

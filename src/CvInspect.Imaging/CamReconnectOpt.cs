@@ -11,7 +11,9 @@ public sealed class CamReconnectOpt
 
     /// <summary>한 번의 끊김에 대한 최대 시도 횟수. 0 = 무제한. <b>실제로 열어 보고 실패한 시도</b>만 센다 — 다른 호출이 여는 동안
     /// 기다린 것이나, 닫기·해제로 그만둔 시도는 세지 않는다.
-    /// 포기해도 조용히 사라지지 않는다 — 경고를 남기고 미연결 상태로 머물며, <see cref="ICam.Open"/> 재호출로 수동 재개할 수 있다.</summary>
+    /// 포기해도 조용히 사라지지 않는다 — 경고를 남기고 미연결 상태로 머물며, <see cref="ICam.Open"/> 재호출로 수동 재개할 수 있다.
+    /// ⚠ 포기 뒤에는 도는 루프가 없다 — 그 Open 이 실패하면(<see cref="RetryInitialOpen"/> 이 꺼져 있을 때) 던지고 끝이다. 뒤에서 다시 시도하지
+    /// 않으므로 Open 을 다시 부른다(라이브 의도는 남아 있어 붙으면 재개된다).</summary>
     public int MaxAttempts { get; set; }
 
     /// <summary>
