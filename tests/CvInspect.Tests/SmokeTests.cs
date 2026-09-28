@@ -801,6 +801,22 @@ public class SmokeTests
 
     private static readonly CvInspect.Imaging.CamReconnectOpt FastReconnect = new() { BackoffMs = new[] { 20 }, ShutdownWaitMs = 1000 };
 
+    /// <summary>한 출처의 로그 줄을 "{등급}|{문구}" 로 받는다. 빈 창구를 먼저 한 번 꽂아 보관된 앞 줄을 흘려보내고(CvLog 는 창구가
+    /// 없을 때 줄을 들고 있다가 꽂는 순간 재생한다), 끝나면 원래 창구를 돌려놓는다.</summary>
+    private sealed class LogCapture : IDisposable
+    {
+        private readonly Action<CvLogLevel, string, string, Exception?>? _prev = CvLog.Sink;
+        public readonly SyncList<string> Lines = new();
+        public LogCapture(string source)
+        {
+            CvLog.Sink = static (_, _, _, _) => { };
+            CvLog.Sink = (lvl, src, msg, _) => { if (src == source) Lines.Add($"{lvl}|{msg}"); };
+        }
+        public bool Any(string text) => Lines.Snapshot().Any(l => l.Contains(text));
+        public override string ToString() => string.Join(" / ", Lines.Snapshot());
+        public void Dispose() => CvLog.Sink = _prev;
+    }
+
     /// <summary>10-R1) 명시적 닫기·해제가 끊김을 알린다. 청산이 연결·취득 표시를 조용히 내려 두어 뒤이은 알림이 "이미 거짓이라 전이가
     /// 아니다" 로 삼켜졌다 — 닫기가 연결 끊김을 한 번도 알리지 않았다. 통지로 상태를 거울질하는 화면은 닫은 카메라를 연결됨으로 든다.</summary>
     [Fact]
@@ -1101,6 +1117,317 @@ public class SmokeTests
         cam.Open();
         Check(cam.IsConnected && !cam.IsGrabbing && !made[1].IsGrabbing,
             $"a start called while closed does not start live on the next Open (grabbing={cam.IsGrabbing})");
+    }
+
+    /// <summary>10-R15) 닫아서 멈춘 재연결 시도는 "포기" 가 아니다. 시도 상한(MaxAttempts)의 마지막 시도가 느린 열기에 묶인 사이 닫거나
+    /// 해제하면, 그 시도를 실패로 세어 "giving up … the camera stays disconnected. Call Open() to retry." 경고를 남겼다 — 일부러 닫은
+    /// 카메라를 장치 결함처럼 보이게 하고, 해제 뒤에는 따를 수도 없는 지시다(형제 저장소가 자기 판에서 실측, 우리 판은 독해로 같은 셈을 확인).</summary>
+    [Fact]
+    public void ReconnectingCamDeliberateCloseIsNotAGiveUp()
+    {
+        foreach (var how in new[] { "Close", "Dispose" })
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { HoldOnOpenMs = i == 1 ? 600 : 0 }),
+                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100, MaxAttempts = 1 });
+            cam.Open();
+            made[0].LoseConnection();
+            Check(WaitFor(() => made.Count == 2 && made[1].IsOpening), $"{how}: the last allowed attempt is inside a slow open");
+            if (how == "Close") cam.Close(); else cam.Dispose();
+            // 살아 있음 — 루프가 "닫기가 이겼다" 출구까지 왔다(그 줄은 그 출구에서만 나온다). 이것 없이 아래 부정 단언은 루프가 안 돌아도 참이다.
+            Check(WaitFor(() => log.Any("discarded")), $"{how}: the late session is discarded [{log}]");
+            if (how == "Close") Check(WaitFor(() => cam.IsReconnectIdle), "Close: the loop retires");
+            else Thread.Sleep(200);   // 해제 뒤에는 루프 끝을 볼 수 없다 — 포기 줄은 같은 스레드에서 "discarded" 바로 뒤에 나온다
+            Check(!log.Any("giving up"), $"{how}: a camera closed during its last reconnect attempt is not reported as given up: [{log}]");
+            cam.Dispose();
+        }
+        // 대조 — 진짜 실패로 끝난 마지막 시도는 포기를 알린다(검사기가 "늘 안 알림" 으로 죽지 않았는지)
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { FailOnOpen = i > 0 }),
+                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100, MaxAttempts = 1 });
+            cam.Open();
+            made[0].LoseConnection();
+            Check(WaitFor(() => made.Count == 2 && cam.IsReconnectIdle), "control: the one allowed attempt ran");
+            Check(log.Any("giving up after 1"), $"control: a real failure on the last attempt is reported as given up: [{log}]");
+        }
+    }
+
+    /// <summary>10-R16) 닫기가 이긴 첫 열기는 "뒤에서 재시도한다" 고 적지 않는다. RetryInitialOpen 의 첫 열기가 느리게 실패하는 사이 닫으면,
+    /// 재시도는 걸지 않으면서(맞다) 로그에는 "initial open failed — retrying in the background." 가 남았다(검토가 독해로 찾음).</summary>
+    [Fact]
+    public void ReconnectingCamClosedInitialOpenDoesNotPromiseRetry()
+    {
+        foreach (var close in new[] { true, false })
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var calls = 0;
+            var inFactory = new ManualResetEventSlim();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+            {
+                if (Interlocked.Increment(ref calls) == 1) { inFactory.Set(); Thread.Sleep(300); throw new InvalidOperationException("camera absent"); }
+                return new FakeCam { FailOnOpen = true };
+            }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, RetryInitialOpen = true, ShutdownWaitMs = 50, MaxAttempts = 2 });
+            Exception? openEx = null;
+            var opener = new Thread(() => { try { cam.Open(); } catch (Exception ex) { openEx = ex; } }) { IsBackground = true };
+            opener.Start();
+            Check(inFactory.Wait(2000), "the first open is in progress");
+            if (close) cam.Close();
+            Check(opener.Join(3000) && openEx is null, $"Open returns quietly ({openEx?.Message ?? "ok"})");
+            Check(WaitFor(() => cam.IsReconnectIdle), "no retry loop is left running");
+            if (close)
+            {
+                Check(Volatile.Read(ref calls) == 1, $"nothing is retried after Close (factory calls={calls})");
+                Check(!log.Any("retrying in the background"), $"the log does not promise a retry that will not happen: [{log}]");
+            }
+            else
+            {
+                // 대조 — 닫지 않으면 뒤에서 재시도하고 로그도 그렇게 말한다
+                Check(Volatile.Read(ref calls) >= 2 && log.Any("retrying in the background"),
+                    $"control: without Close the open is retried and says so (factory calls={calls}) [{log}]");
+            }
+        }
+    }
+
+    /// <summary>10-R19) 상실 직후(재연결 루프의 첫 시도 전) 부른 Open 은 다시 연다. 죽음이 접수된 세션이 아직 붙어 있어 Open 이 그것을
+    /// "이미 열려 있다" 로 읽고 아무것도 안 한 채 정상 반환했다(IsConnected=false). ICam.Open 은 상실 뒤의 Open 이 다시 연다고 약속하고,
+    /// 0.29.2 노트도 "상실 뒤 Open 이 라이브를 되살린다" 고 적었는데 첫 백오프(기본 1 s) 동안은 거짓이었다(검토가 찾음).
+    /// 연결 상실과, 연결은 둔 채 취득만 죽은 경우를 둘 다 본다 — 판정이 안쪽 IsConnected 가 아니라 "죽음이 접수됐는가" 에 걸려 있는지.</summary>
+    [Fact]
+    public void ReconnectingCamOpenRightAfterALossReopens()
+    {
+        foreach (var how in new[] { "connection lost", "acquisition died" })
+        {
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()),
+                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 1500 }, ShutdownWaitMs = 1000 });
+            var conn = new SyncList<bool>();
+            cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
+            cam.Open();
+            cam.StartContinuous();
+            if (how == "connection lost") made[0].LoseConnection(); else made[0].StopGrabbingOnItsOwn();
+            Check(!cam.IsConnected && made.Count == 1, $"{how}: the loss is received and the loop is still in its first backoff");
+            cam.Open();
+            Check(cam.IsConnected && made.Count == 2 && made[0].Disposed,
+                $"{how}: Open right after a loss reopens (connected={cam.IsConnected}, instances={made.Count}, dead session disposed={made[0].Disposed})");
+            Check(cam.IsGrabbing && made[1].IsGrabbing, $"{how}: ...and resumes the live intent");
+            Check(WaitFor(() => cam.IsReconnectIdle, 4000), $"{how}: the loop's first attempt has run");
+            Check(made.Count == 2 && !made[1].Disposed, $"{how}: the loop leaves the session Open made alone (instances={made.Count})");
+            Check(conn.Snapshot().SequenceEqual(new[] { true, false, true }), $"{how}: connection edges [{conn}]");
+        }
+    }
+
+    /// <summary>10-R20) 닫힌 동안 부른 StartContinuous 는 버려진다는 것을 한 줄 남긴다. 결과는 전과 같지만(다음 Open 이 라이브를 안 켠다 — 10-R14),
+    /// 전에는 아무 흔적 없이 버려 토글을 되살리는 호스트가 왜 라이브가 안 켜졌는지 알 길이 없었다(검토가 찾음).</summary>
+    [Fact]
+    public void ReconnectingCamStartWhileClosedIsLogged()
+    {
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+        using var log = new LogCapture("ReconnectingCam");
+        cam.StartContinuous();                              // 첫 Open 전
+        cam.Open();
+        cam.Close();
+        cam.StartContinuous();                              // Close 뒤
+        Check(log.Lines.Snapshot().Count(l => l.StartsWith("Info|") && l.Contains("StartContinuous ignored")) == 2,
+            $"a start called while closed is logged once per call, at Info: [{log}]");
+        cam.Open();
+        Check(cam.IsConnected && !cam.IsGrabbing && !made[1].IsGrabbing, "...and it still does not start live on the next Open");
+    }
+
+    /// <summary>10-R21) 시작 직후 닫기가 이겨도 안쪽 상태 읽기가 새지 않는다. 폐기 뒤 게터까지 던지는 구현이면, 시작을 마친 안쪽이 닫혀 폐기된
+    /// 뒤의 IsGrabbing 읽기가 ① 재연결 뒤 재개에서는 루프 밖으로 새어 "reconnect loop failed" 오류로, ② 사용자 시작에서는 닫기가 이긴 시작의
+    /// 부른 쪽 예외로 나갔다(검토가 독해로 찾음 — 이 저장소의 구현은 전부 필드 읽기라 안 던진다).</summary>
+    [Fact]
+    public void ReconnectingCamStateReadAfterCloseDoesNotLeak()
+    {
+        // ① 재연결 뒤 재개
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            CvInspect.Imaging.ReconnectingCam cam = null!;
+            var made = new SyncList<FakeCam>();
+            var hookRan = false;
+            cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => i == 1
+                ? new FakeCam { ThrowOnGetAfterDispose = true, OnStarted = () => { hookRan = true; cam.Close(); } }
+                : new FakeCam()), FastReconnect);
+            cam.Open();
+            cam.StartContinuous();
+            made[0].LoseConnection();
+            Check(WaitFor(() => Volatile.Read(ref hookRan) && made.Count == 2 && made[1].Disposed), "the resume ran and Close won right after it");
+            Check(WaitFor(() => cam.IsReconnectIdle), "the loop retires");
+            Check(!log.Lines.Snapshot().Any(l => l.StartsWith("Error|")), $"a Close that wins right after the resume leaves no error line: [{log}]");
+            Check(!cam.IsConnected && !cam.IsGrabbing, "nothing is reported connected or grabbing after Close");
+            cam.Dispose();
+        }
+        // ② 사용자 시작
+        {
+            CvInspect.Imaging.ReconnectingCam cam = null!;
+            var made = new SyncList<FakeCam>();
+            cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ =>
+                new FakeCam { ThrowOnGetAfterDispose = true, OnStarted = () => cam.Close() }), FastReconnect);
+            cam.Open();
+            Exception? startEx = null;
+            try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; }
+            Check(made[0].Disposed, "premise: Close won right after the inner start");
+            Check(startEx is null, $"a start that Close overtook returns quietly ({startEx?.GetType().Name}: {startEx?.Message})");
+            Check(!cam.IsGrabbing && !cam.IsConnected, "nothing is reported grabbing or connected after Close");
+            cam.Dispose();
+        }
+    }
+
+    /// <summary>9-V1) 가상 카메라는 <b>누가 멈췄든</b> 돌던 틱이 끝나야 돌아간다. 틱을 기다리는 것이 타이머 폐기 대기(Dispose(WaitHandle))라
+    /// 그것을 부른 첫 정지만 기다렸다 — 겹쳐 부른 두 번째 정지·닫기·단발 그랩은 곧바로 돌아가, 그 뒤에 옛 틱의 프레임이 나갔다(다음 단발
+    /// 그랩의 답으로 읽힌다 — 검토가 독해로 찾음).</summary>
+    [Fact]
+    public void VirtualCamEveryStopWaitsForTheRunningTick()
+    {
+        foreach (var second in new[] { "StopContinuous", "Close", "GrabOne" })
+        {
+            var gate = new ManualResetEventSlim();
+            var gated = 0;
+            using var cam = new CvInspect.Imaging.VirtualCam(new CvInspect.Imaging.CamOpt { FrameRate = 1 })
+            {
+                // 첫 틱만 여기서 붙잡는다 — 틱이 발행 안쪽(이미지 폴더를 보는 중)에 들어가 있는 상태를 만든다
+                ImageDirProvider = () => { if (Interlocked.Exchange(ref gated, 1) == 0) gate.Wait(3000); return null; },
+            };
+            cam.Open();
+            cam.StartContinuous();                                        // 첫 틱은 곧바로 돈다(지연 0)
+            Check(WaitFor(() => Volatile.Read(ref gated) == 1), $"{second}: a tick is inside its emit");
+            var first = new Thread(cam.StopContinuous) { IsBackground = true };   // 첫 정지 — 이것은 전에도 기다렸다
+            first.Start();
+            Check(WaitFor(() => !cam.IsGrabbing), $"{second}: the first stop has taken the timer down");
+            var releaser = new Thread(() => { Thread.Sleep(200); gate.Set(); }) { IsBackground = true };
+            releaser.Start();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                if (second == "StopContinuous") cam.StopContinuous();
+                else if (second == "Close") cam.Close();
+                else cam.GrabOne();
+            }
+            finally { sw.Stop(); gate.Set(); }
+            var late = 0;
+            cam.FrameAcquired += (_, _) => Interlocked.Increment(ref late);   // 돌아온 뒤에 구독한 쪽 — 다음 그랩을 기다리는 쪽의 자리
+            Check(first.Join(3000), $"{second}: the first stop returns");
+            Thread.Sleep(50);
+            Check(sw.ElapsedMilliseconds >= 150, $"{second}: it waited for the tick that was running ({sw.ElapsedMilliseconds}ms)");
+            Check(Volatile.Read(ref late) == 0, $"{second}: no frame from the stopped stream is raised after it returned (late frames={late})");
+        }
+    }
+
+    /// <summary>10-R22) 가드를 하나씩 빼 보니(변이 대조) 어느 시험도 못 잡던 두 자리를 못 박는다.
+    /// ① 시작을 부른 뒤·안쪽이 시작하기 전에 온 정지가 이긴다 — 안쪽이 그 정지를 못 보고(아직 안 돌아서 정지가 헛돈다) 시작해 버려도,
+    ///    감싼 쪽은 켜짐을 알리지 않고 안쪽을 한 번 더 멈춘다(StartContinuous 의 superseded).
+    /// ② 재연결 뒤 재개도 안쪽이 실제로 켜졌을 때만 알린다 — 안쪽이 재개를 무르면(다른 경로의 정지에 짐) 켜짐이 남으면 안 된다.</summary>
+    [Fact]
+    public void ReconnectingCamLaterCommandsWinAndResumeIsChecked()
+    {
+        // ①
+        {
+            CvInspect.Imaging.ReconnectingCam cam = null!;
+            var made = new SyncList<FakeCam>();
+            cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            var grab = new SyncList<bool>();
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
+            cam.Open();
+            made[0].OnStartEntry = () => cam.StopContinuous();   // 안쪽 시작 직전에 정지 — 안쪽은 아직 안 돌아 그 정지가 헛돈다
+            cam.StartContinuous();
+            Check(!cam.IsGrabbing && !made[0].IsGrabbing,
+                $"a stop that came after the start call wins even if the inner camera started anyway (wrapper={cam.IsGrabbing}, inner={made[0].IsGrabbing})");
+            Check(grab.Count == 0, $"no GrabbingChanged(true) for a start the stop overtook: [{grab}]");
+            cam.Dispose();
+        }
+        // ②
+        {
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { StandDownNextStart = i == 1 }), FastReconnect);
+            var grab = new SyncList<bool>();
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
+            cam.Open();
+            cam.StartContinuous();
+            made[0].LoseConnection();
+            Check(WaitFor(() => made.Count == 2 && cam.IsConnected && cam.IsReconnectIdle), "the session is rebuilt and the resume has run");
+            Check(!cam.IsGrabbing && !made[1].IsGrabbing, $"a resume the inner camera abandoned is not reported grabbing (wrapper={cam.IsGrabbing})");
+            Check(grab.Snapshot().SequenceEqual(new[] { true, false }), $"no GrabbingChanged(true) after the loss: [{grab}]");
+        }
+    }
+
+    /// <summary>10-R18) 해제는 느린 재연결을 <b>한 마감</b>까지만 기다린다. 루프 수거와 게이트 대기가 각각 ShutdownWaitMs 를 기다려, 루프가
+    /// 취소할 수 없는 열기에 묶여 있으면 같은 사건을 두 번 기다리며 종료가 두 배로 늦었다(형제 저장소의 소비자가 자기 판에서 카메라당 수 초 실측).</summary>
+    [Fact]
+    public void ReconnectingCamDisposeWaitsOneDeadline()
+    {
+        var made = new SyncList<FakeCam>();
+        var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { HoldOnOpenMs = i == 1 ? 2000 : 0 }),
+            new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 400 });
+        cam.Open();
+        made[0].LoseConnection();
+        Check(WaitFor(() => made.Count == 2 && made[1].IsOpening), "the reconnect is stuck in a slow open");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        cam.Dispose();
+        sw.Stop();
+        // 살아 있음 — 열기가 정말 아직 붙잡혀 있고(아니면 시각이 아무것도 증명 못 한다), 해제가 정말 기다렸다
+        Check(made[1].IsOpening, "premise: the open was still stuck when Dispose returned");
+        Check(sw.ElapsedMilliseconds >= 350, $"premise: Dispose did wait for the stuck reconnect ({sw.ElapsedMilliseconds}ms)");
+        Check(sw.ElapsedMilliseconds < 650,
+            $"Dispose waits one ShutdownWaitMs in total, not one for the loop and another for the gate ({sw.ElapsedMilliseconds}ms, limit 400ms)");
+        Check(WaitFor(() => made[1].Disposed, 4000), "the late session is still discarded after Dispose returned");
+    }
+
+    /// <summary>10-R17) 다른 호출이 게이트를 쥐고 있어 못 한 시도는 실패로 세지 않는다. 재연결 시도는 게이트를 ShutdownWaitMs 까지만
+    /// 기다리고 못 잡으면 실패로 세었다 — 손수 부른 느린 Open 이 쥔 사이 ① 시도 상한에서 한 번도 안 열어 보고 "포기" 를 남겼고(그 Open 은
+    /// 붙는데), ② 사다리를 한 칸 올려 그 Open 이 실패했을 때 다음 실제 시도가 한참 뒤로 밀렸다(형제 저장소가 짚고 검토가 독해로 확인).</summary>
+    [Fact]
+    public void ReconnectingCamContendedGateIsNotAFailedAttempt()
+    {
+        // ① 시도 상한
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            var maker = new SyncList<int>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+            {
+                maker.Add(Environment.CurrentManagedThreadId);
+                return made.AddNew(i => new FakeCam { FailOnOpen = i == 0, HoldOnOpenMs = i == 1 ? 600 : 0 });
+            }, new CvInspect.Imaging.CamReconnectOpt { RetryInitialOpen = true, MaxAttempts = 1, BackoffMs = new[] { 150 }, ShutdownWaitMs = 100 });
+            cam.Open();                                    // 첫 열기가 실패해 루프가 뒤에서 돈다(백오프 150 ms)
+            var openerId = 0;
+            var opener = new Thread(() => { openerId = Environment.CurrentManagedThreadId; try { cam.Open(); } catch { } }) { IsBackground = true };
+            opener.Start();                                // 손수 부른 느린 Open — 게이트를 600 ms 쥔다
+            Check(WaitFor(() => made.Count == 2 && made[1].IsOpening), "the manual open holds the gate");
+            // 전제 — 둘째 세션을 연 것이 손수 부른 Open 이다(시험 스레드가 150 ms 넘게 멈추면 루프가 먼저 잡아 이 항이 아무것도 안 시험한다)
+            Check(opener.Join(3000) && maker[1] == openerId, "premise: the second session was opened by the manual Open");
+            Check(WaitFor(() => cam.IsConnected && cam.IsReconnectIdle, 3000), "the manual open connects and the loop retires");
+            Check(made.Count == 2, $"the loop did not open another session (instances={made.Count})");
+            Check(!log.Any("giving up"), $"waiting for another caller's open is not a failed attempt: [{log}]");
+        }
+        // ② 사다리
+        {
+            var made = new SyncList<FakeCam>();
+            var calls = 0;
+            var hostId = 0;
+            var slowMaker = 0;
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+            {
+                var n = Interlocked.Increment(ref calls);
+                if (n == 3) { slowMaker = Environment.CurrentManagedThreadId; Thread.Sleep(600); }   // 손수 부른 Open 의 느린 실패
+                return made.AddNew(i => new FakeCam { FailOnOpen = i == 1 || i == 2 });           // 루프의 첫 시도·손수 연 것은 실패, 그 뒤는 성공
+            }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 50, 200, 5000 }, ShutdownWaitMs = 100 });
+            cam.Open();
+            made[0].LoseConnection();
+            Check(WaitFor(() => made.Count == 2), "the loop's first attempt ran (and failed)");
+            var hostFailed = new ManualResetEventSlim();
+            var opener = new Thread(() => { hostId = Environment.CurrentManagedThreadId; try { cam.Open(); } catch { } hostFailed.Set(); }) { IsBackground = true };
+            opener.Start();
+            Check(hostFailed.Wait(3000), "the manual open failed");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Check(slowMaker == hostId, "premise: the slow failing open was the manual one, not the loop's");
+            Check(WaitFor(() => cam.IsConnected, 3000), $"the loop reconnects soon after the manual open failed ({sw.ElapsedMilliseconds}ms; instances={made.Count})");
+            Check(sw.ElapsedMilliseconds < 1500, $"a wait on someone else's open does not move the ladder up ({sw.ElapsedMilliseconds}ms — the 5000 ms step means it did)");
+            Check(made.Count == 4, $"the loop opened exactly once after the manual failure (instances={made.Count})");
+        }
     }
 
     /// <summary>10-R12) 시작하는 사이 닫기가 이기면 시작은 조용히 돌아온다. 닫기가 안쪽을 폐기해 안쪽 시작이 "폐기된 객체" 로 던지는데,

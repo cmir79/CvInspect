@@ -18,7 +18,9 @@ namespace CvInspect.Imaging;
 /// 미연결 구간(교체 중)의 호출 규약: 상태 계열(<see cref="StartContinuous"/>/<see cref="StopContinuous"/>/
 /// <see cref="SetExposureTimeUs"/>)은 <b>의도로 기록</b>되어 복원 시 반영되고, 즉시 결과가 필요한
 /// <see cref="GrabOne"/> 은 <see cref="InvalidOperationException"/> 으로 <b>명확히 실패</b>한다(조용히 무시하면
-/// 상위가 프레임을 영원히 기다린다).
+/// 상위가 프레임을 영원히 기다린다). 교체 중이 아니라 <b>닫힌</b> 동안(첫 <see cref="Open"/> 전, <see cref="Close"/> 뒤)의
+/// <see cref="StartContinuous"/> 는 기록하지 않는다 — 던지지 않고 Info 한 줄만 남긴다(다음 Open 이 라이브를 켜지 않는다).
+/// <see cref="SetExposureTimeUs"/> 는 닫힌 동안에도 기록되어 다음 Open 에 적용된다.
 ///
 /// 안쪽 인스턴스의 두 요건 — ① <see cref="ICam.Open"/> 이 정상 반환하면 이미 연결돼 있어야 한다(아니면 열기 실패로 보고 다시
 /// 시도한다). 그래서 팩토리가 <see cref="DeadCam"/> 을 돌려주면 첫 <see cref="Open"/> 이 그 사유를 담아 던진다(<c>RetryInitialOpen</c>
@@ -113,8 +115,10 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         try { _gate.Wait(); }
         finally { Interlocked.Decrement(ref _openWaiters); }
         ICam? attached;
+        Retired retired = default;
         try
         {
+            bool dead;
             lock (_sync)
             {
                 ThrowIfDisposed();
@@ -123,8 +127,13 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 시작은 Open 에서 무시했다. 상실 뒤의 Open(닫지 않았다)과 여는 중에 온 시작은 그대로 되살린다.
                 if (_closed) { _wantContinuous = false; _intentVersion++; }
                 _closed = false;              // 게이트 해제 — 이제부터 재연결이 허용된다
-                if (_inner != null) return;   // 이미 열려 있음 (중복 Open 이 인스턴스를 둘로 만들지 않게)
+                // 죽음이 접수된 세션이 아직 붙어 있으면(재연결 루프는 백오프를 기다린 뒤에야 그것을 걷는다) 여기서 걷고 새로 연다. 전에는 그것을
+                // "이미 열려 있다" 로 읽어 아무것도 안 하고 정상 반환했다(IsConnected=false) — ICam.Open 은 상실 뒤의 Open 이 다시 연다고 약속하는데
+                // 첫 백오프(기본 1 s) 동안은 거짓이었다(형제 저장소의 판과 대조하다 검토가 찾음). 루프는 뒤에 와서 살아 있는 세션을 보고 물러난다.
+                dead = _inner is { } current && ReferenceEquals(_lostInner, current);
+                if (_inner != null && !dead) return;   // 이미 열려 있음 (중복 Open 이 인스턴스를 둘로 만들지 않게)
             }
+            if (dead) retired = RetireInner();
             try
             {
                 // 여는 사이 닫기가 이겼으면 세션을 버렸다 — 부른 쪽에는 닫힌 채로 돌아간다(연결됨을 알리지 않는다).
@@ -135,18 +144,23 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             {
                 // 기동 시점에 아직 안 붙은 카메라를 영영 죽은 자리로 만들지 않는다 — 재연결 루프는
                 // '한 번 열린 뒤의 상실' 에만 돌기 때문에, 여기서 손수 태워 줘야 나중에 붙을 때 합류한다.
-                CvLog.Publish(CvLogLevel.Warning, LogSource,
-                    $"[{Name}] initial open failed — retrying in the background.", ex);
+                // 정하고 나서 적는다 — 여는 사이 닫기가 이겼으면 재시도는 안 거는데, 전에는 "뒤에서 재시도한다" 를 먼저 적었다.
+                bool retrying;
                 lock (_sync)
                 {
-                    if (!_disposed && !_closed) ScheduleReconnectLocked();
+                    retrying = !_disposed && !_closed;
+                    if (retrying) ScheduleReconnectLocked();
                 }
+                CvLog.Publish(retrying ? CvLogLevel.Warning : CvLogLevel.Info, LogSource,
+                    retrying ? $"[{Name}] initial open failed — retrying in the background."
+                             : $"[{Name}] initial open failed; not retrying because the camera was closed meanwhile.", ex);
                 return;
             }
         }
         finally
         {
             _gate.Release();
+            RaiseRetired(retired);   // 걷은 죽은 세션의 표시 — 대개 상실 통지가 이미 내려 두어 알릴 것이 없다
         }
         // 게이트를 놓은 뒤라 그 사이 닫기·상실이 끼어들 수 있다 — 장착한 그 인스턴스가 아직 현재일 때만 연결을 알린다.
         // 재연결과 같은 뒷일(노출·연속 취득 의도)도 여기서 한다. 전에는 재연결만 의도를 되살려서, 상실 뒤 사용자가 손수 연 세션이나
@@ -205,10 +219,18 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             _reconnectTask = null;
         }
         try { cts?.Cancel(); } catch (ObjectDisposedException) { }
-        try { task?.Wait(Math.Max(0, _opt.ShutdownWaitMs)); } catch { /* 종료 경로 — 삼킨다 */ }
+
+        // 루프 수거와 게이트 대기가 <b>마감 하나</b>를 나눠 쓴다. 전에는 각각 ShutdownWaitMs 를 기다렸는데, 루프가 취소할 수 없는 느린 열기에
+        // 묶여 있으면 둘 다 같은 사건(그 열기가 끝나 게이트를 놓는 것)을 기다리므로 두 번째 대기는 아무것도 더 얻지 못하고 종료만 두 배로
+        // 늦췄다(형제 저장소의 소비자가 자기 판에서 카메라당 수 초를 실측). 시한을 넘기면 게이트 없이 청산한다 — 늦게 끝난 열기는 해제를 보고
+        // 세션을 버린다(AttachAndOpen).
+        var budgetMs = Math.Max(0, _opt.ShutdownWaitMs);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try { task?.Wait(budgetMs); } catch { /* 종료 경로 — 삼킨다 */ }
+        var leftMs = (int)Math.Max(0, budgetMs - elapsed.ElapsedMilliseconds);
 
         Retired retired;
-        if (_gate.Wait(Math.Max(0, _opt.ShutdownWaitMs)))
+        if (_gate.Wait(leftMs))
         {
             try { retired = RetireInner(); }
             finally { _gate.Release(); }
@@ -249,13 +271,26 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         ICam? cam;
         bool wantedBefore;
         int myVersion;
+        bool closed;
         lock (_sync)
         {
             ThrowIfDisposed();
-            wantedBefore = _wantContinuous;
-            _wantContinuous = true;           // 미연결 구간이면 의도만 기록 — 복원 때 반영된다
-            myVersion = ++_intentVersion;
-            cam = _connected ? _inner : null;
+            // 닫힌 동안의 시작은 기록하지 않는다 — 다음 Open 이 어차피 버린다(10-R14). 조용히 버리면 토글을 되살리는 호스트가 왜 라이브가 안
+            // 켜졌는지 알 길이 없어 한 줄 남긴다. 정상 구성(열기 전에 저장된 토글을 되살림)도 지나는 길이라 경고가 아니라 Info 다.
+            closed = _closed;
+            if (closed) { cam = null; wantedBefore = false; myVersion = 0; }
+            else
+            {
+                wantedBefore = _wantContinuous;
+                _wantContinuous = true;           // 미연결 구간이면 의도만 기록 — 복원 때 반영된다
+                myVersion = ++_intentVersion;
+                cam = _connected ? _inner : null;
+            }
+        }
+        if (closed)
+        {
+            CvLog.Publish(CvLogLevel.Info, LogSource, $"[{Name}] StartContinuous ignored — the camera is closed; call Open() first.");
+            return;
         }
         if (cam is null) return;
         try
@@ -288,7 +323,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         // 그 밖에: 정지·닫기가 나중에 왔으면 알리지 않고(나중 명령이 이긴다), 시작하는 사이 세션이 죽었어도 알리지 않는다(끊김 뒤에
         // 켜짐이 나가 IsGrabbing=true·IsConnected=false 로 남았다 — 의도는 남아 재연결이 새 세션에서 되살린다).
         // 판정과 표시를 같은 락에서 한다 — 판정 뒤 표시 전에 끼어든 상실이 다시 틈이 되지 않게.
-        var innerGrabbing = cam.IsGrabbing;
+        var innerGrabbing = ReadGrabbing(cam);
         bool stopInner = false, announce = false;
         lock (_sync)
         {
@@ -425,7 +460,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
 
     /// <summary>현재 인스턴스를 구독 해제 → 정지·닫기 → 폐기 순으로 청산한다.
     /// 구독 해제가 먼저다 — 죽어 가는 인스턴스의 마지막 통지가 새 세션을 다시 끊는 자기 증식을 막는다.
-    /// <see cref="_gate"/> 보유 전제(Dispose 의 마지막 폴백 경로만 예외).
+    /// <see cref="_gate"/> 보유 전제(<see cref="Close"/>·<see cref="Dispose"/> 가 게이트를 시한 안에 못 잡았을 때의 폴백만 예외).
     /// <b>내린 표시를 돌려준다</b> — 여기서 조용히 내리고 뒤에서 "전이일 때만 알린다" 로 끊김을 알리면 "이미 거짓이라 전이가 아니다" 로
     /// 삼켜져, 닫기가 끊김을 한 번도 알리지 않았다(이 코드를 옮겨 간 소비자가 찾았다 — 통지로 상태를 거울질하는 화면은 닫은 카메라를 연결됨으로 든다).</summary>
     private Retired RetireInner()
@@ -643,56 +678,111 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         }
     }
 
+    /// <summary>한 번의 재장착 시도가 어떻게 끝났는가. 루프는 <b>실제로 열어 보고 실패한 것(<see cref="Failed"/>)만</b> 시도로 센다 —
+    /// 시도 상한(MaxAttempts)도, 백오프 사다리의 칸도 그 수로 정한다. 전에는 거짓(bool)이면 무엇이든 셌다: 닫아서 그만둔 마지막 시도가
+    /// "포기 — 연결 안 된 채 남는다. Open() 으로 다시 시도하라" 경고를 남겼고(해제 뒤에는 따를 수도 없는 지시), 다른 호출(손수 부른 느린
+    /// Open)이 게이트를 쥐어 한 번도 못 연 시도가 상한을 소진해 붙는 카메라를 두고 포기하거나 사다리를 올려 다음 실제 시도를 한참 밀었다
+    /// (형제 저장소가 짚고 검토가 독해로 확인).</summary>
+    private enum SwapResult
+    {
+        /// <summary>새 세션을 장착했거나, 이미 살아 있는 세션이 있다 — 할 일이 끝났다.</summary>
+        Attached,
+        /// <summary>열어 봤는데 실패했다 — 한 번의 시도로 센다.</summary>
+        Failed,
+        /// <summary>닫기·해제·취소가 이겼다 — 조용히 물러난다(세지 않는다).</summary>
+        Abandoned,
+        /// <summary>게이트를 쥔 다른 호출이 열어 보고 실패한 직후다 — 곧바로 장치를 다시 두드리지 않고 한 칸 쉬었다가 다시 본다(세지 않는다).</summary>
+        Deferred,
+    }
+
+    /// <summary>미뤘다가 다시 볼 때의 최소 간격 — 사다리 칸이 0 이어도 맴돌지 않게.</summary>
+    private const int MinDeferMs = 50;
+
     private void RunAttempts(CancellationToken ct)
     {
         var ladder = _opt.BackoffMs is { Count: > 0 } l ? l : new[] { 1000 };
-        for (var attempt = 0; ; attempt++)
+        var failures = 0;
+        var deferred = false;
+        while (true)
         {
             if (ct.IsCancellationRequested) return;
             lock (_sync) { if (_closed || _disposed) return; }
 
-            var delay = Math.Max(0, ladder[Math.Min(attempt, ladder.Count - 1)]);
+            var delay = Math.Max(0, ladder[Math.Min(failures, ladder.Count - 1)]);
+            if (deferred) delay = Math.Max(delay, MinDeferMs);
             if (ct.WaitHandle.WaitOne(delay)) return;   // 취소는 남은 지연을 다 기다리지 않고 즉시 깨어난다
 
-            if (TrySwapIn(ct)) return;
-
-            if (_opt.MaxAttempts > 0 && attempt + 1 >= _opt.MaxAttempts)
+            switch (TrySwapIn(ct))
             {
-                // 포기는 조용한 정지가 아니라 관측 가능한 종단 상태로 남긴다.
+                case SwapResult.Attached:
+                case SwapResult.Abandoned:
+                    return;
+                case SwapResult.Deferred:
+                    deferred = true;                    // 사다리도 상한도 그대로 — 우리 시도가 아니었다
+                    continue;
+            }
+
+            deferred = false;
+            failures++;
+            if (_opt.MaxAttempts > 0 && failures >= _opt.MaxAttempts)
+            {
+                // 포기는 조용한 정지가 아니라 관측 가능한 종단 상태로 남긴다. 여기 오는 것은 실제로 열어 보고 실패한 시도뿐이다.
                 CvLog.Publish(CvLogLevel.Warning, LogSource,
-                    $"[{Name}] giving up after {attempt + 1} reconnect attempts — the camera stays disconnected. Call Open() to retry.");
+                    $"[{Name}] giving up after {failures} reconnect attempts — the camera stays disconnected. Call Open() to retry.");
                 return;
             }
         }
     }
 
-    /// <summary>한 번의 재장착 시도. 성공하면 true.</summary>
-    private bool TrySwapIn(CancellationToken ct)
+    /// <summary>한 번의 재장착 시도(<see cref="SwapResult"/>).</summary>
+    private SwapResult TrySwapIn(CancellationToken ct)
     {
-        if (!_gate.Wait(Math.Max(0, _opt.ShutdownWaitMs))) return false;
+        // 게이트는 시한 없이, 취소로만 깨어나게 기다린다. 전에는 ShutdownWaitMs 까지만 기다리고 못 잡으면 실패로 셌다 — 종료 대기용 값이
+        // 재연결 정책을 좌우했고, 닫기·해제가 취소해도 이 대기는 안 깨어나 해제가 그만큼 더 기다렸다. 게이트를 오래 쥐는 것은 손수 부른
+        // Open 뿐이다(닫기·해제는 게이트를 잡기 전에 이 루프를 취소한다) — 그 Open 이 끝나기를 기다리는 것이 맞다: 붙었으면 아래에서 할 일
+        // 없이 물러나고, 실패했으면 한 칸 쉬었다가 다시 본다.
+        // ⚠ 취소 예외는 "못 잡았다" 다 — 반납하지 않는다. 취소와 반납이 겹치면 잡고 정상 반환할 수 있다(.NET 8.0.31 SemaphoreSlim 디컴파일
+        //    확인) — 그 경우는 아래 락 안의 취소 확인이 물러나고 finally 가 반납한다.
+        var contended = !_gate.Wait(0);
+        if (contended)
+        {
+            try { _gate.Wait(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { return SwapResult.Abandoned; }
+        }
 
         Retired retired = default;
         ICam? attached = null;
+        SwapResult result;
         try
         {
             lock (_sync)
             {
-                if (_closed || _disposed || ct.IsCancellationRequested) return false;
+                if (_closed || _disposed || ct.IsCancellationRequested) return SwapResult.Abandoned;
                 // 이미 살아 있는 세션을 뜯지 않는다. 재장착이 실패해 안쪽이 비어 있는 백오프 사이 사용자·감시 코드가 Open 으로 손수 붙였거나
                 // (ICam.Open 이 상실 뒤 다시 열라고 권한다), 실패한 두 번째 Open 이 남긴 요청이 한 라운드를 더 돌면, 이 시도가 멀쩡한 세션을
                 // 청산하고 다시 열었다 — 그 사이 그랩은 "재연결 중" 으로 실패하고 라이브가 끊겼다(검토가 재현). 죽음이 접수된 안쪽
                 // (_lostInner)만 교체 대상이다. 할 일이 없으니 성공으로 물러난다.
-                if (_inner is { } current && !ReferenceEquals(_lostInner, current)) return true;
+                if (_inner is { } current && !ReferenceEquals(_lostInner, current)) return SwapResult.Attached;
+                // 기다린 끝에 안쪽이 비어 있다 — 게이트를 쥐었던 Open 이 방금 열어 보고 실패했다. 곧바로 다시 두드리면 같은 이유로 또 실패해
+                // 우리 시도로 세어진다.
+                if (contended && _inner is null) return SwapResult.Deferred;
             }
             retired = RetireInner();
             var proceed = true;
             lock (_sync) { if (_closed || _disposed || ct.IsCancellationRequested) proceed = false; }
             // 여는 사이 닫기가 이기면 null — 세션은 이미 닫고 버렸고 그 사실은 Info 로 남았다. 실패가 아니라 청산이다.
             if (proceed) attached = AttachAndOpen();
+            result = attached is null ? SwapResult.Abandoned : SwapResult.Attached;
         }
         catch (Exception ex)
         {
-            CvLog.Publish(CvLogLevel.Warning, LogSource, $"[{Name}] reconnect attempt failed.", ex);
+            // 닫힌 뒤에 끝난 열기의 실패(끊긴 장치가 뒤늦게 시한을 넘김)는 닫힌 카메라의 결함이 아니다 — 경고로 남기면 엉뚱한 데를 찾는다.
+            bool closedMeanwhile;
+            lock (_sync) closedMeanwhile = _closed || _disposed || ct.IsCancellationRequested;
+            CvLog.Publish(closedMeanwhile ? CvLogLevel.Info : CvLogLevel.Warning, LogSource,
+                closedMeanwhile ? $"[{Name}] reconnect attempt abandoned: the camera was closed meanwhile."
+                                : $"[{Name}] reconnect attempt failed.", ex);
+            result = closedMeanwhile ? SwapResult.Abandoned : SwapResult.Failed;
         }
         finally
         {
@@ -701,11 +791,11 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
 
         // 청산이 내린 표시는 교체가 성공하든 말든 알린다 — 대개는 상실 통지가 이미 내려 두어 알릴 것이 없다.
         RaiseRetired(retired);
-        if (attached is null) return false;
-        // 장착은 끝났다(true). 게이트를 놓은 틈에 닫기가 이겼으면 알리지 않고 루프는 닫힘을 보고 물러난다. 상실이 이겼으면 그 상실이
+        if (attached is null) return result;
+        // 장착은 끝났다. 게이트를 놓은 틈에 닫기가 이겼으면 알리지 않고 루프는 닫힘을 보고 물러난다. 상실이 이겼으면 그 상실이
         // 이미 다음 라운드를 걸어 두었다(_reconnectPending) — 여기서 되살리려 들지 않는다.
         AnnounceAttached(attached);
-        return true;
+        return SwapResult.Attached;
     }
 
     /// <summary>끊기기 전 의도가 살아 있으면 연속취득을 재개한다 — 방금 장착한 그 인스턴스에서만.
@@ -733,7 +823,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             return;
         }
 
-        var innerGrabbing = cam.IsGrabbing;   // 안쪽이 실제로 켜졌을 때만 알린다(StartContinuous 와 같은 이유)
+        var innerGrabbing = ReadGrabbing(cam);   // 안쪽이 실제로 켜졌을 때만 알린다(StartContinuous 와 같은 이유)
         bool undo = false, announce = false;
         lock (_sync)
         {
@@ -756,13 +846,18 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     {
         lock (_sync)
         {
-            if (!ReferenceEquals(_reconnectCts, cts)) return;   // 이미 다른 루프가 주인이다
-            _reconnectTask = null;
-            _reconnectCts = null;
-            var pending = _reconnectPending;
-            _reconnectPending = false;
-            if (pending && !_closed && !_disposed) ScheduleReconnectLocked();
+            // 칸이 이 루프의 것일 때만 비우고 승계한다. 아니면 해제가 이미 칸을 비웠다(새 루프는 이 루프가 물러난 뒤에만 뜬다).
+            if (ReferenceEquals(_reconnectCts, cts))
+            {
+                _reconnectTask = null;
+                _reconnectCts = null;
+                var pending = _reconnectPending;
+                _reconnectPending = false;
+                if (pending && !_closed && !_disposed) ScheduleReconnectLocked();
+            }
         }
+        // 어느 쪽이든 이 루프의 CTS 는 이 루프가 치운다 — 전에는 해제가 칸을 비운 경우 여기서 돌아가 백오프 대기에 쓴 커널 이벤트가
+        // 종료자까지 남았다. 닫기·해제가 늦게 취소를 걸어도 ObjectDisposedException 을 삼킨다(Cancel 은 폐기 뒤 던진다 — 8.0.31 확인).
         cts.Dispose();
     }
 
@@ -771,6 +866,16 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     private bool IsCurrent(object? sender)
     {
         lock (_sync) return ReferenceEquals(_inner, sender);
+    }
+
+    /// <summary>안쪽 취득 상태를 읽는다 — 던지면 "안 켜짐" 으로 읽는다. 상태 게터는 폐기 뒤에도 던지지 않아야 하지만(폴링하는 값이다),
+    /// 폐기되면 무엇이든 던지는 구현이 있으면 닫기와 겹친 순간의 이 읽기가 재연결 루프 밖으로 새어 "reconnect loop failed" 오류가 되거나
+    /// 닫기가 이긴 시작의 부른 쪽에 예외로 올라갔다(검토가 독해로 찾음 — 이 저장소의 구현은 전부 필드 읽기라 안 던진다). 안 켜짐으로 읽으면
+    /// 켜짐을 알리지 않을 뿐이고, 살아 있는 세션이면 늦은 켜짐 통지나 다음 명령이 맞춘다.</summary>
+    private static bool ReadGrabbing(ICam cam)
+    {
+        try { return cam.IsGrabbing; }
+        catch { return false; }
     }
 
     /// <summary>지금 조작을 받을 수 있는 인스턴스. 미연결 구간이면 던진다 — 죽은 인스턴스로 조용히 흘려보내면
