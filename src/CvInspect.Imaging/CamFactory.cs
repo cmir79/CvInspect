@@ -6,7 +6,9 @@ namespace CvInspect.Imaging;
 /// ComType 문자열 → <see cref="ICam"/> 구현체 생성. 벤더 SDK 어댑터는 외부 등록으로 붙인다.
 ///
 /// 만들 수 없는 ComType 은 <see cref="DeadCam"/> 으로 돌려준다 — 던지지 않으므로 여러 대 중 한 자리가
-/// 잘못돼도 나머지는 뜨고, 그 자리는 연결되지 않은 채 이유를 들고 있다. <b>가상 카메라로 떨어뜨리지 않는다</b>:
+/// 잘못돼도 나머지는 뜨고, 그 자리는 연결되지 않은 채 이유를 들고 있다. ⚠ <see cref="ReconnectingCam"/> 으로 감싸면 그 자리는
+/// 연결됨으로 보이지 않고 <b>열기 실패로 나타난다</b> — 기본값에서는 첫 <c>Open</c> 이 그 이유를 담아 던지고, <c>RetryInitialOpen</c> 이면
+/// 뒤에서 재시도한다(0.29.1 까지는 연결됨으로 보였다). <b>가상 카메라로 떨어뜨리지 않는다</b>:
 /// 그건 합성 소스를 원해서 고른 경우의 것이고, 여기서 쓰면 검사가 조용히 가짜 프레임을 판정한다.
 /// </summary>
 public static class CamFactory

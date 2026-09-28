@@ -159,6 +159,12 @@ register it once at startup:
 CamFactory.Register("MyGigE", opt => new MyGigECam(opt));
 ```
 
+If the adapter will be wrapped in `ReconnectingCam`, two things must already be true when a call returns.
+`Open` must not return until `IsConnected` is true, because the wrapper checks it right after `Open` and treats
+false as a failed open. And a `StartContinuous` that started must have `IsGrabbing` true, because the wrapper
+checks that before it reports live. When the connection is lost, lower `IsConnected` (and `IsGrabbing`) before
+raising the events.
+
 Proprietary SDK assemblies stay out of this package by design.
 
 ## Targets

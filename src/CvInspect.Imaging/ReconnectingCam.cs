@@ -19,6 +19,14 @@ namespace CvInspect.Imaging;
 /// <see cref="SetExposureTimeUs"/>)은 <b>의도로 기록</b>되어 복원 시 반영되고, 즉시 결과가 필요한
 /// <see cref="GrabOne"/> 은 <see cref="InvalidOperationException"/> 으로 <b>명확히 실패</b>한다(조용히 무시하면
 /// 상위가 프레임을 영원히 기다린다).
+///
+/// 안쪽 인스턴스는 <see cref="ICam.Open"/> 이 정상 반환하면 이미 연결돼 있어야 한다 — 아니면 열기 실패로 보고 다시 시도한다.
+/// 그래서 팩토리가 <see cref="DeadCam"/> 을 돌려주면 첫 <see cref="Open"/> 이 그 사유를 담아 던진다(<c>RetryInitialOpen</c> 이면
+/// 던지지 않고 뒤에서 재시도한다 — 영영 안 붙는 자리면 <c>MaxAttempts</c> 로 끝낸다).
+///
+/// 통지는 상태를 락 안에서 정한 뒤 락 밖에서 낸다(구독자가 되불러도 되게). 그래서 서로 다른 스레드에서 난 전이(예: 재연결의 켜짐과
+/// 그 직후의 상실)는 구독자에게 순서가 엇갈려 닿을 수 있다 — <b>권위 있는 값은 <see cref="IsConnected"/>·<see cref="IsGrabbing"/> 이다</b>
+/// (<see cref="ICam.IsConnected"/> 가 통지를 거울질하기보다 값을 폴링하라고 권하는 이유).
 /// </summary>
 public sealed class ReconnectingCam : ICam, ICamGrabAsync
 {
@@ -46,6 +54,8 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     private bool _wantContinuous;         // 사용자 의도(내부 인스턴스와 분리 보관)
     private int _intentVersion;           // 의도가 바뀔 때마다 증가 — 복원과 사용자 명령의 경합 판정
     private double? _exposureUs;          // 런타임 지정 노출 — 새 인스턴스에 재적용
+    private int _exposureVersion;         // _exposureUs 가 바뀔 때마다 증가 — 장착 중에 온 노출을 놓치지 않게
+    private int _attachedExposureVersion; // 현재 인스턴스에 적용한 노출의 판
 
     private Task? _reconnectTask;
     private CancellationTokenSource? _reconnectCts;
@@ -120,7 +130,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             _gate.Release();
         }
         // 게이트를 놓은 뒤라 그 사이 닫기·상실이 끼어들 수 있다 — 장착한 그 인스턴스가 아직 현재일 때만 연결을 알린다.
-        RaiseConnectedIfCurrent(attached);
+        // 재연결과 같은 뒷일(노출·연속 취득 의도)도 여기서 한다. 전에는 재연결만 의도를 되살려서, 상실 뒤 사용자가 손수 연 세션이나
+        // 여는 사이 들어온 StartContinuous 는 라이브가 안 켜진 채 의도만 남았다(나중의 엉뚱한 재연결이 청하지 않은 라이브를 켰다).
+        AnnounceAttached(attached);
     }
 
     public void Close()
@@ -233,26 +245,36 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         }
         catch
         {
-            // 안쪽이 거부했다(단발 그랩이 기다리는 중 등). 부른 쪽은 예외를 받았는데 의도만 남겨 두면
-            // 다음 재연결 때 아무도 청하지 않은 연속 취득이 되살아난다 — 그 사이 새 의도가 없을 때만 되돌린다.
-            lock (_sync) { if (_intentVersion == myVersion) _wantContinuous = wantedBefore; }
+            bool closedMeanwhile;
+            lock (_sync)
+            {
+                // 닫기·해제·교체가 이긴 뒤라면(안쪽이 그 청산으로 닫히거나 폐기돼 던졌다) 부른 쪽에 안쪽의 예외를 올리지 않는다 — 나중 명령이
+                // 이긴 것이지 시작이 실패한 것이 아니다. 닫힌 것은 이 데코레이터인데 "폐기된 GevCam" 을 들으면 원인을 엉뚱한 데로 찾는다.
+                closedMeanwhile = _closed || _disposed || !ReferenceEquals(_inner, cam);
+                // 안쪽이 거부했다(단발 그랩이 기다리는 중 등). 부른 쪽은 예외를 받았는데 의도만 남겨 두면
+                // 다음 재연결 때 아무도 청하지 않은 연속 취득이 되살아난다 — 그 사이 새 의도가 없을 때만 되돌린다.
+                if (!closedMeanwhile && _intentVersion == myVersion) _wantContinuous = wantedBefore;
+            }
+            if (closedMeanwhile) return;
             throw;
         }
 
-        // 안쪽이 돌아오는 사이 정지(또는 닫기)가 왔으면 켜짐을 알리지 않는다 — 나중에 온 명령이 이긴다(ResumeContinuous 와 같은 규칙).
-        // 안쪽은 시작하지 않고 정상 반환할 수 있다(GevCam: 시작 전 대기 사이 온 정지가 이긴다). 여기서 그대로 켜짐을 알리면 정지 뒤에
-        // true 가 나가, 아무것도 안 도는데 IsGrabbing 이 참으로 남고 의도는 내려가 있어 재연결도 못 고친다(검토가 코드로 찾은 경로).
-        // 안쪽 IsGrabbing 은 보지 않는다 — 계약이 반환 시점의 값을 못 박지 않았고, 시작을 통지로만 알리는 구현도 있다.
-        // 시작하는 사이 세션이 죽었어도 알리지 않는다 — 끊김(false)이 이미 나간 뒤에 죽은 세션에 켜짐(true)이 나가, IsGrabbing=true·
-        // IsConnected=false 로 남았다(검토가 찾음). 의도는 남겨 두므로 재연결이 새 세션에서 되살린다.
+        // 켜짐은 <b>안쪽이 실제로 켜졌을 때만</b> 알린다. 안쪽은 시작하지 않고 정상 반환할 수 있다(GevCam: 부른 뒤 온 정지가 이긴다 —
+        // ICam.StartContinuous). 반환만 보고 알리면, 안쪽이 무른 시작을 켜짐으로 알려 아무것도 안 도는데 IsGrabbing=true 가 남는다.
+        // 우리 의도 순서와 안쪽의 정지 순서가 엇갈려도(두 스레드가 거의 같이 부른 정지·시작) 같은 이유로 거짓이 남는다(검토가 찾음).
+        // 안쪽 IsGrabbing 은 계약상 마지막 통지와 같은 말을 하고, 이 저장소의 구현은 전부 반환 전에 세운다 — 락 밖에서 읽는다(안쪽
+        // 게터가 제 락을 쥘 수 있다). 읽은 뒤 안쪽이 멈추면 그 통지가 OnInnerGrabStopped 로 와서 맞춰진다.
+        // 그 밖에: 정지·닫기가 나중에 왔으면 알리지 않고(나중 명령이 이긴다), 시작하는 사이 세션이 죽었어도 알리지 않는다(끊김 뒤에
+        // 켜짐이 나가 IsGrabbing=true·IsConnected=false 로 남았다 — 의도는 남아 재연결이 새 세션에서 되살린다).
         // 판정과 표시를 같은 락에서 한다 — 판정 뒤 표시 전에 끼어든 상실이 다시 틈이 되지 않게.
+        var innerGrabbing = cam.IsGrabbing;
         bool stopInner = false, announce = false;
         lock (_sync)
         {
             var sameInner = ReferenceEquals(_inner, cam);
             var superseded = (_intentVersion != myVersion && !_wantContinuous) || !sameInner || _closed || _disposed;
             if (superseded) stopInner = sameInner;
-            else if (_connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
+            else if (innerGrabbing && _connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
         }
         // 안쪽이 이미 시작했다면 정지가 이기도록 한 번 더 멈춘다 — 이미 멈춘 안쪽에는 아무 일도 안 한다. 청산된 안쪽은 건드리지 않는다.
         if (stopInner) Try(() => cam.StopContinuous());
@@ -262,15 +284,24 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     public void StopContinuous()
     {
         ICam? cam;
+        int myVersion;
         lock (_sync)
         {
             if (_disposed) return;
             _wantContinuous = false;
-            _intentVersion++;
+            myVersion = ++_intentVersion;
             cam = _connected ? _inner : null;
         }
         cam?.StopContinuous();
-        RaiseGrabbing(false);
+        // 이 정지가 아직 마지막 명령일 때만 꺼짐을 표시한다 — 안쪽을 멈추는 사이 더 나중의 시작이 들어와 실제로 켰다면, 여기서 내리면
+        // 라이브가 도는데 IsGrabbing=false 가 된다. 그 시작이 켜짐을 제 자리에서 알린다.
+        bool lower;
+        lock (_sync)
+        {
+            lower = _intentVersion == myVersion && _grabbing;
+            if (lower) _grabbing = false;
+        }
+        if (lower) SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
     }
 
     public void SetExposureTimeUs(double timeUs)
@@ -280,7 +311,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         {
             ThrowIfDisposed();
             _exposureUs = timeUs;             // 재연결 후 새 인스턴스에 재적용 (초기 옵션값으로 되돌아가지 않게)
+            _exposureVersion++;               // 장착 중에 온 값이면 장착한 쪽이 알아채고 다시 쓴다(ReapplyExposureIfStale)
             cam = _connected ? _inner : null;
+            if (cam is not null) _attachedExposureVersion = _exposureVersion;
         }
         cam?.SetExposureTimeUs(timeUs);
     }
@@ -303,12 +336,14 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             cam.Open();
 
             double? exposure;
-            lock (_sync) exposure = _exposureUs;
+            int exposureVersion;
+            lock (_sync) { exposure = _exposureUs; exposureVersion = _exposureVersion; }
             if (exposure is { } us) cam.SetExposureTimeUs(us);   // 연속취득 재개보다 먼저
 
             string? wonBy;
             lock (_sync)
             {
+                _attachedExposureVersion = exposureVersion;   // 장착 뒤 더 새 값이 와 있으면 ReapplyExposureIfStale 이 다시 쓴다
                 // ① 여는 사이 닫기·해제가 이겼다 — 열기에는 취소가 없어 닫기는 게이트를 시한까지만 기다리고 먼저 돌아간다. 여기서 장착하면
                 //    닫은 카메라가 연결된 채 남아 다음 닫기까지 장치 제어권을 쥔다(곧 다시 켠 프로세스가 "다른 응용이 잡고 있다" 로 실패한다).
                 //    이 확인은 장착과 같은 락 안이어야 한다 — 닫기가 _closed 를 세우는 것도 이 락 아래다.
@@ -411,6 +446,33 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     /// IsConnected=true·안쪽 없음, 다음 Open 은 "이미 참" 이라 연결을 알리지도 않았다(검토가 구독자로 틈을 넓혀 8/8 재현).
     /// 같은 틈에 온 상실도 _connected 가 아직 거짓이라 끊김 없이 재연결만 걸리고, 이 알림이 죽은 세션을 연결됨으로 세웠다.
     /// <c>internal</c> 인 것은 회귀가 틈을 흉내 내지 않고 규칙을 직접 부르게 하려는 것이다.</summary>
+    /// <summary>장착한 세션의 뒷일 — 연결을 알리고(현재일 때만), 장착 중에 온 노출을 다시 쓰고, 연속 취득 의도를 되살린다.
+    /// 첫 열기와 재장착이 같은 길을 탄다.</summary>
+    private void AnnounceAttached(ICam? cam)
+    {
+        if (cam is null || !RaiseConnectedIfCurrent(cam)) return;
+        ReapplyExposureIfStale(cam);
+        ResumeContinuous(cam);
+    }
+
+    /// <summary>장착 중에(노출을 읽은 뒤·연결을 알리기 전) 온 <see cref="SetExposureTimeUs"/> 를 그 세션에 다시 쓴다. 그 사이에는
+    /// 연결 전이라 값이 기록만 되고 안쪽으로 안 갔다 — 예외도 로그도 없이 옛 노출로 도는, 계약이 막으라고 적은 바로 그 모양이었다(검토가 찾음).</summary>
+    private void ReapplyExposureIfStale(ICam cam)
+    {
+        double? exposure;
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_inner, cam) || _attachedExposureVersion == _exposureVersion) return;
+            exposure = _exposureUs;
+            _attachedExposureVersion = _exposureVersion;
+        }
+        if (exposure is { } us)
+        {
+            try { cam.SetExposureTimeUs(us); }
+            catch (Exception ex) { CvLog.Publish(CvLogLevel.Warning, LogSource, $"[{Name}] failed to apply exposure {us}us set during reconnect.", ex); }
+        }
+    }
+
     internal bool RaiseConnectedIfCurrent(ICam? cam)
     {
         if (cam is null) return false;
@@ -507,7 +569,13 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         {
             do
             {
-                lock (_sync) _reconnectPending = false;   // 이번 라운드가 흡수한다
+                lock (_sync)
+                {
+                    // 취소된 루프는 요청을 흡수하지 않는다 — 늦게 뜬 태스크가 이미 취소된 채 다음 세션의 상실 요청을 지우면, 아무도 그
+                    // 요청을 처리하지 않아 죽은 세션이 영영 안 되살아났다(RetireLoop 가 남은 요청을 새 루프로 넘기는데, 지워 버리면 넘길 것이 없다).
+                    if (ct.IsCancellationRequested) break;
+                    _reconnectPending = false;   // 이번 라운드가 흡수한다
+                }
                 RunAttempts(ct);
             }
             while (ShouldRepeat(ct));
@@ -555,7 +623,15 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         ICam? attached = null;
         try
         {
-            lock (_sync) { if (_closed || _disposed || ct.IsCancellationRequested) return false; }
+            lock (_sync)
+            {
+                if (_closed || _disposed || ct.IsCancellationRequested) return false;
+                // 이미 살아 있는 세션을 뜯지 않는다. 재장착이 실패해 안쪽이 비어 있는 백오프 사이 사용자·감시 코드가 Open 으로 손수 붙였거나
+                // (ICam.Open 이 상실 뒤 다시 열라고 권한다), 실패한 두 번째 Open 이 남긴 요청이 한 라운드를 더 돌면, 이 시도가 멀쩡한 세션을
+                // 청산하고 다시 열었다 — 그 사이 그랩은 "재연결 중" 으로 실패하고 라이브가 끊겼다(검토가 재현). 죽음이 접수된 안쪽
+                // (_lostInner)만 교체 대상이다. 할 일이 없으니 성공으로 물러난다.
+                if (_inner is { } current && !ReferenceEquals(_lostInner, current)) return true;
+            }
             retired = RetireInner();
             var proceed = true;
             lock (_sync) { if (_closed || _disposed || ct.IsCancellationRequested) proceed = false; }
@@ -576,7 +652,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         if (attached is null) return false;
         // 장착은 끝났다(true). 게이트를 놓은 틈에 닫기가 이겼으면 알리지 않고 루프는 닫힘을 보고 물러난다. 상실이 이겼으면 그 상실이
         // 이미 다음 라운드를 걸어 두었다(_reconnectPending) — 여기서 되살리려 들지 않는다.
-        if (RaiseConnectedIfCurrent(attached)) ResumeContinuous(attached);
+        AnnounceAttached(attached);
         return true;
     }
 
@@ -596,16 +672,22 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         try { cam.StartContinuous(); }
         catch (Exception ex)
         {
-            CvLog.Publish(CvLogLevel.Warning, LogSource, $"[{Name}] failed to resume continuous grab after reconnect.", ex);
+            // 그사이 닫기·해제·교체·상실이 이겼으면 재개의 실패가 아니다 — 경고로 남기면 로그를 읽는 사람이 엉뚱한 데를 찾는다.
+            bool superseded;
+            lock (_sync) superseded = _closed || _disposed || !ReferenceEquals(_inner, cam) || ReferenceEquals(_lostInner, cam);
+            CvLog.Publish(superseded ? CvLogLevel.Info : CvLogLevel.Warning, LogSource,
+                superseded ? $"[{Name}] resuming continuous grab was abandoned: the session was closed or lost meanwhile."
+                           : $"[{Name}] failed to resume continuous grab after reconnect.", ex);
             return;
         }
 
+        var innerGrabbing = cam.IsGrabbing;   // 안쪽이 실제로 켜졌을 때만 알린다(StartContinuous 와 같은 이유)
         bool undo = false, announce = false;
         lock (_sync)
         {
             var sameInner = ReferenceEquals(_inner, cam);
             if ((_intentVersion != version && !_wantContinuous) || !sameInner || _closed || _disposed) undo = sameInner;
-            else if (_connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
+            else if (innerGrabbing && _connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
         }
         if (undo) Try(() => cam.StopContinuous());   // 재개 도중 들어온 정지 명령이 이긴다
         if (announce) SafeRaise(() => GrabbingChanged?.Invoke(this, true), nameof(GrabbingChanged));

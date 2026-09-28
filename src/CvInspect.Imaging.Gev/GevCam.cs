@@ -109,8 +109,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// <summary>이 세션에서 전송 표본이 상한에 걸렸다고 이미 남겼는가 — 한 번만 남긴다.</summary>
     private int _readoutClampLogged;
 
-    /// <summary><see cref="StopContinuous"/> 가 불린 횟수(<see cref="_sync"/> 아래에서 올린다). <see cref="StartContinuous"/> 가 락 밖에서
-    /// 비정상 정지 뒤 대기를 하는 사이 정지가 왔는지 가린다 — 왔으면 시작하지 않는다.</summary>
+    /// <summary><see cref="StopContinuous"/> 가 불린 횟수 — <b>불린 순간</b>에 올린다(락을 잡을 때가 아니라). <see cref="StartContinuous"/> 가
+    /// 부를 때 떠 둔 값과 락 안에서 견줘, 그 뒤에 불린 정지가 있으면 시작하지 않는다. 락을 잡을 때 올리던 판에서는 시작보다 <b>먼저</b>
+    /// 불렸지만 락을 기다리던 정지(다른 호출이 락을 쥐고 있던 동안)가 나중 명령으로 세어져 시작을 물렀다(검토가 찾음 — 감싼 쪽은 그때
+    /// 켜짐을 알려 아무것도 안 도는데 IsGrabbing=true 가 남았다).</summary>
     private int _stopRequests;
 
     /// <summary>다음 시작 전 대기에 더하는 여유(ms). 세 노출에서 잰 경계보다 이만큼 늦게 시작한다.</summary>
@@ -921,6 +923,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 세션에서는 아무도 라이브를 청하지 않았다.
         var stopsAtCall = Volatile.Read(ref _stopRequests);
         var streamAtCall = _stream;
+        var connectedAtCall = IsConnected;
         if (!_disposed && _dev != null && IsConnected && _pump == null && _grabCts == null && SettleWaitMs() is var settleMs and > 0)
             Thread.Sleep(settleMs);
 
@@ -935,8 +938,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // 부를 때 안 열려 있었으면(null) 견주지 않는다 — 그때 연 것은 이 시작이 기다리던 일이다.
             if (streamAtCall is not null && !ReferenceEquals(stream, streamAtCall))
                 notStarted = "the camera was closed or reopened after this start was requested";
-            else if (_stopRequests != stopsAtCall)
+            else if (Volatile.Read(ref _stopRequests) != stopsAtCall)
                 notStarted = "StopContinuous was called after this start was requested";
+            // 부를 때는 연결돼 있었는데 기다리는 사이 제어를 잃었다 — 죽은 장치에 시작을 걸면 제어 상실 예외가 올라가, 감싼 쪽은 그것을
+            // "시작 거부" 로 읽고 라이브 의도를 거둔다(재연결이 라이브를 안 되살린다). 상실은 이미 통지됐으니 조용히 접는다.
+            // 부를 때부터 끊겨 있던 것은 이 갈래가 아니다 — 그때는 종전대로 아래 장치 명령이 던진다.
+            else if (connectedAtCall && !IsConnected)
+                notStarted = "control of the camera was lost after this start was requested";
             else
             {
                 // 단발 그랩이 대기열을 기다리는 동안 펌프를 세우면 둘이 같은 대기열을 다툰다.
@@ -983,11 +991,12 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
     public void StopContinuous()
     {
+        // 돌 펌프가 없어도, 락을 잡기 전에 센다 — 락 밖에서 대기 중이거나 락을 기다리는 StartContinuous 가 부를 때 떠 둔 값과 견준다
+        // (_stopRequests 참조). 락을 잡은 뒤에 세면 먼저 불렸지만 락을 기다리던 정지가 나중 시작을 무른다.
+        Interlocked.Increment(ref _stopRequests);
         bool stopped;
         lock (_sync)
         {
-            // 돌 펌프가 없어도 센다 — 락 밖에서 대기 중인 StartContinuous 가 이것을 보고 시작을 접는다(그쪽 주석).
-            _stopRequests++;
             if (_disposed) return;
             stopped = StopPumpCore();
             if (stopped)
@@ -1412,7 +1421,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
                ? $"exposure {exposureUs}us was not applied: the exposure node is locked while ExposureAuto is {exposureAuto}, so the write was refused. "
                : $"exposure {exposureUs}us was written, but ExposureAuto is {exposureAuto}, so the camera keeps adjusting its exposure and the value will not hold. ") +
            "If a fixed exposure is intended, turn ExposureAuto off on the camera (or in the user set it loads). " +
-           "If automatic exposure is intended, leave CamOpt.ExposureTimeUs at 0 and do not call SetExposureTimeUs with a positive value " +
+           "If automatic exposure is intended, set CamOpt.ExposureTimeUs to 0 (its default, 10000, writes an exposure on every open) and do not call SetExposureTimeUs with a positive value " +
            "(this camera instance keeps such a value and writes it again on reopen), so no exposure is written.";
 
     /// <summary>노출 시간(마이크로초) 적용. <b>노드 이름이 하나가 아니다</b> — 표준 세대가 갈려
@@ -1708,9 +1717,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
         WriteLog(CvLogLevel.Info,
             $"camera state: pixelFormat={pixel ?? "?"} size={w?.ToString() ?? "?"}x{h?.ToString() ?? "?"} " +
             $"payloadSize={payload?.ToString() ?? "?"} acquisitionMode={acq ?? "?"} " +
-            $"triggerMode={trigMode ?? "(absent)"} triggerSource={trigSrc ?? "(absent)"} " +
+            $"triggerMode={Shown(trigMode, "TriggerMode")} triggerSource={Shown(trigSrc, "TriggerSource")} " +
             $"exposure={(_openedExposureUs > 0 ? _openedExposureUs.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "us" : "?")} " +
-            $"exposureAuto={exposureAuto ?? "(absent)"} grabKey={grabKey}");
+            $"exposureAuto={Shown(exposureAuto, "ExposureAuto")} grabKey={grabKey}");
+
+        // 못 읽은 값을 "없음" 으로 적지 않는다 — 노드가 있는데 전송 오류로 못 읽은 것을 (absent) 로 남기면, 트리거 모드인 카메라가
+        // 트리거 없는 카메라로 읽힌다(진단 읽기는 전송 실패도 삼킨다 — TryReadEnumAsync).
+        string Shown(string? value, string node) => value ?? (nodes.GetNode(node) is null ? "(absent)" : "(unreadable)");
 
         if (_triggerModeOn)
             WriteLog(CvLogLevel.Warning,

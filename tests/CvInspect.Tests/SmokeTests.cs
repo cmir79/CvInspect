@@ -990,6 +990,133 @@ public class SmokeTests
             $"only real transitions are announced: [{string.Join(",", conn)}]");
     }
 
+    /// <summary>10-R9) 재연결 루프는 이미 살아 있는 세션을 뜯지 않는다. 재장착이 실패해 안쪽이 빈 백오프 사이 사용자가 Open 으로 손수 붙이면,
+    /// 루프의 다음 시도가 그 멀쩡한 세션을 청산하고 다시 열었다(그 사이 그랩 실패·라이브 끊김 — 검토가 재현). 손수 연 세션에서도 끊기기
+    /// 전의 라이브 의도가 되살아나야 한다(전에는 재연결만 되살렸다).</summary>
+    [Fact]
+    public void ReconnectingCamDoesNotTearDownAHealthySession()
+    {
+        var made = new List<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+        {
+            lock (made) { var c = new FakeCam { FailOnOpen = made.Count == 1 }; made.Add(c); return c; }   // 첫 재장착은 실패한다
+        }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 50, 400 }, ShutdownWaitMs = 1000 });
+        cam.Open();
+        cam.StartContinuous();
+        made[0].LoseConnection();
+        Check(WaitFor(() => { lock (made) return made.Count == 2; }), "the first reconnect attempt ran (and failed)");
+        Thread.Sleep(50);                                   // 두 번째 시도는 400 ms 뒤 — 그 사이 사용자가 손수 연다
+        cam.Open();
+        Check(cam.IsConnected && cam.IsGrabbing && made[2].IsGrabbing,
+            $"a manual Open after a loss connects and resumes the live intent (connected={cam.IsConnected}, grabbing={cam.IsGrabbing})");
+        Thread.Sleep(600);                                  // 루프의 두 번째 시도가 지나간다
+        lock (made) Check(made.Count == 3 && !made[2].Disposed,
+            $"the loop's next attempt leaves the healthy session alone (instances={made.Count}, manual session disposed={made[2].Disposed})");
+        Check(cam.IsConnected && cam.IsGrabbing, "...and it is still connected and live");
+    }
+
+    /// <summary>10-R10) 장착 중에 들어온 노출이 새 세션에 들어간다. 장착이 노출을 읽어 쓴 뒤·연결을 알리기 전에 온 SetExposureTimeUs 는
+    /// 연결 전이라 기록만 되고 안쪽으로 안 갔다 — 예외도 로그도 없이 옛 노출로 돌았다(검토가 찾음).</summary>
+    [Fact]
+    public void ReconnectingCamExposureSetDuringAttachIsApplied()
+    {
+        var made = new List<FakeCam>();
+        CvInspect.Imaging.ReconnectingCam? wrapper = null;
+        using var cam = wrapper = new CvInspect.Imaging.ReconnectingCam(() =>
+        {
+            lock (made)
+            {
+                var c = new FakeCam();
+                // 새 세션에 옛 노출이 들어가는 바로 그 순간, 사용자가 새 노출을 준다(연결을 알리기 전)
+                if (made.Count == 1) c.OnSetExposure = us => { if (us == 1111) { c.OnSetExposure = null; wrapper!.SetExposureTimeUs(9999); } };
+                made.Add(c);
+                return c;
+            }
+        }, FastReconnect);
+        cam.Open();
+        cam.SetExposureTimeUs(1111);
+        made[0].LoseConnection();
+        Check(WaitFor(() => { lock (made) return made.Count == 2 && cam.IsConnected; }), "the session is rebuilt");
+        Check(WaitFor(() => made[1].LastExposure == 9999),
+            $"the exposure given while the new session was being attached reaches it (got {made[1].LastExposure})");
+    }
+
+    /// <summary>10-R11) 안쪽이 시작하지 않고 돌아오면 켜짐을 알리지 않는다. 안쪽은 다른 경로의 정지에 져서 정상 반환할 수 있는데(GevCam),
+    /// 데코레이터는 반환만 보고 켜짐을 알려 아무것도 안 도는데 IsGrabbing=true 가 남았다(검토가 찾음 — 두 스레드가 거의 같이 부른
+    /// 정지·시작에서 우리 의도 순서와 안쪽 정지 순서가 엇갈리는 경로).</summary>
+    [Fact]
+    public void ReconnectingCamStartTheInnerAbandonedIsNotAnnounced()
+    {
+        var made = new List<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => { lock (made) { var c = new FakeCam(); made.Add(c); return c; } }, FastReconnect);
+        var grab = new List<bool>();
+        cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+        cam.Open();
+        made[0].StandDownNextStart = true;
+        cam.StartContinuous();
+        Check(!cam.IsGrabbing && !made[0].IsGrabbing, $"a start the inner camera abandoned is not reported grabbing (wrapper={cam.IsGrabbing})");
+        lock (grab) Check(grab.Count == 0, $"no GrabbingChanged(true) for it: [{string.Join(",", grab)}]");
+        cam.StartContinuous();                              // 대조 — 다음 시작은 켜지고 알린다
+        Check(cam.IsGrabbing && made[0].IsGrabbing, "control: a start the inner camera carries out is reported");
+        lock (grab) Check(grab.SequenceEqual(new[] { true }), $"control: one GrabbingChanged(true): [{string.Join(",", grab)}]");
+    }
+
+    /// <summary>10-R12) 시작하는 사이 닫기가 이기면 시작은 조용히 돌아온다. 닫기가 안쪽을 폐기해 안쪽 시작이 "폐기된 객체" 로 던지는데,
+    /// 그 예외를 그대로 올리면 닫힌 것은 이 데코레이터인데 부른 쪽은 폐기된 안쪽 카메라 이름을 듣는다 — 나중 명령이 이긴 것이지 실패가 아니다.</summary>
+    [Fact]
+    public void ReconnectingCamStartEndedByCloseReturnsQuietly()
+    {
+        var made = new List<FakeCam>();
+        var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+        {
+            lock (made) { var c = new FakeCam { HoldBeforeStartMs = 200 }; made.Add(c); return c; }
+        }, FastReconnect);
+        cam.Open();
+        Exception? startEx = null;
+        var starter = new Thread(() => { try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; } }) { IsBackground = true };
+        starter.Start();
+        Check(WaitFor(() => made[0].IsStarting), "the start is in progress");
+        cam.Close();
+        Check(starter.Join(2000), "the start returns");
+        Check(startEx is null, $"a start ended by Close returns without an exception ({startEx?.GetType().Name}: {startEx?.Message})");
+        Check(!cam.IsGrabbing && !cam.IsConnected, "nothing is reported grabbing or connected after Close");
+        cam.Dispose();
+    }
+
+    /// <summary>10-G-16) GevCam 은 정지를 <b>불린 순간</b>에 센다. 락을 잡을 때 세던 판에서는, 시작보다 먼저 불렸지만 다른 호출이 쥔 락을
+    /// 기다리던 정지가 나중 명령으로 세어져 시작을 물렀다(검토가 찾음 — 감싼 쪽은 켜짐을 알려 IsGrabbing=true 가 남았다).
+    /// 장치 없이: 락을 다른 스레드가 쥔 채 정지를 부르고, 정지가 락을 기다리는 동안 이미 세어졌는지 본다.</summary>
+    [Fact]
+    public void GevCamCountsAStopWhenItIsCalled()
+    {
+        using var gev = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" });
+        var sync = typeof(CvInspect.Imaging.Gev.GevCam).GetField("_sync", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(gev)!;
+        var stops = typeof(CvInspect.Imaging.Gev.GevCam).GetField("_stopRequests", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var held = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        var holder = new Thread(() => { lock (sync) { held.Set(); release.Wait(); } }) { IsBackground = true };
+        holder.Start();
+        held.Wait();
+        var stopper = new Thread(gev.StopContinuous) { IsBackground = true };
+        stopper.Start();
+        bool counted, waiting;
+        int count;
+        try
+        {
+            counted = WaitFor(() => (int)stops.GetValue(gev)! == 1, 1000);
+            count = (int)stops.GetValue(gev)!;
+            waiting = stopper.IsAlive;
+        }
+        finally
+        {
+            // 단언보다 먼저 락을 놓는다 — 단언이 던지면 락을 쥔 스레드가 폐기된 신호를 기다리다 프로세스를 내린다.
+            release.Set();
+        }
+        var finished = stopper.Join(2000) && holder.Join(2000);
+        Check(counted && waiting, $"a stop waiting for the camera lock is already counted (count={count}, still waiting={waiting})");
+        Check(finished, "the stop completes once the lock is free");
+    }
+
     /// <summary>10-R7) 시작하는 사이 세션이 죽으면 켜짐을 알리지 않는다. 시작 뒤 검사가 의도·인스턴스·닫힘만 보고 연결은 안 봐서,
     /// 끊김(false)이 나간 뒤에 죽은 세션에 대해 켜짐(true)이 나갔다 — IsGrabbing=true, IsConnected=false (검토가 찾음).
     /// 의도는 남으므로 재연결이 새 세션에서 되살린다.</summary>
@@ -1328,9 +1455,10 @@ public class SmokeTests
                 "Continuous and Once both let the camera set its own exposure");
             var refused = CvInspect.Imaging.Gev.GevCam.ExposureAutoMessage("Continuous", 12005, writeRefused: true);
             var accepted = CvInspect.Imaging.Gev.GevCam.ExposureAutoMessage("Once", 12005, writeRefused: false);
-            Check(refused.Contains("ExposureAuto is Continuous") && refused.Contains("refused") && refused.Contains("CamOpt.ExposureTimeUs at 0")
-                  && refused.Contains("SetExposureTimeUs"),
-                $"a refused write names ExposureAuto and gives both ways out, naming both exposure sources ({refused})");
+            // "0 으로 두라" 가 아니라 "0 으로 하라" — 자동 노출에 기대는 현장은 대개 기본값 10000 이 그대로라 이미 0 이 아니다.
+            Check(refused.Contains("ExposureAuto is Continuous") && refused.Contains("refused") && refused.Contains("set CamOpt.ExposureTimeUs to 0")
+                  && refused.Contains("default, 10000") && refused.Contains("SetExposureTimeUs"),
+                $"a refused write names ExposureAuto and gives both ways out, naming both exposure sources and the default that writes ({refused})");
             Check(accepted.Contains("ExposureAuto is Once") && accepted.Contains("will not hold") && accepted.Contains("turn ExposureAuto off"),
                 $"an accepted write under automatic exposure says the value will not hold ({accepted})");
         }

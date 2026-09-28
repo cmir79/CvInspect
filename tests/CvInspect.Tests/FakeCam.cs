@@ -96,6 +96,12 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// <summary>시작 대기 안에 들어와 있는가 — 시험이 "지금 시작하는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
     public volatile bool IsStarting;
 
+    /// <summary>다음 <see cref="StartContinuous"/> 한 번이 <b>시작하지 않고 예외 없이</b> 돌아온다 — 다른 경로의 정지에 진 시작(GevCam)의 모양.</summary>
+    public bool StandDownNextStart { get; set; }
+
+    /// <summary>노출을 쓸 때 부를 것 — 시험이 "안쪽에 노출이 들어가는 그 순간" 에 다른 조작을 끼워 넣는다.</summary>
+    public Action<double>? OnSetExposure { get; set; }
+
     public void StartContinuous()
     {
         if (FailNextStart) { FailNextStart = false; throw new InvalidOperationException("fake start failure"); }
@@ -106,6 +112,9 @@ sealed class FakeCam : CvInspect.Imaging.ICam
             Thread.Sleep(HoldBeforeStartMs);
             IsStarting = false;
         }
+        // 기다리는 사이 폐기됐으면 던진다 — GevCam 도 락을 잡자마자 해제를 확인해 던진다.
+        if (Disposed) throw new ObjectDisposedException(nameof(FakeCam));
+        if (StandDownNextStart) { StandDownNextStart = false; return; }
         if (Volatile.Read(ref _stops) != stopsAtCall) return;
         if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
     }
@@ -114,7 +123,11 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         Interlocked.Increment(ref _stops);
         if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
     }
-    public void SetExposureTimeUs(double timeUs) => LastExposure = timeUs;
+    public void SetExposureTimeUs(double timeUs)
+    {
+        LastExposure = timeUs;
+        OnSetExposure?.Invoke(timeUs);
+    }
     public void Dispose() { Disposed = true; IsConnected = false; IsGrabbing = false; }
 
     /// <summary>연결은 살아 있는데 취득만 죽은 경우를 흉내낸다 — 수신 스트림이 접히거나 수신이 실패해
