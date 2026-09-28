@@ -93,11 +93,19 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     public int HoldBeforeStartMs { get; set; }
     private int _stops;
 
+    /// <summary>시작 대기 안에 들어와 있는가 — 시험이 "지금 시작하는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
+    public volatile bool IsStarting;
+
     public void StartContinuous()
     {
         if (FailNextStart) { FailNextStart = false; throw new InvalidOperationException("fake start failure"); }
         var stopsAtCall = Volatile.Read(ref _stops);
-        if (HoldBeforeStartMs > 0) Thread.Sleep(HoldBeforeStartMs);
+        if (HoldBeforeStartMs > 0)
+        {
+            IsStarting = true;
+            Thread.Sleep(HoldBeforeStartMs);
+            IsStarting = false;
+        }
         if (Volatile.Read(ref _stops) != stopsAtCall) return;
         if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
     }
