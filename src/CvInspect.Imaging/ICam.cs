@@ -74,7 +74,15 @@ public interface ICam : IDisposable
     ///
     /// <b>제어권을 잃어 <see cref="IsConnected"/> 가 false 로 떨어진 뒤라면 이 호출이 다시 연다</b> —
     /// 그때는 장치 참조가 남아 있어도 "열려 있는 것" 이 아니다. 죽은 세션을 먼저 접고 새로 여는 것이
-    /// 구현의 몫이다. 조용히 돌아가면 부른 쪽은 되살아난 줄 알고 오지 않을 프레임을 기다린다.</summary>
+    /// 구현의 몫이다. 조용히 돌아가면 부른 쪽은 되살아난 줄 알고 오지 않을 프레임을 기다린다.
+    ///
+    /// <b><see cref="ReconnectingCam"/> 으로 감쌀 구현은: 정상 반환했으면 <see cref="IsConnected"/> 가 이미 참이어야 한다.</b>
+    /// 그 데코레이터는 열기 뒤 이 값으로 연결을 판정하고, 거짓이면 열기 실패로 보고 다시 시도한다 — 연결을 나중에(콜백으로) 세우는
+    /// 구현은 감싸면 끝내 붙지 못한다. 열자마자 연결을 잃은 경우도 같은 길로 걸러지므로, 잃었으면 상태를 먼저 내리고 통지한다
+    /// (<see cref="GrabbingChanged"/> 의 구현자 안내).
+    /// 이 요건을 일부러 따르지 않는 것: <see cref="DeadCam"/>(장치가 없어 경고만 남기고 돌아온다 — 감싸면 열기 실패로 다뤄진다)과
+    /// <see cref="ReconnectingCam"/> 자신 — <c>RetryInitialOpen</c> 이면 첫 열기 실패에도 조용히 돌아와 뒤에서 재시도하고, 여는 사이 다른
+    /// 스레드의 닫기가 이기면 세션을 버리고 닫힌 채 돌아오며, 연 세션을 알리기 전에 잃으면 끊긴 채 돌아와 재연결에 맡긴다.</summary>
     void Open();
     void Close();
 
@@ -115,8 +123,14 @@ public interface ICam : IDisposable
 
     /// <summary>연속 취득 시작. <b>시작 전에 부른 쪽을 잠깐 붙잡을 수 있다</b> — 구현이 장치 사정으로 시작을 미루는 경우다
     /// (<c>GevCam</c>: 장을 못 받고 끝난 단발 그랩 바로 뒤면, 그 그랩의 시작으로부터 노출 + 325 ms 이내까지 기다린다 — 곧바로
-    /// 건 라이브의 장이 잘리는 기종이 있다). UI 스레드에서 부르면 그만큼 굳는다.</summary>
-    /// <exception cref="InvalidOperationException">단발 그랩이 장을 기다리는 중이다.</exception>
+    /// 건 라이브의 장이 잘리는 기종이 있다). UI 스레드에서 부르면 그만큼 굳는다. 부른 뒤 시작하기까지(그 대기 포함) 다른
+    /// 스레드에서 <see cref="StopContinuous"/> 가 불리면 정지가 이긴다 — <b>시작하지 않고 예외 없이 돌아온다</b>(<c>GevCam</c>: 닫았다
+    /// 다시 연 경우와, 기다리는 사이 제어를 잃은 경우도 같다. 그냥 닫혔으면 닫힌 카메라라 던진다 — <see cref="ReconnectingCam"/> 은
+    /// 닫기가 이긴 시작을 조용히 돌려준다).
+    /// 그래서 정상 반환이 곧 "시작했다" 는 아니다 — 켜졌는지는 <see cref="IsGrabbing"/>·<see cref="GrabbingChanged"/> 로 본다(감싸는
+    /// 구현도 반환만 보고 켜짐을 알리면 안 된다). 구현자에게 — 시작했으면 <see cref="IsGrabbing"/> 은 반환 전에 이미 참이어야 한다
+    /// (감싸는 쪽이 반환 직후 그 값으로 켜짐을 가린다).</summary>
+    /// <exception cref="InvalidOperationException">단발 그랩이 장을 기다리는 중이다. 또는 열려 있지 않다.</exception>
     void StartContinuous();
 
     /// <summary>연속 취득 중지. 구현은 <b>남아 있는 프레임을 버린다</b> — 다음 <see cref="GrabOne"/> 이

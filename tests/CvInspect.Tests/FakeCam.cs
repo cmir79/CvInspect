@@ -17,12 +17,28 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     public event EventHandler<CvInspect.Imaging.ConnArgs>? ConnectionChanged;
     public event EventHandler<bool>? GrabbingChanged;
 
+    /// <summary>열기가 성공한 <b>직후</b>(돌려주기 전) 연결을 잃는다 — 열자마자 링크가 죽는 경우를 결정적으로 만든다.</summary>
+    public bool LoseRightAfterOpen { get; init; }
+
+    /// <summary>0 보다 크면 열기가 그만큼 붙잡혔다가 성공한다 — 끊긴 장치로의 연결 시도처럼 취소할 수 없는 느린 열기.</summary>
+    public int HoldOnOpenMs { get; init; }
+
+    /// <summary>열기 안에 들어와 붙잡혀 있는가 — 시험이 "지금 열리는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
+    public volatile bool IsOpening;
+
     public void Open()
     {
         if (FailOnOpen) throw new InvalidOperationException("fake open failure");
         if (IsConnected) return;
+        if (HoldOnOpenMs > 0)
+        {
+            IsOpening = true;
+            Thread.Sleep(HoldOnOpenMs);
+            IsOpening = false;
+        }
         IsConnected = true;
         ConnectionChanged?.Invoke(this, new CvInspect.Imaging.ConnArgs(true));
+        if (LoseRightAfterOpen) LoseConnection();
     }
 
     public void Close()
@@ -72,13 +88,60 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         }
         FrameAcquired?.Invoke(this, frame);
     }
+    /// <summary>0 보다 크면 StartContinuous 가 시작 전에 그만큼 기다리고, 그 사이 StopContinuous 가 오면 <b>시작하지 않고 예외 없이</b>
+    /// 돌아온다 — 비정상 정지 뒤 대기를 하는 GevCam 의 모양(ICam.StartContinuous: 대기 사이 온 정지가 이긴다).</summary>
+    public int HoldBeforeStartMs { get; set; }
+    private int _stops;
+
+    /// <summary>시작 대기 안에 들어와 있는가 — 시험이 "지금 시작하는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
+    public volatile bool IsStarting;
+
+    /// <summary>다음 <see cref="StartContinuous"/> 한 번이 <b>시작하지 않고 예외 없이</b> 돌아온다 — 다른 경로의 정지에 진 시작(GevCam)의 모양.</summary>
+    public bool StandDownNextStart { get; set; }
+
+    /// <summary>0 보다 크면 StartContinuous 가 <b>켜지 않은 채 돌아오고</b>, 그만큼 뒤에 다른 스레드에서 켜고 알린다 — 시작을 SDK 콜백으로
+    /// 늦게 알리는 어댑터의 모양(ICam 요건을 안 지키는 구현).</summary>
+    public int LateStartMs { get; set; }
+
+    /// <summary>노출을 쓸 때 부를 것 — 시험이 "안쪽에 노출이 들어가는 그 순간" 에 다른 조작을 끼워 넣는다.</summary>
+    public Action<double>? OnSetExposure { get; set; }
+
     public void StartContinuous()
     {
         if (FailNextStart) { FailNextStart = false; throw new InvalidOperationException("fake start failure"); }
+        var stopsAtCall = Volatile.Read(ref _stops);
+        if (HoldBeforeStartMs > 0)
+        {
+            IsStarting = true;
+            Thread.Sleep(HoldBeforeStartMs);
+            IsStarting = false;
+        }
+        // 기다리는 사이 폐기됐으면 던진다 — GevCam 도 락을 잡자마자 해제를 확인해 던진다.
+        if (Disposed) throw new ObjectDisposedException(nameof(FakeCam));
+        if (StandDownNextStart) { StandDownNextStart = false; return; }
+        if (Volatile.Read(ref _stops) != stopsAtCall) return;
+        if (LateStartMs > 0)
+        {
+            var late = LateStartMs;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                Thread.Sleep(late);
+                if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+            });
+            return;
+        }
         if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
     }
-    public void StopContinuous() { if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); } }
-    public void SetExposureTimeUs(double timeUs) => LastExposure = timeUs;
+    public void StopContinuous()
+    {
+        Interlocked.Increment(ref _stops);
+        if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
+    }
+    public void SetExposureTimeUs(double timeUs)
+    {
+        LastExposure = timeUs;
+        OnSetExposure?.Invoke(timeUs);
+    }
     public void Dispose() { Disposed = true; IsConnected = false; IsGrabbing = false; }
 
     /// <summary>연결은 살아 있는데 취득만 죽은 경우를 흉내낸다 — 수신 스트림이 접히거나 수신이 실패해
