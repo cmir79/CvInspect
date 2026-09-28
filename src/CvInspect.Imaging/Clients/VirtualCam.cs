@@ -36,6 +36,17 @@ public sealed class VirtualCam : ICam
     private int _emitThreadId;   // 지금 틱을 도는 스레드 — 그 스레드가 부른 정지는 자기를 기다리면 안 된다
     private bool _disposed;
 
+    // 정지가 기다리는 것 — 타이머의 폐기 대기(Dispose(WaitHandle))가 아니라 우리가 센 "발행 중인 틱". 폐기 대기는 그것을 부른 첫 정지만
+    // 받아서, 겹쳐 부른 두 번째 정지·닫기·해제·단발 그랩은 기다리지 않고 돌아가 그 뒤에 옛 틱의 프레임이 나갔다(다음 단발 그랩의 답으로
+    // 읽힌다 — 검토가 찾음). 그리고 폐기 대기가 도는 콜백을 기다리는지는 런타임 구현에 달려 있다(.NET 8 은 기다린다, 다른 런타임은 확인 안 함).
+    private readonly object _tickSync = new();
+    private readonly ManualResetEventSlim _tickIdle = new(true);   // 발행 중인 틱이 없다. 폐기하지 않는다 — 시한 뒤에 끝난 틱이 세운다
+    private int _liveGen;                                         // 타이머 세대 — 정지마다 올린다. 옛 세대의 틱은 발행하지 않는다
+    private int _tickSeq;                                         // 발행에 들어선 틱의 번호(1부터)
+    private int _runningTick;                                     // 지금 발행 중인 틱의 번호(없으면 0)
+    private int _givenUpTick;                                     // 누군가 시한까지 기다리고 포기한 틱 — 같은 틱을 또 기다리지 않는다
+    private const int DrainCapMs = 1000;
+
     // 이미지 폴더 파일 목록 캐시 — 경로 또는 폴더 LastWriteTime(파일 추가/삭제) 변경 시에만 재열거
     private string _dirResolved = "";
     private DateTime _dirLastWrite = DateTime.MinValue;
@@ -87,15 +98,14 @@ public sealed class VirtualCam : ICam
     {
         bool wasGrabbing = false;
         bool wasConnected = false;
-        WaitHandle? drain = null;
         lock (_sync)
         {
             if (_disposed) return;
-            (wasGrabbing, drain) = StopContinuousCore();
+            wasGrabbing = StopContinuousCore();
             wasConnected = IsConnected;
             IsConnected = false;
         }
-        DrainOutsideLock(drain);
+        WaitTicksOutsideLock();
         if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
         if (wasConnected) ConnectionChanged?.Invoke(this, new ConnArgs(false));
         WriteLog(CvLogLevel.Info, "Virtual camera closed.");
@@ -113,7 +123,18 @@ public sealed class VirtualCam : ICam
                     "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
                     "stream's. Call StopContinuous() first.");
         }
-        Emit();
+        WaitTicksOutsideLock();   // 정지된 라이브의 마지막 틱이 아직 돌면 그 프레임이 이 그랩의 답으로 읽힌다
+        // 기다리는 사이(최대 1 s) 닫히거나 해제됐거나 라이브가 다시 켜졌을 수 있다 — 다시 보고 낸다.
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            EnsureConnected();
+            if (_timer != null)
+                throw new InvalidOperationException(
+                    "Continuous acquisition was started while the single grab waited, so the grab cannot tell its own " +
+                    "frame from the stream's. Call StopContinuous() first.");
+        }
+        Emit(null);
     }
 
     public void StartContinuous()
@@ -127,7 +148,8 @@ public sealed class VirtualCam : ICam
 
             var fps = _opt.FrameRate > 0 ? _opt.FrameRate : 30;
             var intervalMs = (int)Math.Max(1, Math.Round(1000.0 / fps));
-            _timer = new Timer(_ => SafeEmit(), null, 0, intervalMs);
+            var gen = Volatile.Read(ref _liveGen);
+            _timer = new Timer(_ => SafeEmit(gen), null, 0, intervalMs);
             started = true;
         }
         WriteLog(CvLogLevel.Info, "Virtual camera continuous grab started.");
@@ -137,12 +159,11 @@ public sealed class VirtualCam : ICam
     public void StopContinuous()
     {
         bool stopped;
-        WaitHandle? drain = null;
         lock (_sync)
         {
-            (stopped, drain) = StopContinuousCore();
+            stopped = StopContinuousCore();
         }
-        DrainOutsideLock(drain);
+        WaitTicksOutsideLock();   // 첫 정지든 겹친 정지든 — 돌던 틱이 끝나야 돌아간다
         if (stopped)
         {
             WriteLog(CvLogLevel.Info, "Virtual camera continuous grab stopped.");
@@ -159,70 +180,66 @@ public sealed class VirtualCam : ICam
     public void Dispose()
     {
         bool wasGrabbing = false;
-        WaitHandle? drain = null;
         lock (_sync)
         {
             if (_disposed) return;
-            (wasGrabbing, drain) = StopContinuousCore();
+            wasGrabbing = StopContinuousCore();
             _disposed = true;
         }
-        DrainOutsideLock(drain);
+        WaitTicksOutsideLock();
         IsConnected = false;
         if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
         WriteLog(CvLogLevel.Info, "Virtual camera disposed.");
     }
 
-    /// <summary>Timer 정지. 반환값: 호출 전에 grab 중이었으면 true, 그리고 <b>진행 중인 틱이 끝나기를
-    /// 기다릴 손잡이</b>(기다릴 것이 없으면 null).
+    /// <summary>Timer 정지(<see cref="_sync"/> 보유 전제). 반환값: 호출 전에 grab 중이었으면 true.
+    /// 세대를 올려 <b>아직 발행에 들어서지 않은 틱</b>(타이머가 이미 꺼낸 늦은 틱 포함)은 발행하지 않게 하고, 이미 들어선 틱은
+    /// 호출자가 락 밖에서 <see cref="WaitTicksOutsideLock"/> 로 기다린다.
     ///
     /// <see cref="ICam.StopContinuous"/> 는 "남아 있는 프레임을 버린다 — 다음 GrabOne 이 그것을 집어 가지
-    /// 않게" 를 계약으로 적어 두었는데, 종전에는 <b>기다리는 코드가 아예 없었다</b>(인자 없는
-    /// <c>Timer.Dispose()</c> 는 진행 중인 콜백을 기다리지 않는다). 그래서 정지가 돌아온 뒤 한 장이 더
-    /// 발행되어 <b>이어지는 단발 그랩의 답으로 읽혔다</b>.
-    ///
-    /// ⚠ <b>기다리는 것은 반드시 락 밖이다</b> — 기다리는 대상이 구독자의 프레임 핸들러이고, 그 핸들러가
-    /// 이 카메라를 다시 부르면 락을 쥔 채 자기를 기다리는 꼴이 된다. 그래서 손잡이만 돌려주고 대기는
-    /// 호출자가 <see cref="DrainOutsideLock"/> 로 한다.
-    /// ⚠ <b>발행 스레드 자신이 부른 정지는 기다리지 않는다</b>(핸들러 안에서 부른 경우) — 자기가 끝나기를
-    /// 기다리는 것이라 시한을 통째로 쓴다.</summary>
-    private (bool WasGrabbing, WaitHandle? Drain) StopContinuousCore()
+    /// 않게" 를 계약으로 적어 두었다. 기다리지 않으면 정지가 돌아온 뒤 한 장이 더 발행되어 <b>이어지는 단발 그랩의 답으로 읽힌다</b>.</summary>
+    private bool StopContinuousCore()
     {
-        if (_timer is null) return (false, null);
-        var timer = _timer;
+        if (_timer is null) return false;
+        // 세대를 먼저 올린다 — IsGrabbing(_timer 를 락 없이 읽는다)이 거짓으로 보이는 순간 옛 틱의 발행은 이미 막혀 있어야 한다.
+        // 그래야 거짓을 보고 구독한 단발 그랩이 옛 틱의 프레임을 답으로 받지 않는다.
+        lock (_tickSync) _liveGen++;
+        _timer.Dispose();   // 폐기 대기는 쓰지 않는다 — 도는 틱은 세대와 유휴 신호로 가른다(필드 주석)
         _timer = null;
-
-        if (Volatile.Read(ref _emitThreadId) == Environment.CurrentManagedThreadId)
-        {
-            timer.Dispose();
-            return (true, null);
-        }
-
-        var drain = new ManualResetEvent(false);
-        if (timer.Dispose(drain)) return (true, drain);
-
-        // 이미 폐기된 타이머면 신호가 오지 않는다 — 기다릴 것이 없다.
-        drain.Dispose();
-        return (true, null);
+        return true;
     }
 
-    /// <summary>진행 중인 틱이 끝나기를 <b>락 밖에서</b> 기다린다.
-    /// 시한 안에 안 끝나면 <b>손잡이를 놓지 않는다</b> — 나중에 타이머가 그 손잡이에 신호를 보내는데
-    /// 이미 폐기돼 있으면 프로세스가 죽는다. 손잡이 하나를 흘리는 편이 싸다.</summary>
-    private static void DrainOutsideLock(WaitHandle? drain)
+    /// <summary>발행 중인 틱이 끝나기를 <b>락 밖에서</b> 기다린다 — 정지·닫기·해제·단발 그랩이 <b>누가 먼저 멈췄든</b> 부른다.
+    /// ⚠ 락 밖이어야 한다 — 기다리는 대상이 구독자의 프레임 핸들러이고, 그 핸들러가 이 카메라를 다시 부르면 락을 쥔 채 자기를 기다린다.
+    /// ⚠ 발행 스레드 자신이 부른 것(핸들러 안의 정지)은 기다리지 않는다 — 자기가 끝나기를 기다리며 시한을 통째로 쓴다.
+    /// 시한(<see cref="DrainCapMs"/>)을 넘기면 기다리지 않고 돌아간다 — 그 틱의 프레임은 돌아간 뒤에 나갈 수 있다(ICam.StopContinuous 의 한계:
+    /// 이 시한에는 구독자 핸들러뿐 아니라 이 카메라가 폴더 이미지를 읽는 시간도 들어간다).</summary>
+    private void WaitTicksOutsideLock()
     {
-        if (drain is null) return;
-        if (drain.WaitOne(1000)) drain.Dispose();
+        if (Volatile.Read(ref _emitThreadId) == Environment.CurrentManagedThreadId) return;
+        // 누군가 이미 시한까지 기다리고 포기한 그 틱이면 또 기다리지 않는다 — 안 그러면 멈춰 선 틱 하나에 정지·닫기·해제가 각자 1 s 씩 물었다.
+        var running = Volatile.Read(ref _runningTick);
+        if (running != 0 && running == Volatile.Read(ref _givenUpTick)) return;
+        if (!_tickIdle.Wait(DrainCapMs) && running != 0) Volatile.Write(ref _givenUpTick, running);
     }
 
-    private void SafeEmit()
+    private void SafeEmit(int gen)
     {
         // 이미지 파일 로드가 라이브 주기보다 느리면 틱을 스킵해 재진입/적체 방지
         if (Interlocked.Exchange(ref _emitBusy, 1) == 1) return;
+        lock (_tickSync)
+        {
+            // 정지가 이 타이머를 이미 내렸다 — 발행하지 않는다. 세대 확인과 "발행 중" 표시가 같은 락이라, 정지는 이 틱을 기다리거나
+            // 이 틱이 정지를 보고 물러나거나 둘 중 하나다.
+            if (gen != _liveGen) { Volatile.Write(ref _emitBusy, 0); return; }
+            _tickIdle.Reset();
+            _runningTick = ++_tickSeq;
+        }
         // 이 틱이 도는 스레드를 남긴다 — 구독자 핸들러가 여기서 정지를 부르면 자기를 기다리면 안 된다.
         Volatile.Write(ref _emitThreadId, Environment.CurrentManagedThreadId);
         try
         {
-            Emit();
+            Emit(gen);
         }
         catch (Exception ex)
         {
@@ -231,18 +248,34 @@ public sealed class VirtualCam : ICam
         finally
         {
             Volatile.Write(ref _emitThreadId, 0);
+            Volatile.Write(ref _runningTick, 0);
+            _tickIdle.Set();                     // 바쁨을 풀기 전에 — 풀고 나서 세우면 다음 틱이 되세운 "발행 중" 을 이 Set 이 지운다
             Volatile.Write(ref _emitBusy, 0);
         }
     }
 
-    private void Emit()
+    /// <param name="gen">라이브 틱이면 그 타이머의 세대, 단발 그랩이면 null.</param>
+    private void Emit(int? gen)
     {
         // 합성/파일 공급 모두 실 카메라와 동일 파이프라인 유지 — Flip/Rotation 적용 포함
         using var mat = TryLoadFolderFrame() ?? GenerateFrame();
         var frame = Materialize(mat);
+        // 라이브 틱은 <b>내기 직전에</b> 세대를 다시 보고 구독자 목록을 같은 락 안에서 집는다. 들어설 때만 보면, 이미지를 읽는 사이 정지가
+        // 오고 그 뒤 구독한 단발 그랩(CamGrabExt.GrabFrameAsync: 구독 → GrabOne)이 옛 틱의 프레임을 제 답으로 받았다(검토가 찾음).
+        // 여기서 막히면 그 틱이 끝나기를 기다리던 정지·그랩은 곧바로 풀린다. 이미 목록을 집은 뒤에 온 정지는 이 틱이 끝나기를 기다린다.
+        EventHandler<CamFrame>? handlers;
+        if (gen is { } g)
+        {
+            lock (_tickSync)
+            {
+                if (g != _liveGen) return;
+                handlers = FrameAcquired;
+            }
+        }
+        else handlers = FrameAcquired;
         // 발행은 생성과 갈라서 감싼다 — 안 가르면 구독자가 던진 것이 부르는 쪽 catch 에서 "emit failed" 로
         // 적혀, 우리 생성은 멀쩡한데 남의 핸들러가 원인이라는 사실이 로그에서 지워진다(ICam 계약).
-        try { FrameAcquired?.Invoke(this, frame); }
+        try { handlers?.Invoke(this, frame); }
         catch (Exception ex) { WriteLog(CvLogLevel.Error, "a FrameAcquired subscriber threw.", ex); }
     }
 

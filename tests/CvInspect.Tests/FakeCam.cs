@@ -6,7 +6,20 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     public string Name => "FakeCam";
     public string ComType => "Fake";
     public bool IsConnected { get; private set; }
-    public bool IsGrabbing { get; private set; }
+
+    public bool IsGrabbing
+    {
+        get => ThrowOnGetAfterDispose && Disposed ? throw new ObjectDisposedException(nameof(FakeCam)) : _grabbing;
+        private set => _grabbing = value;
+    }
+    private bool _grabbing;
+
+    /// <summary>폐기 뒤 <see cref="IsGrabbing"/> 을 읽으면 던진다 — ICam 은 폐기 뒤 "어떤 조작도 받지 않는다" 고 적으므로 게터까지 던지는
+    /// 구현이 있을 수 있다(이 저장소의 구현은 전부 안 던진다). 감싸는 쪽이 그 읽기를 새게 두는지 본다.</summary>
+    public bool ThrowOnGetAfterDispose { get; init; }
+
+    /// <summary>StartContinuous 가 켜고 알린 <b>직후</b>(돌아가기 전)에 부를 것 — 시험이 "시작은 끝났고 부른 쪽이 결과를 읽기 전" 에 끼어든다.</summary>
+    public Action? OnStarted { get; set; }
     public bool FailOnOpen { get; init; }
     /// <summary>다음 <see cref="StartContinuous"/> 한 번을 실패시킨다 — 안쪽이 시작을 거부하는 경우를 흉내낸다.</summary>
     public bool FailNextStart { get; set; }
@@ -43,7 +56,7 @@ sealed class FakeCam : CvInspect.Imaging.ICam
 
     public void Close()
     {
-        if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
+        if (_grabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
         if (!IsConnected) return;
         IsConnected = false;
         ConnectionChanged?.Invoke(this, new CvInspect.Imaging.ConnArgs(false));
@@ -96,6 +109,17 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// <summary>시작 대기 안에 들어와 있는가 — 시험이 "지금 시작하는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
     public volatile bool IsStarting;
 
+    /// <summary>주어지면 StartContinuous 가 시작 전에 <b>이 신호가 설 때까지</b> 기다린다(<see cref="HoldBeforeStartMs"/> 의 시각 대신 시험이
+    /// 놓는 순간). "정지가 시작 대기 도중에 온다" 를 잠깐 자기로 세우면 부하에서 순서가 뒤집혀 거짓 실패·거짓 통과가 났다(형제 저장소 실측).
+    /// ⚠ 단언이 던져도 놓이게 finally 에서 세운다.</summary>
+    public ManualResetEventSlim? StartGate { get; set; }
+
+    /// <summary>주어지면 늦은 켜짐(<see cref="LateStartMs"/>)이 시각 대신 이 신호를 기다렸다가 켠다.</summary>
+    public ManualResetEventSlim? LateStartGate { get; set; }
+
+    /// <summary>늦은 켜짐이 실제로 돈 횟수(켰든 이미 켜져 있었든) — 부정 단언 전에 "그 늦은 켜짐이 이미 지나갔다" 를 확인한다.</summary>
+    public int LateStartsFired;
+
     /// <summary>다음 <see cref="StartContinuous"/> 한 번이 <b>시작하지 않고 예외 없이</b> 돌아온다 — 다른 경로의 정지에 진 시작(GevCam)의 모양.</summary>
     public bool StandDownNextStart { get; set; }
 
@@ -106,11 +130,21 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// <summary>노출을 쓸 때 부를 것 — 시험이 "안쪽에 노출이 들어가는 그 순간" 에 다른 조작을 끼워 넣는다.</summary>
     public Action<double>? OnSetExposure { get; set; }
 
+    /// <summary>StartContinuous 에 들어오자마자(정지 수를 읽기 전에) 부를 것 — 한 번 쓰고 비운다. 시험이 "부른 뒤·시작 전" 에 다른 조작을 끼운다.</summary>
+    public Action? OnStartEntry { get; set; }
+
     public void StartContinuous()
     {
+        if (OnStartEntry is { } entry) { OnStartEntry = null; entry(); }
         if (FailNextStart) { FailNextStart = false; throw new InvalidOperationException("fake start failure"); }
         var stopsAtCall = Volatile.Read(ref _stops);
-        if (HoldBeforeStartMs > 0)
+        if (StartGate is { } gate)
+        {
+            IsStarting = true;
+            gate.Wait();
+            IsStarting = false;
+        }
+        else if (HoldBeforeStartMs > 0)
         {
             IsStarting = true;
             Thread.Sleep(HoldBeforeStartMs);
@@ -120,22 +154,26 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         if (Disposed) throw new ObjectDisposedException(nameof(FakeCam));
         if (StandDownNextStart) { StandDownNextStart = false; return; }
         if (Volatile.Read(ref _stops) != stopsAtCall) return;
-        if (LateStartMs > 0)
+        if (LateStartMs > 0 || LateStartGate is not null)
         {
             var late = LateStartMs;
+            var lateGate = LateStartGate;
             System.Threading.Tasks.Task.Run(() =>
             {
-                Thread.Sleep(late);
-                if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+                if (lateGate is not null) lateGate.Wait();
+                else Thread.Sleep(late);
+                if (!_grabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+                Interlocked.Increment(ref LateStartsFired);
             });
             return;
         }
-        if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+        if (!_grabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+        OnStarted?.Invoke();
     }
     public void StopContinuous()
     {
         Interlocked.Increment(ref _stops);
-        if (IsGrabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
+        if (_grabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
     }
     public void SetExposureTimeUs(double timeUs)
     {
@@ -148,7 +186,7 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// 구현이 스스로 취득을 접고 통지만 내는 길. 연결 상실과 달리 ConnectionChanged 는 나지 않는다.</summary>
     public void StopGrabbingOnItsOwn()
     {
-        if (!IsGrabbing) return;
+        if (!_grabbing) return;
         IsGrabbing = false;
         GrabbingChanged?.Invoke(this, false);
     }
@@ -158,7 +196,7 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// 데코레이터는 "어떤 ICam 구현에도 붙는다" 고 적어 두었다. 이 순서에서도 세션 교체는 한 번이어야 한다.</summary>
     public void LoseConnectionAnnouncingGrabFirst(int gapMs = 0)
     {
-        var wasGrabbing = IsGrabbing;
+        var wasGrabbing = _grabbing;
         IsGrabbing = false;
         if (wasGrabbing) GrabbingChanged?.Invoke(this, false);   // 아직 IsConnected == true
         if (gapMs > 0) Thread.Sleep(gapMs);
@@ -174,7 +212,7 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// 실제 상황(핸들러가 UI 로 마샬링되는 등)을 결정적으로 만든다.</param>
     public void LoseConnection(int gapMs = 0)
     {
-        var wasGrabbing = IsGrabbing;
+        var wasGrabbing = _grabbing;
         IsGrabbing = false;
         IsConnected = false;
         if (wasGrabbing) GrabbingChanged?.Invoke(this, false);

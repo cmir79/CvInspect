@@ -2049,6 +2049,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
             return;
         }
         try { await c.ExecuteAsync(ct).ConfigureAwait(false); }
+        // 제어를 이미 잃은 세션의 명령은 보내지지도 않고 이 예외로 끝난다 — 상실은 이미 경고로 남았으니 예상된 실패다. 경고로 두면 상실 한 번에
+        // 정리(닫기·단발 그랩 뒷정리)마다 카메라당 경고와 스택이 덧붙어 현장 로그에서 원인 줄이 묻혔다(소비자 현장 로그). 판정은 스냅샷한
+        // 연결 표시가 아니라 예외 종류로 한다 — 닫기가 상실 통지보다 먼저 락을 잡는 경합에서도 맞다.
+        catch (GevControlLostException ex) { WriteLog(CvLogLevel.Debug, $"failed to execute {name} (expected: control of the camera was already lost)", ex); }
         catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
         catch (GevException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
     }
