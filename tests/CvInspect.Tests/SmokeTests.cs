@@ -1815,6 +1815,77 @@ public class SmokeTests
         }
     }
 
+    /// <summary>10-R33) 세션 상실·교체로 조용히 돌아간 시작은 받아들여진 것이다 — 뒤에 거절된 시작이 그 의도를 지우지 않는다.
+    /// 10-R32 를 고친 첫 판은 그런 시작도 "거절" 로 적어, 뒤 시작이 거절되며 되감을 때 그것을 지나쳐 의도를 꺼 버렸다 — 다음 재연결이 라이브를 안 되살렸다
+    /// (재검토가 가짜 카메라로 재현: 앞 시작이 옛 세션 안에서 기다리는 사이 세션이 교체되고, 새 세션의 재개와 뒤 시작이 거절된다).
+    /// 곁들여: 정지·닫기가 계보를 끊으면 거절 기록을 비운다(대기 중 시작이 하나라도 있으면 기록이 쌓였다).</summary>
+    [Fact]
+    public void ReconnectingCamStartEndedByALossKeepsItsIntent()
+    {
+        foreach (var earlierFirst in new[] { true, false })
+        {
+            var tag = earlierFirst ? "the earlier start resolves first" : "the later start is refused first";
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { FailNextStart = i == 1 }), FastReconnect);
+            cam.Open();
+            var inner1 = made[0];
+            var gateA = new ManualResetEventSlim();
+            var gateC = new ManualResetEventSlim();
+            inner1.StartGate = gateA;
+            var a = new Thread(() => { try { cam.StartContinuous(); } catch { } }) { IsBackground = true };
+            var cThrew = false;
+            var c = new Thread(() => { try { cam.StartContinuous(); } catch (InvalidOperationException) { cThrew = true; } }) { IsBackground = true };
+            try
+            {
+                a.Start();
+                Check(WaitFor(() => inner1.IsStarting), $"{tag}: premise — the earlier start waits inside the old session");
+                inner1.LoseConnection();                                  // 세션 교체 — 새 세션의 재개는 거절된다(의도는 켜진 채)
+                Check(WaitFor(() => made.Count == 2 && cam.IsConnected && cam.IsReconnectIdle && !made[1].FailNextStart),
+                    $"{tag}: premise — the session was replaced and its resume was refused");
+                var inner2 = made[1];
+                inner2.StartGate = gateC;
+                inner2.FailAfterStartGate = true;
+                c.Start();
+                Check(WaitFor(() => inner2.IsStarting), $"{tag}: premise — the later start waits inside the new session");
+                if (earlierFirst) { gateA.Set(); Check(a.Join(3000), "earlier start returns"); gateC.Set(); }
+                else { gateC.Set(); Check(c.Join(3000), "later start returns"); gateA.Set(); }
+                Check(a.Join(3000) && c.Join(3000) && cThrew, $"{tag}: premise — the later start was refused");
+            }
+            finally { gateA.Set(); gateC.Set(); }
+            made[1].LoseConnection();                                     // 숨은 의도를 드러낸다 — 앞 시작의 의도는 남아 있어야 한다
+            Check(WaitFor(() => made.Count == 3 && cam.IsConnected && cam.IsReconnectIdle), $"{tag}: reconnected again");
+            Check(WaitFor(() => cam.IsGrabbing && made[2].IsGrabbing),
+                $"{tag}: the start that ended with the lost session keeps its intent — the next reconnect resumes live (grabbing={cam.IsGrabbing})");
+        }
+        // 곁들여 — 계보가 끊기면 기록이 비워진다
+        {
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            cam.Open();
+            var inner = made[0];
+            var gate = new ManualResetEventSlim();
+            inner.StartGate = gate;
+            var pending = new Thread(() => { try { cam.StartContinuous(); } catch { } }) { IsBackground = true };
+            var records = typeof(CvInspect.Imaging.ReconnectingCam).GetField("_startIntents", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            int Count() { lock (typeof(CvInspect.Imaging.ReconnectingCam).GetField("_sync", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(cam)!) return ((System.Collections.ICollection)records.GetValue(cam)!).Count; }
+            try
+            {
+                pending.Start();
+                Check(WaitFor(() => inner.IsStarting), "records: premise — one start is pending");
+                for (var i = 0; i < 50; i++)
+                {
+                    inner.FailNextStart = true;
+                    try { cam.StartContinuous(); } catch (InvalidOperationException) { }
+                }
+                Check(Count() == 51, $"records: premise — the pending start and 50 refused starts are recorded ({Count()})");
+                cam.StopContinuous();
+                Check(Count() == 0, $"records: a StopContinuous cuts the lineage and clears the records ({Count()})");
+            }
+            finally { gate.Set(); }
+            Check(pending.Join(3000), "records: the pending start returns");
+        }
+    }
+
     static bool SaysClosed(CvInspect.Imaging.ReconnectingCam c)
     {
         try { c.GrabOne(); return false; }

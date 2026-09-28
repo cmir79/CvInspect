@@ -68,7 +68,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     /// <summary>결과를 아직 모르는(또는 거절된) 시작의 계보 — 거절된 시작이 의도를 되돌릴 곳을 찾는다.
     /// 거절된 시작은 의도를 "들어올 때의 값" 으로 되돌렸는데, 겹친 뒤 시작의 그 값은 앞 시작(곧 거절될)이 세운 켜짐이라, 둘이 모두 거절되면 어느
     /// 순서로든 의도가 켜진 채 남았다(표시는 꺼짐 — 다음 재연결이 아무도 청하지 않은 라이브를 켰다; 형제 저장소가 알려 옴, 10-R32 로 재현).
-    /// 그래서 되돌림은 <b>지금 의도가 이 시작의 결정일 때만</b>(판 번호가 아니라 계보로) 그 앞의 결정으로 하고, 그 결정도 거절된 시작이면 이어서 푼다.</summary>
+    /// 그래서 되돌림은 <b>지금 의도가 이 시작의 결정일 때만</b>(판 번호가 아니라 계보로) 그 앞의 결정으로 하고, 그 결정도 거절된 시작이면 이어서 푼다.
+    /// 안쪽이 받아들였거나 세션 상실·교체로 조용히 돌아간 시작은 기록을 지운다(그 결정은 선다). 정지·닫기·닫힌 채 여는 Open 은 계보를 끊으므로
+    /// 기록을 비운다 — 안 비우면 대기 중 시작이 하나라도 있는 동안 거절된 기록이 쌓였다.</summary>
     private sealed class StartIntent
     {
         public int Version;
@@ -160,7 +162,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 늦은 핸들러가 부른 StartContinuous 가 몇 분 뒤 다음 Open 에서 청하지 않은 라이브를 켰다(검토가 찾음). 0.29.1 도 닫힌 동안의
                 // 시작은 Open 에서 무시했다. 상실 뒤의 Open(닫지 않았다)과 여는 중에 온 시작은 그대로 되살린다.
                 wasClosed = _closed;
-                if (wasClosed) { _wantContinuous = false; _intentVersion++; _intentFromStart = 0; }
+                if (wasClosed) { _wantContinuous = false; _intentVersion++; _intentFromStart = 0; _startIntents.Clear(); }
                 _closed = false;              // 게이트 해제 — 이제부터 재연결이 허용된다
                 _openedSeq = mySeq;           // 이 Open 보다 먼저 불린 닫기는 이 세션을 걷지 않는다(Close)
                 // 죽음이 접수된 세션이 아직 붙어 있으면(재연결 루프는 백오프를 기다린 뒤에야 그것을 걷는다) 여기서 걷고 새로 연다. 전에는 그것을
@@ -280,6 +282,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         _wantContinuous = false;
         _intentVersion++;
         _intentFromStart = 0;
+        _startIntents.Clear();
         _reconnectPending = false;
         try { _reconnectCts?.Cancel(); } catch (ObjectDisposedException) { /* 루프가 이미 물러남 */ }
     }
@@ -404,11 +407,15 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 되돌릴지는 판 번호가 아니라 <b>계보</b>로 가른다 — 지금 의도가 이 시작의 결정이면(뒤 시작이 거절되며 이 시작의 결정으로 되돌려 둔
                 // 경우 포함) 되돌리고, 되돌릴 곳의 결정도 이미 거절된 시작이면 이어서 푼다(StartIntent 참조). 정지·닫기가 그 사이 의도를 세웠으면
                 // 계보가 끊겨 있어 건드리지 않는다.
-                mine!.Refused = true;
-                if (!closedMeanwhile && _intentFromStart == mine.Version)
+                // ⚠ 세션 상실·교체로 조용히 돌아가는 시작(closedMeanwhile)은 <b>받아들여진</b> 것이다 — 의도를 두고 재연결이 되살린다. 거절로 적으면
+                // 뒤에 거절된 시작의 되감기가 그것을 지나쳐 받아들여진 의도까지 지웠다(다음 재연결이 라이브를 안 되살림 — 검토가 재현, 10-R33).
+                var record = mine!;
+                if (closedMeanwhile) ForgetStartIntentLocked(record);
+                else record.Refused = true;
+                if (!closedMeanwhile && _intentFromStart == record.Version)
                 {
-                    var want = mine.WantedBefore;
-                    var from = mine.BeforeFrom;
+                    var want = record.WantedBefore;
+                    var from = record.BeforeFrom;
                     while (from != 0 && FindStartIntentLocked(from) is { Refused: true } earlier)
                     {
                         want = earlier.WantedBefore;
@@ -470,6 +477,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             _wantContinuous = false;
             myVersion = ++_intentVersion;
             _intentFromStart = 0;
+            _startIntents.Clear();            // 계보가 끊겼다 — 앞의 기록은 어떤 되감기도 더는 닿지 않는다(대기 중 시작은 제 기록을 참조로 쥐고 있어 무해하다)
             cam = _connected ? _inner : null;
             // 우리가 이 안쪽을 멈추는 중이라고 적어 둔다 — 그 사이 온 이 안쪽의 꺼짐 통지는 우리 정지의 메아리다(OnInnerGrabStopped).
             if (cam != null) _ownStopCams.Add(cam);
