@@ -1061,6 +1061,47 @@ public class SmokeTests
         lock (grab) Check(grab.SequenceEqual(new[] { true }), $"control: one GrabbingChanged(true): [{string.Join(",", grab)}]");
     }
 
+    /// <summary>10-R13) 시작을 반환 뒤에(콜백으로) 알리는 안쪽도 켜짐이 전달된다. 데코레이터가 반환 직후 안쪽 IsGrabbing 으로 켜짐을
+    /// 가리게 되면서, 늦게 켜지는 어댑터는 영영 켜짐으로 안 보일 뻔했다(0.29.1 은 반환만 보고 알렸다 — 검토가 찾음). 늦은 켜짐 통지를
+    /// 받아 맞춘다. 대조: 의도를 내린 뒤에 온 늦은 켜짐은 받지 않는다(정지가 이긴 뒤 켜짐이 되살아나면 안 된다).</summary>
+    [Fact]
+    public void ReconnectingCamLateStartIsAnnounced()
+    {
+        var made = new List<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => { lock (made) { var c = new FakeCam { LateStartMs = 80 }; made.Add(c); return c; } }, FastReconnect);
+        var grab = new List<bool>();
+        cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+        cam.Open();
+        cam.StartContinuous();
+        Check(!cam.IsGrabbing, "right after the call the late-starting camera is not live yet");
+        Check(WaitFor(() => cam.IsGrabbing), "the late start is picked up from the inner notification");
+        lock (grab) Check(grab.SequenceEqual(new[] { true }), $"one GrabbingChanged(true): [{string.Join(",", grab)}]");
+
+        cam.StopContinuous();
+        lock (grab) grab.Clear();
+        cam.StartContinuous();
+        cam.StopContinuous();                                // 늦은 켜짐이 오기 전에 정지 — 의도가 내려갔다
+        Thread.Sleep(200);
+        Check(!cam.IsGrabbing, "a late start that arrives after a Stop is not taken as live");
+        lock (grab) Check(!grab.Contains(true), $"no GrabbingChanged(true) after the Stop: [{string.Join(",", grab)}]");
+    }
+
+    /// <summary>10-R14) 닫힌 동안 부른 StartContinuous 는 다음 Open 에서 라이브를 켜지 않는다. 이제 Open 도 의도를 되살리므로, 닫아 둔
+    /// 사이 켜 둔 토글·늦은 핸들러의 시작이 몇 분 뒤 다음 Open 에서 청하지 않은 라이브를 켤 뻔했다(검토가 찾음 — 0.29.1 도 무시했다).
+    /// 대조: 상실 뒤(닫지 않고) 손수 연 Open 은 되살린다 — 10-R9.</summary>
+    [Fact]
+    public void ReconnectingCamStartWhileClosedDoesNotStartOnNextOpen()
+    {
+        var made = new List<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => { lock (made) { var c = new FakeCam(); made.Add(c); return c; } }, FastReconnect);
+        cam.Open();
+        cam.Close();
+        cam.StartContinuous();                               // 닫힌 동안 — 예외 없이 의도만 기록되던 호출
+        cam.Open();
+        Check(cam.IsConnected && !cam.IsGrabbing && !made[1].IsGrabbing,
+            $"a start called while closed does not start live on the next Open (grabbing={cam.IsGrabbing})");
+    }
+
     /// <summary>10-R12) 시작하는 사이 닫기가 이기면 시작은 조용히 돌아온다. 닫기가 안쪽을 폐기해 안쪽 시작이 "폐기된 객체" 로 던지는데,
     /// 그 예외를 그대로 올리면 닫힌 것은 이 데코레이터인데 부른 쪽은 폐기된 안쪽 카메라 이름을 듣는다 — 나중 명령이 이긴 것이지 실패가 아니다.</summary>
     [Fact]

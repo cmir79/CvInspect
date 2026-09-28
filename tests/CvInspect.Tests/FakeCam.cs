@@ -99,6 +99,10 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// <summary>다음 <see cref="StartContinuous"/> 한 번이 <b>시작하지 않고 예외 없이</b> 돌아온다 — 다른 경로의 정지에 진 시작(GevCam)의 모양.</summary>
     public bool StandDownNextStart { get; set; }
 
+    /// <summary>0 보다 크면 StartContinuous 가 <b>켜지 않은 채 돌아오고</b>, 그만큼 뒤에 다른 스레드에서 켜고 알린다 — 시작을 SDK 콜백으로
+    /// 늦게 알리는 어댑터의 모양(ICam 요건을 안 지키는 구현).</summary>
+    public int LateStartMs { get; set; }
+
     /// <summary>노출을 쓸 때 부를 것 — 시험이 "안쪽에 노출이 들어가는 그 순간" 에 다른 조작을 끼워 넣는다.</summary>
     public Action<double>? OnSetExposure { get; set; }
 
@@ -116,6 +120,16 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         if (Disposed) throw new ObjectDisposedException(nameof(FakeCam));
         if (StandDownNextStart) { StandDownNextStart = false; return; }
         if (Volatile.Read(ref _stops) != stopsAtCall) return;
+        if (LateStartMs > 0)
+        {
+            var late = LateStartMs;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                Thread.Sleep(late);
+                if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+            });
+            return;
+        }
         if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
     }
     public void StopContinuous()

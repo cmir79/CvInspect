@@ -951,7 +951,14 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 if (_grabCts != null)
                     throw new InvalidOperationException(
                         "A single grab is waiting for its frame; continuous acquisition cannot start until it returns.");
-                StartPumpLocked(stream);
+                try { StartPumpLocked(stream); }
+                catch (GevControlLostException) when (connectedAtCall)
+                {
+                    // 위 갈래의 앞 순간 — 취득 라이브러리는 제어 상실을 먼저 장치 상태에 세우고 통지는 뒤에 낸다(스레드 풀). 그 사이에 든
+                    // 시작은 IsConnected 가 아직 참이라 위에서 안 걸리고 장치 명령에서 상실 예외를 받는다. 그것도 거부가 아니라 상실이라
+                    // 같이 조용히 접는다 — 상실 통지는 곧 따로 나간다. 부를 때부터 끊겨 있던 것은 여기 오지 않고 종전대로 던진다.
+                    notStarted = "control of the camera was lost while this start was being carried out";
+                }
             }
         }
         if (notStarted is not null)
@@ -1721,9 +1728,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
             $"exposure={(_openedExposureUs > 0 ? _openedExposureUs.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "us" : "?")} " +
             $"exposureAuto={Shown(exposureAuto, "ExposureAuto")} grabKey={grabKey}");
 
-        // 못 읽은 값을 "없음" 으로 적지 않는다 — 노드가 있는데 전송 오류로 못 읽은 것을 (absent) 로 남기면, 트리거 모드인 카메라가
-        // 트리거 없는 카메라로 읽힌다(진단 읽기는 전송 실패도 삼킨다 — TryReadEnumAsync).
-        string Shown(string? value, string node) => value ?? (nodes.GetNode(node) is null ? "(absent)" : "(unreadable)");
+        // 못 읽은 값을 "없음" 으로 적지 않는다 — XML 에 선언된 노드를 못 읽었으면(이 장치에 구현 안 됨·지금 쓸 수 없음·전송 오류 —
+        // 진단 읽기는 셋 다 삼킨다, TryReadEnumAsync) "(not read)" 로 남긴다. (absent) 로 적으면 트리거 모드인 카메라가 트리거 없는
+        // 카메라로 읽힌다. (absent) 는 XML 에 그 노드가 아예 없을 때만이다.
+        string Shown(string? value, string node) => value ?? (nodes.GetNode(node) is null ? "(absent)" : "(not read)");
 
         if (_triggerModeOn)
             WriteLog(CvLogLevel.Warning,
