@@ -1775,6 +1775,46 @@ public class SmokeTests
         }
     }
 
+    /// <summary>10-R32) 겹친 두 시작이 모두 안쪽에서 거절되면 의도는 꺼짐으로 돌아간다 — 다음 재연결이 아무도 청하지 않은 라이브를 켜지 않는다.
+    /// 거절된 시작은 의도를 "들어올 때의 값" 으로 되돌렸는데, 뒤 시작의 그 값은 앞 시작(곧 거절될)이 세운 켜짐이라, 어느 순서로 거절되든 의도가 켜진 채
+    /// 남았다(표시는 꺼짐 — 다음 끊김 뒤 재연결이 라이브를 켰다). 형제 저장소가 자기 판에서 검토자 재현으로 찾아 알려 왔다(우리 판은 독해로 같은 모양).</summary>
+    [Fact]
+    public void ReconnectingCamTwoRefusedStartsLeaveTheIntentOff()
+    {
+        foreach (var firstFails in new[] { "earlier start", "later start" })
+        {
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            cam.Open();                                                   // 라이브 없음 — 의도 꺼짐
+            var inner = made[0];
+            var gateA = new ManualResetEventSlim();                       // 앞 시작을 안쪽 입구에서 붙잡는다
+            var gateB = new ManualResetEventSlim();                       // 뒤 시작을 안쪽 시작 대기에서 붙잡는다
+            var aInside = new ManualResetEventSlim();
+            inner.OnStartEntry = () => { aInside.Set(); gateA.Wait(3000); inner.FailNextStart = true; };
+            inner.StartGate = gateB;
+            inner.FailAfterStartGate = true;
+            var aThrew = false; var bThrew = false;
+            var a = new Thread(() => { try { cam.StartContinuous(); } catch (InvalidOperationException) { aThrew = true; } }) { IsBackground = true };
+            var b = new Thread(() => { try { cam.StartContinuous(); } catch (InvalidOperationException) { bThrew = true; } }) { IsBackground = true };
+            try
+            {
+                a.Start();
+                Check(aInside.Wait(3000), $"{firstFails}: premise — the earlier start is inside the inner camera");
+                b.Start();
+                Check(WaitFor(() => inner.IsStarting), $"{firstFails}: premise — the later start waits inside the inner camera too");
+                if (firstFails == "earlier start") { gateA.Set(); Check(a.Join(3000), "earlier start returns"); gateB.Set(); }
+                else { gateB.Set(); Check(b.Join(3000), "later start returns"); gateA.Set(); }
+                Check(a.Join(3000) && b.Join(3000) && aThrew && bThrew, $"{firstFails}: premise — both starts were refused (a={aThrew}, b={bThrew})");
+            }
+            finally { gateA.Set(); gateB.Set(); }
+            Check(!cam.IsGrabbing && !inner.IsGrabbing, $"{firstFails}: nothing is live after both starts failed");
+            inner.LoseConnection();                                       // 숨은 의도를 드러낸다 — 켜져 있으면 재연결이 라이브를 켠다
+            Check(WaitFor(() => made.Count == 2 && cam.IsConnected && cam.IsReconnectIdle), $"{firstFails}: reconnected");
+            Check(!cam.IsGrabbing && !made[1].IsGrabbing,
+                $"{firstFails} refused first: a reconnect does not start live that both refused starts had asked for (grabbing={cam.IsGrabbing})");
+        }
+    }
+
     static bool SaysClosed(CvInspect.Imaging.ReconnectingCam c)
     {
         try { c.GrabOne(); return false; }

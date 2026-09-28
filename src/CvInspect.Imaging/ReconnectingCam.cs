@@ -63,6 +63,20 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     private bool _grabbing;
     private bool _wantContinuous;         // 사용자 의도(내부 인스턴스와 분리 보관)
     private int _intentVersion;           // 의도가 바뀔 때마다 증가 — 복원과 사용자 명령의 경합 판정
+    private int _intentFromStart;         // 지금 의도를 세운 StartContinuous 의 판(시작이 아닌 명령 — 정지·닫기·열기 — 이 세웠으면 0)
+
+    /// <summary>결과를 아직 모르는(또는 거절된) 시작의 계보 — 거절된 시작이 의도를 되돌릴 곳을 찾는다.
+    /// 거절된 시작은 의도를 "들어올 때의 값" 으로 되돌렸는데, 겹친 뒤 시작의 그 값은 앞 시작(곧 거절될)이 세운 켜짐이라, 둘이 모두 거절되면 어느
+    /// 순서로든 의도가 켜진 채 남았다(표시는 꺼짐 — 다음 재연결이 아무도 청하지 않은 라이브를 켰다; 형제 저장소가 알려 옴, 10-R32 로 재현).
+    /// 그래서 되돌림은 <b>지금 의도가 이 시작의 결정일 때만</b>(판 번호가 아니라 계보로) 그 앞의 결정으로 하고, 그 결정도 거절된 시작이면 이어서 푼다.</summary>
+    private sealed class StartIntent
+    {
+        public int Version;
+        public bool WantedBefore;             // 이 시작 앞의 의도
+        public int BeforeFrom;                // 그 앞의 의도를 세운 시작의 판(0 = 시작이 아닌 명령)
+        public bool Refused;
+    }
+    private readonly List<StartIntent> _startIntents = new();
     private double? _exposureUs;          // 런타임 지정 노출 — 새 인스턴스에 재적용
     private int _exposureVersion;         // _exposureUs 가 바뀔 때마다 증가 — 장착 중에 온 노출을 놓치지 않게
     private int _attachedExposureVersion; // 현재 인스턴스에 적용한 노출의 판
@@ -146,7 +160,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 늦은 핸들러가 부른 StartContinuous 가 몇 분 뒤 다음 Open 에서 청하지 않은 라이브를 켰다(검토가 찾음). 0.29.1 도 닫힌 동안의
                 // 시작은 Open 에서 무시했다. 상실 뒤의 Open(닫지 않았다)과 여는 중에 온 시작은 그대로 되살린다.
                 wasClosed = _closed;
-                if (wasClosed) { _wantContinuous = false; _intentVersion++; }
+                if (wasClosed) { _wantContinuous = false; _intentVersion++; _intentFromStart = 0; }
                 _closed = false;              // 게이트 해제 — 이제부터 재연결이 허용된다
                 _openedSeq = mySeq;           // 이 Open 보다 먼저 불린 닫기는 이 세션을 걷지 않는다(Close)
                 // 죽음이 접수된 세션이 아직 붙어 있으면(재연결 루프는 백오프를 기다린 뒤에야 그것을 걷는다) 여기서 걷고 새로 연다. 전에는 그것을
@@ -265,6 +279,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         _closed = true;
         _wantContinuous = false;
         _intentVersion++;
+        _intentFromStart = 0;
         _reconnectPending = false;
         try { _reconnectCts?.Cancel(); } catch (ObjectDisposedException) { /* 루프가 이미 물러남 */ }
     }
@@ -337,21 +352,23 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     public void StartContinuous()
     {
         ICam? cam;
-        bool wantedBefore;
         int myVersion;
         bool closed;
+        StartIntent? mine = null;
         lock (_sync)
         {
             ThrowIfDisposed();
             // 닫힌 동안의 시작은 기록하지 않는다 — 다음 Open 이 어차피 버린다(10-R14). 조용히 버리면 토글을 되살리는 호스트가 왜 라이브가 안
             // 켜졌는지 알 길이 없어 한 줄 남긴다. 정상 구성(열기 전에 저장된 토글을 되살림)도 지나는 길이라 경고가 아니라 Info 다.
             closed = _closed;
-            if (closed) { cam = null; wantedBefore = false; myVersion = 0; }
+            if (closed) { cam = null; myVersion = 0; }
             else
             {
-                wantedBefore = _wantContinuous;
-                _wantContinuous = true;           // 미연결 구간이면 의도만 기록 — 복원 때 반영된다
                 myVersion = ++_intentVersion;
+                mine = new StartIntent { Version = myVersion, WantedBefore = _wantContinuous, BeforeFrom = _intentFromStart };
+                _startIntents.Add(mine);
+                _wantContinuous = true;           // 미연결 구간이면 의도만 기록 — 복원 때 반영된다
+                _intentFromStart = myVersion;
                 cam = _connected ? _inner : null;
             }
         }
@@ -360,7 +377,11 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             CvLog.Publish(CvLogLevel.Info, LogSource, $"[{Name}] StartContinuous ignored — the camera is closed; call Open() first.");
             return;
         }
-        if (cam is null) return;
+        if (cam is null)
+        {
+            lock (_sync) ForgetStartIntentLocked(mine!);   // 의도만 기록했다 — 이 결정은 선다
+            return;
+        }
         try
         {
             cam.StartContinuous();
@@ -380,20 +401,33 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 다음 재연결 때 아무도 청하지 않은 연속 취득이 되살아난다 — 그 사이 새 의도가 없을 때만 되돌린다.
                 // 의도가 바뀌면 판도 바뀐다 — 되돌림도 하나의 명령이다. 판을 두면, 이 시작 뒤를 보고 이미 "나중 시작이 라이브를 원한다" 로 정한
                 // 정지 꼬리가 되돌림을 못 알아보고 던진 이 시작의 라이브를 되켰다(검토가 재현).
-                if (!closedMeanwhile && _intentVersion == myVersion)
+                // 되돌릴지는 판 번호가 아니라 <b>계보</b>로 가른다 — 지금 의도가 이 시작의 결정이면(뒤 시작이 거절되며 이 시작의 결정으로 되돌려 둔
+                // 경우 포함) 되돌리고, 되돌릴 곳의 결정도 이미 거절된 시작이면 이어서 푼다(StartIntent 참조). 정지·닫기가 그 사이 의도를 세웠으면
+                // 계보가 끊겨 있어 건드리지 않는다.
+                mine!.Refused = true;
+                if (!closedMeanwhile && _intentFromStart == mine.Version)
                 {
-                    _wantContinuous = wantedBefore;
+                    var want = mine.WantedBefore;
+                    var from = mine.BeforeFrom;
+                    while (from != 0 && FindStartIntentLocked(from) is { Refused: true } earlier)
+                    {
+                        want = earlier.WantedBefore;
+                        from = earlier.BeforeFrom;
+                    }
+                    _wantContinuous = want;
+                    _intentFromStart = from;
                     _intentVersion++;
                     // 되돌린 끝이 꺼짐이면 끝 상태도 꺼짐으로 맞춘다 — 이 시작이 안쪽에서 기다리는 사이 우리 정지의 꼬리가 이 시작을 위해 라이브를
                     // 되켰을 수 있다. 그대로 두면 부른 쪽은 예외를 받았는데 라이브가 돌고 켜짐으로 표시되며, 숨은 의도 꺼짐 때문에 다음 재연결은
                     // 그것을 되살리지 않는다(검토가 재현).
-                    if (!wantedBefore)
+                    if (!want)
                     {
                         if (_grabbing) { _grabbing = false; loweredNow = true; }
                         enforceOff = true;
                         offAt = _intentVersion;
                     }
                 }
+                PruneStartIntentsLocked();
             }
             if (loweredNow) SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
             if (enforceOff && ReadGrabbing(cam)) StopInnerOwned(cam, offAt);
@@ -414,6 +448,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         int decidedAt;
         lock (_sync)
         {
+            ForgetStartIntentLocked(mine!);   // 안쪽이 받아들였다 — 이 결정은 선다(뒤 시작이 거절돼 여기로 되돌아와도 켜짐이 맞다)
             decidedAt = _intentVersion;
             var sameInner = ReferenceEquals(_inner, cam);
             var superseded = (_intentVersion != myVersion && !_wantContinuous) || !sameInner || _closed || _disposed;
@@ -434,6 +469,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             if (_disposed) return;
             _wantContinuous = false;
             myVersion = ++_intentVersion;
+            _intentFromStart = 0;
             cam = _connected ? _inner : null;
             // 우리가 이 안쪽을 멈추는 중이라고 적어 둔다 — 그 사이 온 이 안쪽의 꺼짐 통지는 우리 정지의 메아리다(OnInnerGrabStopped).
             if (cam != null) _ownStopCams.Add(cam);
@@ -476,6 +512,27 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         bool relight;
         lock (_sync) relight = _intentVersion != decidedAt && _wantContinuous && IsLiveSessionLocked(cam) && !IsOwnStopLocked(cam);
         if (relight) RelightAfterOwnStop(cam);
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 그 판의 시작 기록 — 성공해 지워졌으면 null(그 결정은 선다).</summary>
+    private StartIntent? FindStartIntentLocked(int version)
+    {
+        foreach (var s in _startIntents) if (s.Version == version) return s;
+        return null;
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 안쪽이 받아들인(또는 의도만 기록한) 시작 — 기록을 지운다. 그 결정으로 되돌아오는 뒤 시작은 거기서 멈춘다.</summary>
+    private void ForgetStartIntentLocked(StartIntent s)
+    {
+        _startIntents.Remove(s);
+        PruneStartIntentsLocked();
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 결과를 기다리는 시작이 하나도 없으면 거절된 기록도 비운다 — 그것을 되돌릴 곳으로 가리킬 시작이 더는 없다.</summary>
+    private void PruneStartIntentsLocked()
+    {
+        foreach (var s in _startIntents) if (!s.Refused) return;
+        _startIntents.Clear();
     }
 
     /// <summary><see cref="_sync"/> 보유 전제. 이 인스턴스를 지금 우리가 멈추는 중인가(인스턴스 비교).</summary>
