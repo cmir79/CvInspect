@@ -438,11 +438,9 @@ public sealed class GevCam : ICam, ICamGrabAsync
     private bool CloseWhileLocked()
     {
         if (_dev is null) return false;
-        // 제어를 이미 잃었으면(OnControlLost 가 IsConnected 를 내렸다) 아래 정리의 장치 명령은 실패하는 것이 정상이다 — 응답 없음이 확정된 뒤다.
-        var controlLost = !IsConnected;
         AbortGrabWhileLocked("The camera was closed while the single grab waited for its frame.");
         StopPumpCore();
-        Run(ct => CloseCoreAsync(ct, controlLost), CancellationToken.None);
+        Run(CloseCoreAsync, CancellationToken.None);
         IsConnected = false;
         return true;
     }
@@ -456,10 +454,8 @@ public sealed class GevCam : ICam, ICamGrabAsync
     }
 
     /// <summary>정지는 개시의 역순이고 <b>취소 없이</b> 끝까지 간다 — 중간에 그만두면 카메라가 죽은 소켓으로
-    /// 계속 쏘거나 제어권이 걸린 채 남는다. 각 단계는 실패해도 다음 단계를 막지 않는다.
-    /// <paramref name="controlLost"/> 면 장치 명령의 실패를 Debug 로 남긴다 — 제어 상실이 이미 경고로 남은 뒤라 예상된 실패이고,
-    /// 경고로 두면 상실 한 번에 카메라마다 경고와 스택이 덧붙어 현장 로그에서 원인 줄이 묻혔다(소비자 현장 로그).</summary>
-    private async Task CloseCoreAsync(CancellationToken ct, bool controlLost)
+    /// 계속 쏘거나 제어권이 걸린 채 남는다. 각 단계는 실패해도 다음 단계를 막지 않는다.</summary>
+    private async Task CloseCoreAsync(CancellationToken ct)
     {
         var dev = _dev;
         var stream = _stream;
@@ -468,8 +464,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
         _stream = null;
         _nodes = null;
 
-        if (nodes != null)
-            await TryExecuteAsync(nodes, "AcquisitionStop", ct, controlLost ? CvLogLevel.Debug : CvLogLevel.Warning).ConfigureAwait(false);
+        if (nodes != null) await TryExecuteAsync(nodes, "AcquisitionStop", ct).ConfigureAwait(false);
         if (dev != null) await SwallowAsync(() => dev.SetTlParamsLockedAsync(false, ct)).ConfigureAwait(false);
 
         if (stream != null)
@@ -2045,7 +2040,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
     /// <summary>명령 실행. <b>없는 명령을 조용히 넘기지 않는다</b> — AcquisitionStart 가 없으면 스트림은 서는데
     /// 프레임이 한 장도 안 오고, 그 원인이 로그에 없으면 원격에서 절대 못 가른다.</summary>
-    private async Task TryExecuteAsync(GenApiNodeMap nodes, string name, CancellationToken ct, CvLogLevel failLevel = CvLogLevel.Warning)
+    private async Task TryExecuteAsync(GenApiNodeMap nodes, string name, CancellationToken ct)
     {
         if (nodes.GetNode(name) is not ICommand c)
         {
@@ -2053,10 +2048,13 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 $"camera has no {name} command — acquisition cannot be driven through it, so frames may never arrive");
             return;
         }
-        var expected = failLevel < CvLogLevel.Warning ? " (expected: control of the camera was already lost)" : "";
         try { await c.ExecuteAsync(ct).ConfigureAwait(false); }
-        catch (GenApiException ex) { WriteLog(failLevel, $"failed to execute {name}{expected}", ex); }
-        catch (GevException ex) { WriteLog(failLevel, $"failed to execute {name}{expected}", ex); }
+        // 제어를 이미 잃은 세션의 명령은 보내지지도 않고 이 예외로 끝난다 — 상실은 이미 경고로 남았으니 예상된 실패다. 경고로 두면 상실 한 번에
+        // 정리(닫기·단발 그랩 뒷정리)마다 카메라당 경고와 스택이 덧붙어 현장 로그에서 원인 줄이 묻혔다(소비자 현장 로그). 판정은 스냅샷한
+        // 연결 표시가 아니라 예외 종류로 한다 — 닫기가 상실 통지보다 먼저 락을 잡는 경합에서도 맞다.
+        catch (GevControlLostException ex) { WriteLog(CvLogLevel.Debug, $"failed to execute {name} (expected: control of the camera was already lost)", ex); }
+        catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
+        catch (GevException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
     }
 
     // === 잡동사니 ===

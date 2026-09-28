@@ -42,6 +42,9 @@ public sealed class VirtualCam : ICam
     private readonly object _tickSync = new();
     private readonly ManualResetEventSlim _tickIdle = new(true);   // 발행 중인 틱이 없다. 폐기하지 않는다 — 시한 뒤에 끝난 틱이 세운다
     private int _liveGen;                                         // 타이머 세대 — 정지마다 올린다. 옛 세대의 틱은 발행하지 않는다
+    private int _tickSeq;                                         // 발행에 들어선 틱의 번호(1부터)
+    private int _runningTick;                                     // 지금 발행 중인 틱의 번호(없으면 0)
+    private int _givenUpTick;                                     // 누군가 시한까지 기다리고 포기한 틱 — 같은 틱을 또 기다리지 않는다
     private const int DrainCapMs = 1000;
 
     // 이미지 폴더 파일 목록 캐시 — 경로 또는 폴더 LastWriteTime(파일 추가/삭제) 변경 시에만 재열거
@@ -121,7 +124,17 @@ public sealed class VirtualCam : ICam
                     "stream's. Call StopContinuous() first.");
         }
         WaitTicksOutsideLock();   // 정지된 라이브의 마지막 틱이 아직 돌면 그 프레임이 이 그랩의 답으로 읽힌다
-        Emit();
+        // 기다리는 사이(최대 1 s) 닫히거나 해제됐거나 라이브가 다시 켜졌을 수 있다 — 다시 보고 낸다.
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            EnsureConnected();
+            if (_timer != null)
+                throw new InvalidOperationException(
+                    "Continuous acquisition was started while the single grab waited, so the grab cannot tell its own " +
+                    "frame from the stream's. Call StopContinuous() first.");
+        }
+        Emit(null);
     }
 
     public void StartContinuous()
@@ -188,9 +201,11 @@ public sealed class VirtualCam : ICam
     private bool StopContinuousCore()
     {
         if (_timer is null) return false;
-        _timer.Dispose();   // 폐기 대기는 쓰지 않는다 — 도는 틱은 아래 세대와 유휴 신호로 가른다(필드 주석)
-        _timer = null;
+        // 세대를 먼저 올린다 — IsGrabbing(_timer 를 락 없이 읽는다)이 거짓으로 보이는 순간 옛 틱의 발행은 이미 막혀 있어야 한다.
+        // 그래야 거짓을 보고 구독한 단발 그랩이 옛 틱의 프레임을 답으로 받지 않는다.
         lock (_tickSync) _liveGen++;
+        _timer.Dispose();   // 폐기 대기는 쓰지 않는다 — 도는 틱은 세대와 유휴 신호로 가른다(필드 주석)
+        _timer = null;
         return true;
     }
 
@@ -202,7 +217,10 @@ public sealed class VirtualCam : ICam
     private void WaitTicksOutsideLock()
     {
         if (Volatile.Read(ref _emitThreadId) == Environment.CurrentManagedThreadId) return;
-        _tickIdle.Wait(DrainCapMs);
+        // 누군가 이미 시한까지 기다리고 포기한 그 틱이면 또 기다리지 않는다 — 안 그러면 멈춰 선 틱 하나에 정지·닫기·해제가 각자 1 s 씩 물었다.
+        var running = Volatile.Read(ref _runningTick);
+        if (running != 0 && running == Volatile.Read(ref _givenUpTick)) return;
+        if (!_tickIdle.Wait(DrainCapMs) && running != 0) Volatile.Write(ref _givenUpTick, running);
     }
 
     private void SafeEmit(int gen)
@@ -212,15 +230,16 @@ public sealed class VirtualCam : ICam
         lock (_tickSync)
         {
             // 정지가 이 타이머를 이미 내렸다 — 발행하지 않는다. 세대 확인과 "발행 중" 표시가 같은 락이라, 정지는 이 틱을 기다리거나
-            // 이 틱이 정지를 보고 물러나거나 둘 중 하나다(보고 나서 발행하는 틈이 없다).
+            // 이 틱이 정지를 보고 물러나거나 둘 중 하나다.
             if (gen != _liveGen) { Volatile.Write(ref _emitBusy, 0); return; }
             _tickIdle.Reset();
+            _runningTick = ++_tickSeq;
         }
         // 이 틱이 도는 스레드를 남긴다 — 구독자 핸들러가 여기서 정지를 부르면 자기를 기다리면 안 된다.
         Volatile.Write(ref _emitThreadId, Environment.CurrentManagedThreadId);
         try
         {
-            Emit();
+            Emit(gen);
         }
         catch (Exception ex)
         {
@@ -229,19 +248,34 @@ public sealed class VirtualCam : ICam
         finally
         {
             Volatile.Write(ref _emitThreadId, 0);
+            Volatile.Write(ref _runningTick, 0);
             _tickIdle.Set();                     // 바쁨을 풀기 전에 — 풀고 나서 세우면 다음 틱이 되세운 "발행 중" 을 이 Set 이 지운다
             Volatile.Write(ref _emitBusy, 0);
         }
     }
 
-    private void Emit()
+    /// <param name="gen">라이브 틱이면 그 타이머의 세대, 단발 그랩이면 null.</param>
+    private void Emit(int? gen)
     {
         // 합성/파일 공급 모두 실 카메라와 동일 파이프라인 유지 — Flip/Rotation 적용 포함
         using var mat = TryLoadFolderFrame() ?? GenerateFrame();
         var frame = Materialize(mat);
+        // 라이브 틱은 <b>내기 직전에</b> 세대를 다시 보고 구독자 목록을 같은 락 안에서 집는다. 들어설 때만 보면, 이미지를 읽는 사이 정지가
+        // 오고 그 뒤 구독한 단발 그랩(CamGrabExt.GrabFrameAsync: 구독 → GrabOne)이 옛 틱의 프레임을 제 답으로 받았다(검토가 찾음).
+        // 여기서 막히면 그 틱이 끝나기를 기다리던 정지·그랩은 곧바로 풀린다. 이미 목록을 집은 뒤에 온 정지는 이 틱이 끝나기를 기다린다.
+        EventHandler<CamFrame>? handlers;
+        if (gen is { } g)
+        {
+            lock (_tickSync)
+            {
+                if (g != _liveGen) return;
+                handlers = FrameAcquired;
+            }
+        }
+        else handlers = FrameAcquired;
         // 발행은 생성과 갈라서 감싼다 — 안 가르면 구독자가 던진 것이 부르는 쪽 catch 에서 "emit failed" 로
         // 적혀, 우리 생성은 멀쩡한데 남의 핸들러가 원인이라는 사실이 로그에서 지워진다(ICam 계약).
-        try { FrameAcquired?.Invoke(this, frame); }
+        try { handlers?.Invoke(this, frame); }
         catch (Exception ex) { WriteLog(CvLogLevel.Error, "a FrameAcquired subscriber threw.", ex); }
     }
 
