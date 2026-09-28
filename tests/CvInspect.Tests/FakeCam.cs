@@ -96,6 +96,17 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// <summary>시작 대기 안에 들어와 있는가 — 시험이 "지금 시작하는 중" 을 기다렸다가 다음 조작을 걸 때 본다.</summary>
     public volatile bool IsStarting;
 
+    /// <summary>주어지면 StartContinuous 가 시작 전에 <b>이 신호가 설 때까지</b> 기다린다(<see cref="HoldBeforeStartMs"/> 의 시각 대신 시험이
+    /// 놓는 순간). "정지가 시작 대기 도중에 온다" 를 잠깐 자기로 세우면 부하에서 순서가 뒤집혀 거짓 실패·거짓 통과가 났다(형제 저장소 실측).
+    /// ⚠ 단언이 던져도 놓이게 finally 에서 세운다.</summary>
+    public ManualResetEventSlim? StartGate { get; set; }
+
+    /// <summary>주어지면 늦은 켜짐(<see cref="LateStartMs"/>)이 시각 대신 이 신호를 기다렸다가 켠다.</summary>
+    public ManualResetEventSlim? LateStartGate { get; set; }
+
+    /// <summary>늦은 켜짐이 실제로 돈 횟수(켰든 이미 켜져 있었든) — 부정 단언 전에 "그 늦은 켜짐이 이미 지나갔다" 를 확인한다.</summary>
+    public int LateStartsFired;
+
     /// <summary>다음 <see cref="StartContinuous"/> 한 번이 <b>시작하지 않고 예외 없이</b> 돌아온다 — 다른 경로의 정지에 진 시작(GevCam)의 모양.</summary>
     public bool StandDownNextStart { get; set; }
 
@@ -110,7 +121,13 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     {
         if (FailNextStart) { FailNextStart = false; throw new InvalidOperationException("fake start failure"); }
         var stopsAtCall = Volatile.Read(ref _stops);
-        if (HoldBeforeStartMs > 0)
+        if (StartGate is { } gate)
+        {
+            IsStarting = true;
+            gate.Wait();
+            IsStarting = false;
+        }
+        else if (HoldBeforeStartMs > 0)
         {
             IsStarting = true;
             Thread.Sleep(HoldBeforeStartMs);
@@ -120,13 +137,16 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         if (Disposed) throw new ObjectDisposedException(nameof(FakeCam));
         if (StandDownNextStart) { StandDownNextStart = false; return; }
         if (Volatile.Read(ref _stops) != stopsAtCall) return;
-        if (LateStartMs > 0)
+        if (LateStartMs > 0 || LateStartGate is not null)
         {
             var late = LateStartMs;
+            var lateGate = LateStartGate;
             System.Threading.Tasks.Task.Run(() =>
             {
-                Thread.Sleep(late);
+                if (lateGate is not null) lateGate.Wait();
+                else Thread.Sleep(late);
                 if (!IsGrabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
+                Interlocked.Increment(ref LateStartsFired);
             });
             return;
         }

@@ -63,6 +63,17 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     private CancellationTokenSource? _reconnectCts;
     private bool _reconnectPending;       // 루프가 물러나는 창에 도착한 요청 — 소실되면 영구 미연결이 된다
     private object? _lostInner;           // 재연결을 이미 건 죽은 인스턴스 — 같은 죽음의 두 통지를 두 요청으로 세지 않게
+    private int _openWaiters;             // 게이트 앞에 줄 선 Open 수 — 관측 전용(OpenWaiters)
+
+    /// <summary>재연결 루프가 없다(돌 일이 끝났다) — 관측 전용. 시험이 "루프가 한 라운드를 마쳤다" 를 시간 대신 이것으로 기다린다:
+    /// 잠깐 자고 나서 "더 안 일어났다" 를 보는 부정 단언은 느린 기계에서 루프가 아직 안 돌았는데도 참이 된다.
+    /// 루프 기동은 그것을 부른 호출 안에서 락 아래 동기로 걸리고(ScheduleReconnectLocked), 다음 루프로 넘기는 것도 같은 락 아래라
+    /// "아직 안 떴다" 와 "끝났다" 가 섞이지 않는다. ⚠ 재장착 뒤의 알림·라이브 재개가 루프 밖으로 옮겨 가면 이 값은 "뒷일까지 끝남" 을
+    /// 뜻하지 않게 된다. ⚠ <see cref="Dispose"/> 뒤에는 쓸 수 없다 — 해제가 루프 칸을 먼저 비우므로 루프가 아직 돌아도 참이다.</summary>
+    internal bool IsReconnectIdle { get { lock (_sync) return _reconnectTask is null; } }
+
+    /// <summary>게이트 앞에 줄 선 <see cref="Open"/> 수 — 관측 전용. 해제 검사를 지나 게이트 대기에 들어간(들어갈) 호출을 센다.</summary>
+    internal int OpenWaiters => Volatile.Read(ref _openWaiters);
 
     /// <param name="factory">내부 카메라 생성기. 재연결 때마다 <b>새 인스턴스</b>를 만들어 돌려줘야 한다.</param>
     /// <param name="opt">재시도 정책(생략 시 기본 사다리).</param>
@@ -98,7 +109,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     {
         lock (_sync) ThrowIfDisposed();
 
-        _gate.Wait();
+        Interlocked.Increment(ref _openWaiters);
+        try { _gate.Wait(); }
+        finally { Interlocked.Decrement(ref _openWaiters); }
         ICam? attached;
         try
         {

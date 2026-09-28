@@ -23,12 +23,14 @@ public class SmokeTests
     /// 그 호출은 TRACE 상수가 있어야 컴파일에 남으므로, 여기서 잡힌다는 것이 곧 배포 빌드에 들어 있다는 증거다.</summary>
     private sealed class TraceCapture : System.Diagnostics.TraceListener
     {
-        public readonly List<string> Lines = new();
+        // 앞 시험이 남긴 스레드도 추적을 쓸 수 있다 — 쓰기와 읽기를 한 락으로(SyncList).
+        public readonly SyncList<string> Lines = new();
         public override void Write(string? message) { if (message is not null) Lines.Add(message); }
         public override void WriteLine(string? message) { if (message is not null) Lines.Add(message); }
         public override void TraceEvent(System.Diagnostics.TraceEventCache? eventCache, string source,
             System.Diagnostics.TraceEventType eventType, int id, string? message)
             => Lines.Add($"{eventType}|{message}");
+        public int CountContaining(string text) => Lines.Snapshot().Count(l => l.Contains(text));
     }
 
     /// <summary>번역 조회 — 리졸버 우선, 내장 표, 느슨한 파일의 키 단위 병합, 문화권 정규화.
@@ -179,11 +181,12 @@ public class SmokeTests
 
             CvLog.Publish(CvLogLevel.Info, "t", "one");
             CvLog.Publish(CvLogLevel.Warning, "t", "two");
-            Check(trace.Lines.Count(l => l.Contains("CvLog.Sink is not set")) == 1,
-                $"the first held line raises exactly one Trace warning: [{string.Join(" | ", trace.Lines)}]");
+            Check(trace.CountContaining("CvLog.Sink is not set") == 1,
+                $"the first held line raises exactly one Trace warning: [{string.Join(" | ", trace.Lines.Snapshot())}]");
 
+            // 이 절이 낸 줄("t")과 재생 안내("CvLog")만 센다 — 앞 시험이 남긴 스레드의 줄이 정확한 개수 단언을 흔들지 않게.
             var seen = new List<string>();
-            CvLog.Sink = (lv, src, msg, _) => seen.Add($"{lv}|{src}|{msg}");
+            CvLog.Sink = (lv, src, msg, _) => { if (src is "t" or "CvLog") seen.Add($"{lv}|{src}|{msg}"); };
             Check(CvLog.IsAttached, "sink attached");
             Check(seen.Count == 3 && seen[0] == "Info|CvLog|replaying 2 lines held before a sink was attached."
                   && seen[1] == "Info|t|one" && seen[2] == "Warning|t|two",
@@ -196,10 +199,10 @@ public class SmokeTests
             CvLog.Sink = null;
             for (var i = 0; i < CvLog.HoldCapacity + 6; i++) CvLog.Publish(CvLogLevel.Debug, "t", $"m{i}");
             Check(CvLog.DroppedCount == before + 6, $"lines pushed out of the hold are counted (dropped={CvLog.DroppedCount - before})");
-            Check(trace.Lines.Count(l => l.Contains("CvLog.Sink is not set")) == 2,
+            Check(trace.CountContaining("CvLog.Sink is not set") == 2,
                 "a new unattached stretch warns once more, not once per line");
             seen.Clear();
-            CvLog.Sink = (_, _, msg, _) => seen.Add(msg);
+            CvLog.Sink = (_, src, msg, _) => { if (src is "t" or "CvLog") seen.Add(msg); };
             Check(seen.Count == CvLog.HoldCapacity + 1
                   && seen[0] == $"replaying {CvLog.HoldCapacity} lines held before a sink was attached; 6 older lines were dropped."
                   && seen[1] == "m6" && seen[^1] == $"m{CvLog.HoldCapacity + 5}",
@@ -213,15 +216,15 @@ public class SmokeTests
             CvLog.Publish(CvLogLevel.Info, "t", "held-a");
             CvLog.Publish(CvLogLevel.Info, "t", "held-b");
             CvLog.Sink = (_, _, msg, _) => { if (msg == "held-a") throw new InvalidOperationException("logger not ready"); };
-            Check(trace.Lines.Count(l => l.Contains("line not delivered: Info t held-a")) == 1,
-                $"a throwing replay is reported on the diagnostic trace instead of escaping the assignment: [{string.Join(" | ", trace.Lines)}]");
+            Check(trace.CountContaining("line not delivered: Info t held-a") == 1,
+                $"a throwing replay is reported on the diagnostic trace instead of escaping the assignment: [{string.Join(" | ", trace.Lines.Snapshot())}]");
 
             CvLog.Publish(CvLogLevel.Info, "t", "held-a");
-            Check(trace.Lines.Count(l => l.Contains("line not delivered: Info t held-a")) == 2,
+            Check(trace.CountContaining("line not delivered: Info t held-a") == 2,
                 "a throwing sink is reported on publish too — it does not escape into the thread that logged");
 
             var recovered = new List<string>();
-            CvLog.Sink = (_, _, msg, _) => recovered.Add(msg);
+            CvLog.Sink = (_, src, msg, _) => { if (src is "t" or "CvLog") recovered.Add(msg); };
             Check(recovered.Count == 3 && recovered[0] == "replaying 2 lines held before a sink was attached."
                   && recovered[1] == "held-a" && recovered[2] == "held-b",
                 $"lines the throwing sink never received are put back and reach the next sink: [{string.Join(" | ", recovered)}]");
@@ -456,165 +459,156 @@ public class SmokeTests
     {
     // === 10) ReconnectingCam — 재연결 데코레이터 ===
     {
-        static bool Wait(Func<bool> cond, int ms = 2000)
-        {
-            var t0 = Environment.TickCount;
-            while (!cond() && Environment.TickCount - t0 < ms) Thread.Sleep(5);
-            return cond();
-        }
+        // 부정 단언("더 안 일어났다")은 잠깐 자고 나서 보지 않고 루프가 라운드를 마친 뒤에 본다(IsReconnectIdle) — 자고 나서 보면 느린
+        // 기계에서 루프가 아직 안 돌았는데도 참이 된다. 이벤트 목록은 상태 뒤에 채워지므로(통지는 락 밖) 상태가 아니라 목록을 기다린다.
         var fastOpt = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 1000 };
 
         // 10-1) 행복 경로 — 상실 → 재연결 → 연속취득 자동 재개, 이벤트는 전이당 1회씩만
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
-            var conn = new List<bool>(); var grab = new List<bool>();
-            cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
-            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
+            var conn = new SyncList<bool>(); var grab = new SyncList<bool>();
+            cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
             cam.Open();
             cam.StartContinuous();
             made[0].LoseConnection();
-            Check(Wait(() => made.Count == 2 && cam.IsConnected), $"reconnect creates a fresh instance (made={made.Count} connected={cam.IsConnected})");
-            Check(Wait(() => cam.IsGrabbing), "continuous grab resumed after reconnect");
-            Check(Wait(() => conn.Count == 3), $"ConnectionChanged edges true,false,true: [{string.Join(",", conn)}]");
-            Check(conn.Count == 3 && conn[0] && !conn[1] && conn[2], $"connection edge order: [{string.Join(",", conn)}]");
-            Check(grab.Count == 3 && grab[0] && !grab[1] && grab[2], $"grabbing edge order true,false,true: [{string.Join(",", grab)}]");
+            Check(WaitFor(() => made.Count == 2 && cam.IsConnected), $"reconnect creates a fresh instance (made={made.Count} connected={cam.IsConnected})");
+            Check(WaitFor(() => cam.IsGrabbing), "continuous grab resumed after reconnect");
+            Check(WaitFor(() => conn.Count == 3 && grab.Count == 3), $"three edges each: conn [{conn}] grab [{grab}]");
+            Check(conn.Snapshot().SequenceEqual(new[] { true, false, true }), $"connection edge order: [{conn}]");
+            Check(grab.Snapshot().SequenceEqual(new[] { true, false, true }), $"grabbing edge order true,false,true: [{grab}]");
             Check(made[0].Disposed, "old instance disposed on swap");
         }
 
         // 10-2) 연속취득 의도가 없으면 재연결 후에도 시작되지 않는다
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             var grab = 0;
             cam.GrabbingChanged += (_, _) => Interlocked.Increment(ref grab);
             cam.Open();
             made[0].LoseConnection();
-            Check(Wait(() => made.Count == 2), "reconnect without continuous intent");
-            Thread.Sleep(60);
+            Check(WaitFor(() => made.Count == 2 && cam.IsReconnectIdle), "reconnect without continuous intent (loop finished)");
             Check(grab == 0 && !cam.IsGrabbing, $"no grabbing events when intent absent (events={grab})");
         }
 
         // 10-3) StopContinuous 로 청산한 의도는 재연결이 되살리지 않는다
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             cam.Open(); cam.StartContinuous(); cam.StopContinuous();
             made[0].LoseConnection();
-            Check(Wait(() => made.Count == 2), "reconnect after explicit stop");
-            Thread.Sleep(60);
+            Check(WaitFor(() => made.Count == 2 && cam.IsReconnectIdle), "reconnect after explicit stop (loop finished)");
             Check(!cam.IsGrabbing && !made[1].IsGrabbing, "stopped intent is not revived by reconnect");
         }
 
         // 10-3b) 안쪽 시작이 실패하면 의도가 남지 않는다 — 남으면 다음 재연결 때 아무도 청하지 않은 연속 취득이
         //        되살아난다. 부른 쪽은 예외를 받았지 시작을 받은 것이 아니다.
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             cam.Open();
             made[0].FailNextStart = true;
             var threw = false;
             try { cam.StartContinuous(); } catch (InvalidOperationException) { threw = true; }
             Check(threw, "an inner start failure reaches the caller");
             made[0].LoseConnection();
-            Check(Wait(() => made.Count == 2), "reconnect after a failed start");
-            Thread.Sleep(60);
+            Check(WaitFor(() => made.Count == 2 && cam.IsReconnectIdle), "reconnect after a failed start (loop finished)");
             Check(!cam.IsGrabbing && !made[1].IsGrabbing,
                 "a start that failed is not revived by reconnect — the caller saw an exception, not a start");
         }
 
         // 10-4) 명시적 Close 이후 부활 금지 — 백오프 대기 중 Close 하면 새 인스턴스가 안 생긴다
         {
-            var made = new List<FakeCam>();
-            var slow = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 400 }, ShutdownWaitMs = 1000 };
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slow);
+            // 백오프를 길게 — 닫기가 반드시 백오프 대기 안에 떨어지게(닫기는 그 대기를 곧바로 깨운다). 짧으면 시험 스레드가 멈춘
+            // 사이 재연결이 먼저 끝나, 닫기가 살아 있는 세션을 청산하고도 이 항이 통과한다.
+            var made = new SyncList<FakeCam>();
+            var slow = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 5000 }, ShutdownWaitMs = 1000 };
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), slow);
             cam.Open();
             made[0].LoseConnection();
-            Thread.Sleep(30);
             cam.Close();
             var atClose = made.Count;
-            Thread.Sleep(600);
-            Check(made.Count == atClose && !cam.IsConnected, $"Close gate blocks revival (made {atClose}→{made.Count})");
+            Check(WaitFor(() => cam.IsReconnectIdle), "the cancelled reconnect loop retires");
+            Check(made.Count == atClose && atClose == 1 && !cam.IsConnected, $"Close gate blocks revival (made {atClose}→{made.Count})");
         }
 
-        // 10-5) 중복 기동 억제 — 상실 통지를 연속으로 퍼부어도 재연결 루프는 하나
+        // 10-5) 중복 기동 억제 — 상실 통지를 연속으로 퍼부어도 재연결 루프는 하나.
+        //       시도 상한을 두고 루프가 끝나기를 기다려 정확히 센다 — 루프가 하나면 1 + 상한, k 개면 1 + 상한×k.
         {
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             using var cam = new CvInspect.Imaging.ReconnectingCam(
-                () => { var c = new FakeCam { FailOnOpen = true }; made.Add(c); return c; },
-                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 50 }, ShutdownWaitMs = 500 });
-            var first = new FakeCam();
-            // 최초 Open 은 성공해야 하므로 실패 팩토리 앞에 정상 인스턴스를 하나 세운다
-            using var cam2 = new CvInspect.Imaging.ReconnectingCam(
-                () => { var c = new FakeCam { FailOnOpen = made.Count > 0 }; made.Add(c); return c; },
-                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 50 }, ShutdownWaitMs = 500 });
-            cam2.Open();
+                () => made.AddNew(i => new FakeCam { FailOnOpen = i > 0 }),   // 최초 Open 만 성공한다
+                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 500, MaxAttempts = 5 });
+            cam.Open();
             for (var i = 0; i < 10; i++) made[0].LoseConnection();
-            Thread.Sleep(300);
-            Check(made.Count < 15, $"loss storm does not multiply reconnect loops (attempts={made.Count}, 10 loops would be ~40+)");
+            Check(WaitFor(() => cam.IsReconnectIdle), "the reconnect loop gives up after MaxAttempts");
+            Check(made.Count == 6, $"loss storm does not multiply reconnect loops (instances={made.Count}; one loop = 1 + 5 attempts)");
         }
 
         // 10-6) 런타임 노출값이 새 인스턴스에 재적용된다
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             cam.Open();
             cam.SetExposureTimeUs(4321);
             made[0].LoseConnection();
-            Check(Wait(() => made.Count == 2 && made[1].LastExposure == 4321),
-                $"runtime exposure survives reconnect (new instance exposure={made.ElementAtOrDefault(1)?.LastExposure})");
+            Check(WaitFor(() => made.Count == 2 && made[1].LastExposure == 4321),
+                $"runtime exposure survives reconnect (new instance exposure={made.At(1)?.LastExposure})");
         }
 
         // 10-7) 폐기된 인스턴스의 유령 이벤트는 밖으로 나가지 않는다
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             var frames = 0;
             cam.FrameAcquired += (_, _) => Interlocked.Increment(ref frames);
             cam.Open();
             var old = made[0];
             old.LoseConnection();
-            Check(Wait(() => made.Count == 2), "swap happened before ghost test");
+            // 팩토리가 불린 것(개수 2)이 아니라 장착된 것을 기다린다 — 장착 전에 새 인스턴스가 낸 프레임은 현재 것이 아니라 버려진다.
+            Check(WaitFor(() => made.Count == 2 && cam.IsConnected), "swap happened before ghost test");
             old.EmitFrame(new CvInspect.Imaging.CamFrame(new byte[4], 2, 2, 2, CvInspect.Imaging.CamPixelFormat.Mono8));
             old.LoseConnection();
-            Thread.Sleep(60);
+            Check(WaitFor(() => cam.IsReconnectIdle), "no reconnect round is left running");
             Check(frames == 0, $"frames from a retired instance are blocked (leaked={frames})");
             Check(made.Count == 2, $"ghost loss does not trigger another reconnect (made={made.Count})");
             made[1].EmitFrame(new CvInspect.Imaging.CamFrame(new byte[4], 2, 2, 2, CvInspect.Imaging.CamPixelFormat.Mono8));
-            Check(Wait(() => frames == 1), "current instance frames still relayed");
+            Check(WaitFor(() => frames == 1), "current instance frames still relayed");
         }
 
         // 10-8) 미연결 구간의 GrabOne 은 조용히 무시되지 않고 명확히 실패한다
         {
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             var slow = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 400 }, ShutdownWaitMs = 1000 };
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slow);
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), slow);
             cam.Open();
-            made[0].LoseConnection();
-            Thread.Sleep(40);
+            made[0].LoseConnection();                     // 미연결 구간은 이 호출 안에서 동기로 선다
             var threw = false;
             try { cam.GrabOne(); } catch (InvalidOperationException) { threw = true; }
             Check(threw, "GrabOne during the reconnect gap fails explicitly");
             cam.SetExposureTimeUs(999);   // 상태 계열은 예외 없이 의도로 기록
-            Check(Wait(() => made.Count == 2 && made[1].LastExposure == 999, 2000), "state calls during the gap are recorded and applied on reconnect");
+            Check(WaitFor(() => made.Count == 2 && made[1].LastExposure == 999, 2000), "state calls during the gap are recorded and applied on reconnect");
         }
 
         // 10-8b) 기동 시점에 없던 카메라 — RetryInitialOpen 이면 Open 이 안 던지고 붙을 때 합류한다
         {
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             var absent = true;
             using var cam = new CvInspect.Imaging.ReconnectingCam(
-                () => { var c = new FakeCam { FailOnOpen = Volatile.Read(ref absent) }; made.Add(c); return c; },
+                () => made.AddNew(_ => new FakeCam { FailOnOpen = Volatile.Read(ref absent) }),
                 new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, RetryInitialOpen = true, ShutdownWaitMs = 1000 });
-            var conn = new List<bool>();
-            cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+            var conn = new SyncList<bool>();
+            cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
             cam.Open();                                   // 카메라가 아직 없다
             Check(!cam.IsConnected, "initial open does not throw when RetryInitialOpen is set");
             cam.StartContinuous();                        // 의도만 기록된다
             Volatile.Write(ref absent, false);            // 카메라가 붙었다
-            Check(Wait(() => cam.IsConnected), "the camera joins once it appears");
-            Check(Wait(() => cam.IsGrabbing), "the recorded continuous intent is honoured on join");
-            Check(conn.Count == 1 && conn[0], $"only one connection edge, and it is 'connected': [{string.Join(",", conn)}]");
+            Check(WaitFor(() => cam.IsConnected), "the camera joins once it appears");
+            Check(WaitFor(() => cam.IsGrabbing), "the recorded continuous intent is honoured on join");
+            Check(WaitFor(() => cam.IsReconnectIdle) && conn.Snapshot().SequenceEqual(new[] { true }),
+                $"only one connection edge, and it is 'connected': [{conn}]");
         }
 
         // 10-8c) 기본값에서는 첫 Open 실패가 그대로 올라온다(조용히 죽은 자리를 만들지 않는다)
@@ -629,12 +623,11 @@ public class SmokeTests
 
         // 10-9) 백오프 대기 중 Dispose 가 유한 시간에 끝난다(좀비 루프 없음)
         {
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             var slow = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 5000 }, ShutdownWaitMs = 1000 };
-            var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slow);
+            var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), slow);
             cam.Open();
             made[0].LoseConnection();
-            Thread.Sleep(40);
             var sw = System.Diagnostics.Stopwatch.StartNew();
             cam.Dispose();
             sw.Stop();
@@ -649,20 +642,21 @@ public class SmokeTests
         //        그 신호를 안 들으면 의도만 true 로 남아 아무도 다시 켜지 않는다 — 연결은 정상이라고 답하는데
         //        프레임이 영영 안 온다. 상위가 기다리는 것 말고 할 수 있는 일이 없는 상태다.
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
-            var grab = new List<bool>();
-            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
+            var grab = new SyncList<bool>();
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
             cam.Open();
             cam.StartContinuous();
             Check(cam.IsGrabbing && made.Count == 1, "grabbing before the stream dies");
 
             made[0].StopGrabbingOnItsOwn();                       // 연결 상실은 없다 — 취득만 접혔다
-            Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
-                $"acquisition that dies on its own is resumed on a fresh session (instances={made.Count}, grabbing={made.ElementAtOrDefault(1)?.IsGrabbing})");
-            Check(Wait(() => cam.IsGrabbing), "the decorator reports grabbing again after the rebuild");
-            lock (grab) Check(grab.Count >= 3 && grab[0] && !grab[1] && grab[^1],
-                $"subscribers see the stop before the resume: [{string.Join(",", grab)}]");
+            Check(WaitFor(() => made.Count == 2 && made[1].IsGrabbing),
+                $"acquisition that dies on its own is resumed on a fresh session (instances={made.Count}, grabbing={made.At(1)?.IsGrabbing})");
+            Check(WaitFor(() => cam.IsGrabbing), "the decorator reports grabbing again after the rebuild");
+            Check(WaitFor(() => grab.Count >= 3), $"the resume is announced: [{grab}]");   // 통지는 상태 뒤에 온다
+            var edges = grab.Snapshot();
+            Check(edges[0] && !edges[1] && edges[^1], $"subscribers see the stop before the resume: [{grab}]");
         }
 
         // 10-10c) 제어 상실은 한 번만 되살린다 — 두 통지가 오지만 세션 교체는 한 번이다.
@@ -674,13 +668,13 @@ public class SmokeTests
         {
             // 사다리를 간격보다 길게 잡는 것이 이 항의 조건이다 — 둘째 통지가 첫 라운드의 백오프 대기 중에
             // 닿아야 아직 교체 전이라 유령 통지로 걸러지지 않고, 그래야 '요청 두 건' 이 실제로 겹친다.
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             var slowLadder = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 200 }, ShutdownWaitMs = 1000 };
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slowLadder);
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), slowLadder);
             cam.Open();
             cam.StartContinuous();
 
-            var lines = new List<string>();
+            var lines = new SyncList<string>();
             var prevSink = CvLog.Sink;
             try
             {
@@ -688,13 +682,13 @@ public class SmokeTests
                 // 앞 항(10-8b 재시도, 10-10 의 정당한 "청하지 않은 정지")의 줄이 이 항의 줄로 섞인다. 전체 실행에서는 앞선 시험이
                 // 창구를 꽂아 두어 안 보이고, 이 시험만 골라 돌리면 늘 실패했다(2026-09-27 확인 — 깨끗한 HEAD 에서도 같다).
                 CvLog.Sink = static (_, _, _, _) => { };
-                CvLog.Sink = (_, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add(msg); };
+                CvLog.Sink = (_, src, msg, _) => { if (src == "ReconnectingCam") lines.Add(msg); };
                 made[0].LoseConnection(gapMs: 20);          // 실제 순서 그대로 — 취득 통지가 먼저, 연결 통지가 뒤
-                Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "control loss is recovered");
-                Thread.Sleep(600);                          // 두 번째 라운드가 걸렸다면 이 안에 돈다(백오프 200ms)
+                Check(WaitFor(() => made.Count == 2 && made[1].IsGrabbing), "control loss is recovered");
+                Check(WaitFor(() => cam.IsReconnectIdle), "every reconnect round has finished");   // 두 번째 라운드가 걸렸다면 이미 돌았다
                 Check(made.Count == 2, $"one control loss rebuilds the session once (instances={made.Count})");
-                lock (lines) Check(!lines.Any(l => l.Contains("without being asked")),
-                    $"a control loss is not reported as an unrequested stop: [{string.Join(" / ", lines)}]");
+                Check(!lines.Snapshot().Any(l => l.Contains("without being asked")),
+                    $"a control loss is not reported as an unrequested stop: [{string.Join(" / ", lines.Snapshot())}]");
             }
             finally { CvLog.Sink = prevSink; }
         }
@@ -703,14 +697,14 @@ public class SmokeTests
         //         아직 연결이 살아 있어 보이므로 10-10c 의 가드가 듣지 않는다. 그때도 한 죽음은 한 사건이다 —
         //         세는 기준을 통지 순서가 아니라 죽은 인스턴스로 두면 구현마다 갈리지 않는다.
         {
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             var slowLadder = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 200 }, ShutdownWaitMs = 1000 };
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slowLadder);
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), slowLadder);
             cam.Open();
             cam.StartContinuous();
             made[0].LoseConnectionAnnouncingGrabFirst(gapMs: 20);
-            Check(Wait(() => made.Count == 2 && made[1].IsGrabbing), "recovered regardless of notification order");
-            Thread.Sleep(600);
+            Check(WaitFor(() => made.Count == 2 && made[1].IsGrabbing), "recovered regardless of notification order");
+            Check(WaitFor(() => cam.IsReconnectIdle), "every reconnect round has finished");
             Check(made.Count == 2, $"one death is one rebuild whatever the order (instances={made.Count})");
         }
 
@@ -720,25 +714,26 @@ public class SmokeTests
         //         연속취득 재개가 통째로 건너뛰어진다 — 연결은 살아났는데 취득은 안 돈다. 그리고 로그에는
         //         호스트 핸들러가 원인이라는 흔적이 없다.
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             cam.Open();
             cam.StartContinuous();
             cam.ConnectionChanged += (_, e) => { if (e.IsConnected) throw new InvalidOperationException("subscriber blew up"); };
 
-            var lines = new List<string>();
+            var lines = new SyncList<string>();
             var prevSink = CvLog.Sink;
             try
             {
                 CvLog.Sink = static (_, _, _, _) => { };   // 보관된 앞 항의 줄을 먼저 흘려보낸다(10-10c 참조)
-                CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add($"{lvl}|{msg}"); };
+                CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lines.Add($"{lvl}|{msg}"); };
                 made[0].LoseConnection();
-                Check(Wait(() => made.Count == 2 && made[1].IsGrabbing),
-                    $"continuous grab still resumes when a ConnectionChanged subscriber throws (grabbing={made.ElementAtOrDefault(1)?.IsGrabbing})");
-                lock (lines) Check(lines.Any(l => l.Contains("subscriber threw")),
-                    $"the throwing subscriber is named in the log: [{string.Join(" / ", lines)}]");
-                lock (lines) Check(!lines.Any(l => l.Contains("reconnect loop failed")),
-                    $"a subscriber fault is not reported as our own reconnect failure: [{string.Join(" / ", lines)}]");
+                Check(WaitFor(() => made.Count == 2 && made[1].IsGrabbing),
+                    $"continuous grab still resumes when a ConnectionChanged subscriber throws (grabbing={made.At(1)?.IsGrabbing})");
+                Check(WaitFor(() => cam.IsReconnectIdle), "the reconnect round has finished");
+                Check(lines.Snapshot().Any(l => l.Contains("subscriber threw")),
+                    $"the throwing subscriber is named in the log: [{string.Join(" / ", lines.Snapshot())}]");
+                Check(!lines.Snapshot().Any(l => l.Contains("reconnect loop failed")),
+                    $"a subscriber fault is not reported as our own reconnect failure: [{string.Join(" / ", lines.Snapshot())}]");
             }
             finally { CvLog.Sink = prevSink; }
         }
@@ -746,12 +741,13 @@ public class SmokeTests
         // 10-10b) 대조군 — 사용자가 끈 취득은 되살아나지 않는다. 같은 통지가 오지만 의도가 내려가 있다.
         //         이것이 없으면 위 항은 "무슨 일이 있어도 다시 켠다" 와 구분되지 않는다.
         {
-            var made = new List<FakeCam>();
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, fastOpt);
+            var made = new SyncList<FakeCam>();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), fastOpt);
             cam.Open();
             cam.StartContinuous();
             cam.StopContinuous();                                 // 의도를 내린다 — 안쪽도 멈추며 같은 통지를 낸다
-            Thread.Sleep(80);
+            // 되살리기가 걸렸다면 루프 기동은 위 호출 안에서 동기로 섰다 — 루프가 끝나기를 기다린 뒤 센다.
+            Check(WaitFor(() => cam.IsReconnectIdle), "no reconnect round is left running");
             Check(made.Count == 1 && !cam.IsGrabbing,
                 $"a stop the user asked for is not undone (instances={made.Count}, grabbing={cam.IsGrabbing})");
         }
@@ -762,26 +758,33 @@ public class SmokeTests
         //        IsGrabbing=true·마지막 통지 true 가 남았다 — 아무것도 안 돌고 의도는 내려가 있어 재연결도 못 고친다(검토가 코드로 찾은 경로).
         //        대조: 같은 대기에서 정지가 없으면 켜짐이 정상으로 나가야 한다(검사기가 "늘 안 알림" 으로 죽지 않았는지).
         {
-            var made = new List<FakeCam>();
+            // "정지가 시작 대기 도중에 온다" 는 시각이 아니라 신호로 세운다 — 잠깐 자고 정지를 부르면 부하에서 정지가 시작보다 먼저 가거나
+            // (그 순서의 정답을 실패로 읽는다) 대기가 끝난 뒤에 가서(이 항이 지키는 경로를 안 밟고 통과한다) 양쪽으로 틀렸다.
+            var made = new SyncList<FakeCam>();
+            var startGate = new ManualResetEventSlim();
             using var cam = new CvInspect.Imaging.ReconnectingCam(
-                () => { var c = new FakeCam { HoldBeforeStartMs = 150 }; made.Add(c); return c; }, fastOpt);
-            var grab = new List<bool>();
-            cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+                () => made.AddNew(_ => new FakeCam { StartGate = startGate }), fastOpt);
+            var grab = new SyncList<bool>();
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
             cam.Open();
             Exception? startEx = null;
-            var starter = new Thread(() => { try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; } });
+            var starter = new Thread(() => { try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; } }) { IsBackground = true };
             starter.Start();
-            Thread.Sleep(30);
-            cam.StopContinuous();
+            try
+            {
+                Check(WaitFor(() => made[0].IsStarting), "the start is waiting inside the inner camera");
+                cam.StopContinuous();
+            }
+            finally { startGate.Set(); }
             Check(starter.Join(2000) && startEx is null, $"a start that lost to a stop returns without throwing ({startEx?.Message ?? "ok"})");
             Check(!cam.IsGrabbing && !made[0].IsGrabbing,
                 $"after Start then Stop, nothing is grabbing (wrapper={cam.IsGrabbing}, inner={made[0].IsGrabbing})");
-            lock (grab) Check(grab.Count == 0 || !grab[^1],
-                $"no GrabbingChanged(true) is published after the stop: [{string.Join(",", grab)}]");
+            var edges = grab.Snapshot();
+            Check(edges.Length == 0 || !edges[^1], $"no GrabbingChanged(true) is published after the stop: [{grab}]");
 
-            cam.StartContinuous();   // 대조 — 정지가 없으면 대기 뒤 정상으로 켜진다
+            cam.StartContinuous();   // 대조 — 정지가 없으면 대기 뒤 정상으로 켜진다(신호는 이미 서 있다)
             Check(cam.IsGrabbing && made[0].IsGrabbing, "control: the same held start with no stop does start and says so");
-            lock (grab) Check(grab.Count > 0 && grab[^1], $"control: GrabbingChanged(true) is published: [{string.Join(",", grab)}]");
+            Check(WaitFor(() => grab.Count > 0 && grab[^1]), $"control: GrabbingChanged(true) is published: [{grab}]");
         }
     }
     }
@@ -860,14 +863,11 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamLossDuringOpenIsNotAGhost()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-        {
-            lock (made) { var c = new FakeCam { LoseRightAfterOpen = made.Count == 1 }; made.Add(c); return c; }
-        }, FastReconnect);
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { LoseRightAfterOpen = i == 1 }), FastReconnect);
         cam.Open();
         made[0].LoseConnection();
-        Check(WaitFor(() => { lock (made) return made.Count >= 3 && cam.IsConnected && made[^1].IsConnected; }),
+        Check(WaitFor(() => made.Count >= 3 && cam.IsConnected && made.LastOrDefault()!.IsConnected),
             $"a session that dies while it is being opened is retried (instances={made.Count}, wrapper connected={cam.IsConnected}, " +
             $"newest inner connected={made.LastOrDefault()?.IsConnected})");
     }
@@ -878,20 +878,19 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamOpenThatFinishesAfterCloseIsDiscarded()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-        {
-            lock (made) { var c = new FakeCam { HoldOnOpenMs = made.Count == 1 ? 600 : 0 }; made.Add(c); return c; }
-        }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100 });
-        var conn = new List<bool>();
-        cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { HoldOnOpenMs = i == 1 ? 600 : 0 }),
+            new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100 });
+        var conn = new SyncList<bool>();
+        cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
         cam.Open();
         made[0].LoseConnection();
-        Check(WaitFor(() => { lock (made) return made.Count == 2 && made[1].IsOpening; }), "the reconnect is stuck in the slow open before Close is called");
+        Check(WaitFor(() => made.Count == 2 && made[1].IsOpening), "the reconnect is stuck in the slow open before Close is called");
         cam.Close();                                   // 게이트 대기 100 ms 를 넘기고 돌아간다 — 열기는 아직 붙잡혀 있다
         Check(WaitFor(() => made[1].Disposed), "the session that finished opening after Close is discarded (closed and disposed), not kept");
+        Check(WaitFor(() => cam.IsReconnectIdle), "the reconnect loop retires");
         Check(!cam.IsConnected, "a camera closed while it was being reopened stays closed");
-        lock (conn) Check(conn.SequenceEqual(new[] { true, false }), $"no connection is announced after Close: [{string.Join(",", conn)}]");
+        Check(conn.Snapshot().SequenceEqual(new[] { true, false }), $"no connection is announced after Close: [{conn}]");
     }
 
     /// <summary>10-R5) 느린 열기 중에 해제되면 재연결 루프가 "실패" 로 끝나지 않고, 그 뒤에 줄 선 Open 이 영영 서지 않는다.
@@ -901,31 +900,32 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamDisposeDuringSlowOpenIsQuiet()
     {
-        var made = new List<FakeCam>();
-        var lines = new List<string>();
+        var made = new SyncList<FakeCam>();
+        var lines = new SyncList<string>();
         var prevSink = CvLog.Sink;
         CvLog.Sink = static (_, _, _, _) => { };   // 보관된 앞 줄을 먼저 흘려보낸다
-        CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lock (lines) lines.Add($"{lvl}|{msg}"); };
+        CvLog.Sink = (lvl, src, msg, _) => { if (src == "ReconnectingCam") lines.Add($"{lvl}|{msg}"); };
         try
         {
-            var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-            {
-                lock (made) { var c = new FakeCam { HoldOnOpenMs = made.Count == 1 ? 600 : 0 }; made.Add(c); return c; }
-            }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100 });
+            var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { HoldOnOpenMs = i == 1 ? 600 : 0 }),
+                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 100 });
             cam.Open();
             made[0].LoseConnection();
-            Check(WaitFor(() => { lock (made) return made.Count == 2 && made[1].IsOpening; }), "the reconnect is stuck in the slow open before Dispose");
+            Check(WaitFor(() => made.Count == 2 && made[1].IsOpening), "the reconnect is stuck in the slow open before Dispose");
             Exception? queuedOpen = null;
             var opener = new Thread(() => { try { cam.Open(); } catch (Exception ex) { queuedOpen = ex; } }) { IsBackground = true };
             opener.Start();                               // 게이트에 줄 선다 — 재장착 시도가 쥐고 있다
-            Thread.Sleep(30);
+            // 줄 선 것을 확인하고 해제한다 — 잠깐 자고 해제하면 부하에서 여는 쪽이 해제 검사에서 먼저 던져, 이 항이 지키는 "줄 선 Open 이
+            // 깨어난다" 를 안 밟고도 통과했다.
+            Check(WaitFor(() => cam.OpenWaiters == 1), "the Open is queued on the gate before Dispose");
             cam.Dispose();
             Check(WaitFor(() => made[1].Disposed), "the late session is discarded");
             Check(opener.Join(3000), "an Open queued on the gate during Dispose does not hang");
             Check(queuedOpen is ObjectDisposedException, $"...it wakes and reports the disposal ({queuedOpen?.GetType().Name ?? "no exception"})");
-            Check(WaitFor(() => { lock (lines) return lines.Any(l => l.Contains("discarded")); }), "the discard is logged");
-            lock (lines) Check(!lines.Any(l => l.StartsWith("Error|")),
-                $"disposing during a slow open leaves no error line: [{string.Join(" / ", lines)}]");
+            Check(WaitFor(() => lines.Snapshot().Any(l => l.Contains("discarded"))), "the discard is logged");
+            // (여기서 IsReconnectIdle 은 못 쓴다 — Dispose 가 루프 칸을 먼저 비우므로 루프가 살아 있어도 참이다.)
+            Check(!lines.Snapshot().Any(l => l.StartsWith("Error|")),
+                $"disposing during a slow open leaves no error line: [{string.Join(" / ", lines.Snapshot())}]");
             Check(!cam.IsConnected, "nothing is reported connected after Dispose");
         }
         finally { CvLog.Sink = prevSink; }
@@ -938,23 +938,21 @@ public class SmokeTests
     {
         foreach (var dispose in new[] { false, true })
         {
-            var made = new List<FakeCam>();
-            var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-            {
-                lock (made) { var c = new FakeCam { HoldOnOpenMs = 300 }; made.Add(c); return c; }
-            }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 50 });
-            var conn = new List<bool>();
-            cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+            var made = new SyncList<FakeCam>();
+            var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam { HoldOnOpenMs = 300 }),
+                new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, ShutdownWaitMs = 50 });
+            var conn = new SyncList<bool>();
+            cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
             Exception? openEx = null;
             var opener = new Thread(() => { try { cam.Open(); } catch (Exception ex) { openEx = ex; } }) { IsBackground = true };
             opener.Start();
-            Check(WaitFor(() => { lock (made) return made.Count == 1 && made[0].IsOpening; }), "the first open is in progress");
+            Check(WaitFor(() => made.Count == 1 && made[0].IsOpening), "the first open is in progress");
             if (dispose) cam.Dispose(); else cam.Close();
             var how = dispose ? "Dispose" : "Close";
             Check(opener.Join(3000), $"Open returns after the {how} that won");
             Check(openEx is null, $"Open does not throw when {how} wins ({openEx?.GetType().Name ?? "ok"})");
             Check(WaitFor(() => made[0].Disposed) && !cam.IsConnected, $"the session opened after {how} is discarded and not reported connected");
-            lock (conn) Check(conn.Count == 0, $"no connection edge is announced around a {how} that won: [{string.Join(",", conn)}]");
+            Check(conn.Count == 0, $"no connection edge is announced around a {how} that won: [{conn}]");
             cam.Dispose();
         }
     }
@@ -966,13 +964,11 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamAnnouncesOnlyTheCurrentSession()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-        {
-            lock (made) { var c = new FakeCam(); made.Add(c); return c; }
-        }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 5000 }, ShutdownWaitMs = 1000 });
-        var conn = new List<bool>();
-        cam.ConnectionChanged += (_, e) => { lock (conn) conn.Add(e.IsConnected); };
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()),
+            new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 5000 }, ShutdownWaitMs = 1000 });
+        var conn = new SyncList<bool>();
+        cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
 
         cam.Open();
         Check(cam.RaiseConnectedIfCurrent(made[0]) && cam.IsConnected, "the current, connected session is accepted (nothing more to announce)");
@@ -986,8 +982,7 @@ public class SmokeTests
         cam.Open();                                        // 새 세션
         Check(!cam.RaiseConnectedIfCurrent(made[0]), "a retired session is not the current one");
         Check(cam.RaiseConnectedIfCurrent(made[1]) && cam.IsConnected, "the new current session is accepted");
-        lock (conn) Check(conn.SequenceEqual(new[] { true, false, true }),
-            $"only real transitions are announced: [{string.Join(",", conn)}]");
+        Check(conn.Snapshot().SequenceEqual(new[] { true, false, true }), $"only real transitions are announced: [{conn}]");
     }
 
     /// <summary>10-R9) 재연결 루프는 이미 살아 있는 세션을 뜯지 않는다. 재장착이 실패해 안쪽이 빈 백오프 사이 사용자가 Open 으로 손수 붙이면,
@@ -996,21 +991,25 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamDoesNotTearDownAHealthySession()
     {
-        var made = new List<FakeCam>();
+        var made = new SyncList<FakeCam>();
+        var makerThread = new SyncList<int>();
         using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
         {
-            lock (made) { var c = new FakeCam { FailOnOpen = made.Count == 1 }; made.Add(c); return c; }   // 첫 재장착은 실패한다
+            makerThread.Add(Environment.CurrentManagedThreadId);
+            return made.AddNew(i => new FakeCam { FailOnOpen = i == 1 });   // 첫 재장착은 실패한다
         }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 50, 400 }, ShutdownWaitMs = 1000 });
         cam.Open();
         cam.StartContinuous();
         made[0].LoseConnection();
-        Check(WaitFor(() => { lock (made) return made.Count == 2; }), "the first reconnect attempt ran (and failed)");
-        Thread.Sleep(50);                                   // 두 번째 시도는 400 ms 뒤 — 그 사이 사용자가 손수 연다
-        cam.Open();
+        Check(WaitFor(() => made.Count == 2), "the first reconnect attempt ran (and failed)");
+        cam.Open();                                         // 두 번째 시도는 400 ms 뒤 — 그 사이 사용자가 손수 연다
         Check(cam.IsConnected && cam.IsGrabbing && made[2].IsGrabbing,
             $"a manual Open after a loss connects and resumes the live intent (connected={cam.IsConnected}, grabbing={cam.IsGrabbing})");
-        Thread.Sleep(600);                                  // 루프의 두 번째 시도가 지나간다
-        lock (made) Check(made.Count == 3 && !made[2].Disposed,
+        // 셋째 세션을 연 것이 정말 손수 부른 Open 인지 — 시험 스레드가 400 ms 넘게 멈추면 루프가 먼저 열고 Open 은 할 일 없이 돌아와,
+        // 아래 단언이 이 항이 지키는 경로(루프가 멀쩡한 세션을 뜯는다)를 안 밟고도 통과한다.
+        Check(makerThread[2] == Environment.CurrentManagedThreadId, "the third session was opened by the manual Open, not by the loop");
+        Check(WaitFor(() => cam.IsReconnectIdle, 3000), "the loop's next attempt has run");
+        Check(made.Count == 3 && !made[2].Disposed,
             $"the loop's next attempt leaves the healthy session alone (instances={made.Count}, manual session disposed={made[2].Disposed})");
         Check(cam.IsConnected && cam.IsGrabbing, "...and it is still connected and live");
     }
@@ -1020,23 +1019,19 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamExposureSetDuringAttachIsApplied()
     {
-        var made = new List<FakeCam>();
+        var made = new SyncList<FakeCam>();
         CvInspect.Imaging.ReconnectingCam? wrapper = null;
-        using var cam = wrapper = new CvInspect.Imaging.ReconnectingCam(() =>
+        using var cam = wrapper = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i =>
         {
-            lock (made)
-            {
-                var c = new FakeCam();
-                // 새 세션에 옛 노출이 들어가는 바로 그 순간, 사용자가 새 노출을 준다(연결을 알리기 전)
-                if (made.Count == 1) c.OnSetExposure = us => { if (us == 1111) { c.OnSetExposure = null; wrapper!.SetExposureTimeUs(9999); } };
-                made.Add(c);
-                return c;
-            }
-        }, FastReconnect);
+            var c = new FakeCam();
+            // 새 세션에 옛 노출이 들어가는 바로 그 순간, 사용자가 새 노출을 준다(연결을 알리기 전)
+            if (i == 1) c.OnSetExposure = us => { if (us == 1111) { c.OnSetExposure = null; wrapper!.SetExposureTimeUs(9999); } };
+            return c;
+        }), FastReconnect);
         cam.Open();
         cam.SetExposureTimeUs(1111);
         made[0].LoseConnection();
-        Check(WaitFor(() => { lock (made) return made.Count == 2 && cam.IsConnected; }), "the session is rebuilt");
+        Check(WaitFor(() => made.Count == 2 && cam.IsConnected), "the session is rebuilt");
         Check(WaitFor(() => made[1].LastExposure == 9999),
             $"the exposure given while the new session was being attached reaches it (got {made[1].LastExposure})");
     }
@@ -1047,18 +1042,18 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamStartTheInnerAbandonedIsNotAnnounced()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() => { lock (made) { var c = new FakeCam(); made.Add(c); return c; } }, FastReconnect);
-        var grab = new List<bool>();
-        cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+        var grab = new SyncList<bool>();
+        cam.GrabbingChanged += (_, g) => grab.Add(g);
         cam.Open();
         made[0].StandDownNextStart = true;
         cam.StartContinuous();
         Check(!cam.IsGrabbing && !made[0].IsGrabbing, $"a start the inner camera abandoned is not reported grabbing (wrapper={cam.IsGrabbing})");
-        lock (grab) Check(grab.Count == 0, $"no GrabbingChanged(true) for it: [{string.Join(",", grab)}]");
+        Check(grab.Count == 0, $"no GrabbingChanged(true) for it: [{grab}]");
         cam.StartContinuous();                              // 대조 — 다음 시작은 켜지고 알린다
         Check(cam.IsGrabbing && made[0].IsGrabbing, "control: a start the inner camera carries out is reported");
-        lock (grab) Check(grab.SequenceEqual(new[] { true }), $"control: one GrabbingChanged(true): [{string.Join(",", grab)}]");
+        Check(grab.Snapshot().SequenceEqual(new[] { true }), $"control: one GrabbingChanged(true): [{grab}]");
     }
 
     /// <summary>10-R13) 시작을 반환 뒤에(콜백으로) 알리는 안쪽도 켜짐이 전달된다. 데코레이터가 반환 직후 안쪽 IsGrabbing 으로 켜짐을
@@ -1067,23 +1062,29 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamLateStartIsAnnounced()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() => { lock (made) { var c = new FakeCam { LateStartMs = 80 }; made.Add(c); return c; } }, FastReconnect);
-        var grab = new List<bool>();
-        cam.GrabbingChanged += (_, g) => { lock (grab) grab.Add(g); };
+        // 늦은 켜짐은 시각이 아니라 시험이 세우는 신호로 낸다 — 80 ms 뒤에 켜게 두면, 시험 스레드가 그만큼 멈출 때 "아직 안 켜졌다"·
+        // "정지가 늦은 켜짐보다 먼저 간다" 가 뒤집히고, 부정 단언은 늦은 켜짐이 오기 전에 봐서 아무것도 안 시험하고 통과했다.
+        var made = new SyncList<FakeCam>();
+        var lateGate = new ManualResetEventSlim();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam { LateStartGate = lateGate }), FastReconnect);
+        var grab = new SyncList<bool>();
+        cam.GrabbingChanged += (_, g) => grab.Add(g);
         cam.Open();
         cam.StartContinuous();
         Check(!cam.IsGrabbing, "right after the call the late-starting camera is not live yet");
+        lateGate.Set();
         Check(WaitFor(() => cam.IsGrabbing), "the late start is picked up from the inner notification");
-        lock (grab) Check(grab.SequenceEqual(new[] { true }), $"one GrabbingChanged(true): [{string.Join(",", grab)}]");
+        Check(WaitFor(() => grab.Count >= 1) && grab.Snapshot().SequenceEqual(new[] { true }), $"one GrabbingChanged(true): [{grab}]");
 
         cam.StopContinuous();
-        lock (grab) grab.Clear();
+        grab.Clear();
+        lateGate.Reset();
         cam.StartContinuous();
         cam.StopContinuous();                                // 늦은 켜짐이 오기 전에 정지 — 의도가 내려갔다
-        Thread.Sleep(200);
+        lateGate.Set();
+        Check(WaitFor(() => Volatile.Read(ref made[0].LateStartsFired) == 2), "the late start after the Stop has fired");
         Check(!cam.IsGrabbing, "a late start that arrives after a Stop is not taken as live");
-        lock (grab) Check(!grab.Contains(true), $"no GrabbingChanged(true) after the Stop: [{string.Join(",", grab)}]");
+        Check(!grab.Snapshot().Contains(true), $"no GrabbingChanged(true) after the Stop: [{grab}]");
     }
 
     /// <summary>10-R14) 닫힌 동안 부른 StartContinuous 는 다음 Open 에서 라이브를 켜지 않는다. 이제 Open 도 의도를 되살리므로, 닫아 둔
@@ -1092,8 +1093,8 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamStartWhileClosedDoesNotStartOnNextOpen()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() => { lock (made) { var c = new FakeCam(); made.Add(c); return c; } }, FastReconnect);
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
         cam.Open();
         cam.Close();
         cam.StartContinuous();                               // 닫힌 동안 — 예외 없이 의도만 기록되던 호출
@@ -1107,11 +1108,8 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamStartEndedByCloseReturnsQuietly()
     {
-        var made = new List<FakeCam>();
-        var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-        {
-            lock (made) { var c = new FakeCam { HoldBeforeStartMs = 200 }; made.Add(c); return c; }
-        }, FastReconnect);
+        var made = new SyncList<FakeCam>();
+        var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam { HoldBeforeStartMs = 200 }), FastReconnect);
         cam.Open();
         Exception? startEx = null;
         var starter = new Thread(() => { try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; } }) { IsBackground = true };
@@ -1164,14 +1162,12 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamStartDuringLossIsNotAnnounced()
     {
-        var made = new List<FakeCam>();
-        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
-        {
-            lock (made) { var c = new FakeCam { HoldBeforeStartMs = made.Count == 0 ? 150 : 0 }; made.Add(c); return c; }
-        }, new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 400 }, ShutdownWaitMs = 1000 });
-        var edges = new List<string>();
-        cam.ConnectionChanged += (_, e) => { lock (edges) edges.Add($"conn:{e.IsConnected}"); };
-        cam.GrabbingChanged += (_, g) => { lock (edges) edges.Add($"grab:{g}"); };
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { HoldBeforeStartMs = i == 0 ? 150 : 0 }),
+            new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 400 }, ShutdownWaitMs = 1000 });
+        var edges = new SyncList<string>();
+        cam.ConnectionChanged += (_, e) => edges.Add($"conn:{e.IsConnected}");
+        cam.GrabbingChanged += (_, g) => edges.Add($"grab:{g}");
         cam.Open();
         var starter = new Thread(cam.StartContinuous) { IsBackground = true };
         starter.Start();
@@ -1179,13 +1175,12 @@ public class SmokeTests
         made[0].LoseConnection();                        // 시작 도중 세션이 죽는다
         Check(starter.Join(2000), "the start returns");
         // 재연결은 백오프 400 ms 뒤라 아직 안 돌았다 — 지금까지의 통지는 이 죽은 세션의 것뿐이다.
-        string[] soFar;
-        lock (edges) soFar = edges.ToArray();
+        var soFar = edges.Snapshot();
         Check(!cam.IsGrabbing, $"a start that finished on a dead session is not reported grabbing (connected={cam.IsConnected})");
         Check(soFar.SequenceEqual(new[] { "conn:True", "conn:False" }),
             $"no grabbing=true is announced for the dead session after its disconnect: [{string.Join(",", soFar)}]");
         // 대조 — 의도는 살아 있어 재연결이 새 세션에서 취득을 되살린다(검사기가 "늘 안 켬" 으로 죽지 않았는지).
-        Check(WaitFor(() => { lock (made) return made.Count == 2 && cam.IsConnected && cam.IsGrabbing && made[1].IsGrabbing; }, 3000),
+        Check(WaitFor(() => made.Count == 2 && cam.IsConnected && cam.IsGrabbing && made[1].IsGrabbing, 3000),
             $"control: the recorded intent resumes on the new session (instances={made.Count}, grabbing={cam.IsGrabbing})");
     }
 
@@ -1252,7 +1247,8 @@ public class SmokeTests
             var frame = await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, TimeSpan.FromMilliseconds(150));
             sw.Stop();
             Check(frame is null, "a grab that publishes nothing yields null");
-            Check(sw.ElapsedMilliseconds >= 140,
+            // 하한은 시한보다 한 타이머 눈금(Windows 기본 15.6 ms) 넉넉히 — 타이머 시계가 눈금 단위로 가서 벽시계로는 시한보다 일찍 끝날 수 있다.
+            Check(sw.ElapsedMilliseconds >= 130,
                 $"and the generic path honestly waits out the timeout rather than guessing ({sw.ElapsedMilliseconds}ms)");
         }
 
@@ -1304,12 +1300,11 @@ public class SmokeTests
 
         // 10-G-6) 재연결 데코레이터의 미연결 구간도 같은 경계다 — GrabOne 과 갈리면 안 된다.
         {
-            var made = new List<FakeCam>();
+            var made = new SyncList<FakeCam>();
             var slow = new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 400 }, ShutdownWaitMs = 1000 };
-            using var cam = new CvInspect.Imaging.ReconnectingCam(() => { var c = new FakeCam(); made.Add(c); return c; }, slow);
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), slow);
             cam.Open();
-            made[0].LoseConnection();
-            Thread.Sleep(40);
+            made[0].LoseConnection();                     // 미연결 구간은 이 호출 안에서 동기로 선다
             var threw = false;
             try { await CvInspect.Imaging.CamGrabExt.GrabFrameAsync(cam, second); }
             catch (InvalidOperationException) { threw = true; }
