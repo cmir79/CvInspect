@@ -22,9 +22,9 @@ namespace CvInspect.Controls;
 /// </summary>
 public static class CvPropRowBldr
 {
-    /// <summary>프로퍼티별 attribute 인스턴스 캐시 — GetCustomAttribute 는 호출마다 새 인스턴스를 만드는데,
-    /// 번역 attribute 는 해석한 문자열을 인스턴스에 캐시하므로 재빌드마다 새로 만들면 그 캐시가 헛돈다.
-    /// 프로퍼티당 1회 생성으로 고정한다.</summary>
+    /// <summary>프로퍼티별 attribute 인스턴스 캐시 — GetCustomAttribute 는 호출마다 새 인스턴스를 만들므로 프로퍼티당 1회로 고정한다.
+    /// ⚠ 카테고리 머리글 문자열은 여기서 읽지 않는다 — 이 캐시가 쥔 인스턴스는 첫 조회 언어로 굳는다(<see cref="CategoryText"/>).
+    /// 라벨·설명(DisplayName·Description)은 조회마다 다시 번역되므로 캐시한 인스턴스로 읽어도 된다.</summary>
     private static readonly ConcurrentDictionary<PropertyInfo, PropMeta> MetaCache = new();
 
     private sealed record PropMeta(
@@ -66,9 +66,10 @@ public static class CvPropRowBldr
             if (row is null) continue;
 
             // 순번은 ① attribute 의 Order(접두 없는 표시명 그대로 헤더) → ② "N. " 접두 파싱 폴백.
+            var catText = CategoryText(prop, meta.Cat);
             var (order, header) = meta.CatOrder is { } catOrder
-                ? (catOrder, meta.Cat?.Category ?? string.Empty)
-                : ParseCategory(meta.Cat?.Category);
+                ? (catOrder, catText ?? string.Empty)
+                : ParseCategory(catText);
             rows.Add((order, header, row));
         }
 
@@ -94,6 +95,20 @@ public static class CvPropRowBldr
         }
         return rows;
     }
+
+    /// <summary>카테고리 머리글 문자열 — <b>빌드할 때마다 지금 언어로</b> 읽는다.
+    /// 표준 <see cref="CategoryAttribute.Category"/> 는 인스턴스마다 첫 조회 때 한 번 번역해 담아 두고(베이스 동작, virtual 이 아니다),
+    /// 위 캐시는 그 인스턴스를 프로세스 수명 동안 쥔다. 그래서 머리글은 그 타입을 처음 그린 언어로 굳었고, 행 라벨(CvName·CvDesc 는 조회마다
+    /// 다시 번역한다)은 새 언어가 되어 한 편집기 안에 두 언어가 섞였다(소비자가 원문 독해로 짚음 — 툴마다 처음 그린 시점이 달라 툴별로
+    /// 머리글 언어가 다를 수도 있었다). <see cref="CvCategoryAttribute"/> 는 키로 바로 번역하고(그 타입 문서가 권하는 길), 다른 카테고리
+    /// attribute 는 새 인스턴스로 읽는다 — 그 파생이 GetLocalizedString 에서 번역하면 새 인스턴스는 지금 언어로 다시 번역한다.
+    /// 빌드는 드물어(툴을 고르거나 설정을 바꿀 때) 속성마다 한 번 더 읽는 비용은 문제가 안 된다.</summary>
+    private static string? CategoryText(PropertyInfo prop, CategoryAttribute? cached) => cached switch
+    {
+        null => null,
+        CvCategoryAttribute cv => CvLoc.T(cv.ScopedKey),
+        _ => prop.GetCustomAttribute<CategoryAttribute>()?.Category,
+    };
 
     private static PropMeta ReadMeta(PropertyInfo prop) => MetaCache.GetOrAdd(prop, p =>
     {
