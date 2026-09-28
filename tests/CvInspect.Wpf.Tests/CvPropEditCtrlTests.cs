@@ -28,6 +28,51 @@ public class CvPropEditCtrlTests
     private static T Row<T>(CvPropEditCtrl ctrl, string propName) where T : CvPropRowVm
         => ctrl.Groups.SelectMany(g => g.Rows).OfType<T>().Single(r => r.Label == CvLoc.T("cv:" + propName));
 
+    /// <summary>실행 중 언어를 바꾼 뒤 편집기를 다시 지으면 머리글도 새 언어다. 머리글은 카테고리 attribute 인스턴스가 첫 조회 때 번역을
+    /// 담아 두고 빌더가 그 인스턴스를 프로세스 수명 동안 쥐어, 그 타입을 처음 그린 언어로 굳었다 — 행 라벨은 새 언어가 되어 한 편집기
+    /// 안에 두 언어가 섞였다(소비자 독해). 코어의 CvCategory 와, GetLocalizedString 으로 번역하는 다른 카테고리 attribute 둘 다 본다.</summary>
+    [Fact]
+    public void HeadersFollowTheCultureOnRebuild() => RunSta(() =>
+    {
+        var before = CvLoc.Culture;
+        try
+        {
+            CvLoc.Culture = "en";
+            SwitchingCategoryAttribute.Lang = "en";
+            var en = CvPropRowBldr.Build(new LocPoco(), null, null, null, null);
+            var enHeaders = en.Select(g => g.Header).ToList();
+            Check(enHeaders.Contains("Threshold") && enHeaders.Contains("Others"), $"English headers first: [{string.Join(", ", enHeaders)}]");
+
+            CvLoc.Culture = "ko";
+            SwitchingCategoryAttribute.Lang = "ko";
+            var ko = CvPropRowBldr.Build(new LocPoco(), null, null, null, null);
+            var koHeaders = ko.Select(g => g.Header).ToList();
+            var koLabel = ko.SelectMany(g => g.Rows).First().Label;
+            Check(koLabel == "탐색", $"the row label follows the new culture (control, as before): {koLabel}");
+            Check(koHeaders.Contains("임계값") && koHeaders.Contains("나머지") && !koHeaders.Contains("Threshold") && !koHeaders.Contains("Others"),
+                $"after switching to Korean the rebuilt headers are Korean too, not frozen at English: [{string.Join(", ", koHeaders)}]");
+        }
+        finally
+        {
+            CvLoc.Culture = before;
+            SwitchingCategoryAttribute.Lang = "en";
+        }
+    });
+
+    private sealed class LocPoco
+    {
+        [CvCategory("cv:CatThreshold", 1), CvName("cv:CatSearch")] public int A { get; set; }
+        [SwitchingCategory] public int B { get; set; }
+    }
+
+    /// <summary>표준 방식(GetLocalizedString)으로 번역하는 호스트 쪽 카테고리 attribute 의 모양.</summary>
+    private sealed class SwitchingCategoryAttribute : CategoryAttribute
+    {
+        public static string Lang = "en";
+        public SwitchingCategoryAttribute() : base("x") { }
+        protected override string GetLocalizedString(string value) => Lang == "ko" ? "나머지" : "Others";
+    }
+
     [Fact]
     public void CoreOptUnfoldsThroughStandardAttributes() => RunSta(() =>
     {
