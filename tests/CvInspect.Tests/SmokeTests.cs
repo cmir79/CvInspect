@@ -1493,7 +1493,9 @@ public class SmokeTests
             var startGate = new ManualResetEventSlim();
             using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam { StopNotifyGate = notifyGate }), FastReconnect);
             var conn = new SyncList<bool>();
+            var grab = new SyncList<bool>();
             cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
             cam.Open();
             cam.StartContinuous();
             try
@@ -1538,6 +1540,145 @@ public class SmokeTests
             Check(WaitFor(() => cam.IsGrabbing && made[0].IsGrabbing),
                 $"{order}: the start called last wins — live runs and is reported (wrapper={cam.IsGrabbing}, inner={made[0].IsGrabbing})");
             Check(conn.Snapshot().SequenceEqual(new[] { true }), $"{order}: no disconnect is announced: [{conn}]");
+            var g = grab.Snapshot();
+            Check(g.Length > 0 && g[^1] && g.Zip(g.Skip(1), (x, y) => x != y).All(t => t),
+                $"{order}: GrabbingChanged alternates (transitions only) and ends on true: [{grab}]");
+        }
+    }
+
+    /// <summary>10-R31) 10-R30 의 고침을 적대 검토가 깨뜨린 모양들(검토자 가짜 카메라 재현) — 표시·안쪽·의도가 끝에 서로 맞는다.
+    /// ④ 우리 정지 중 나중 시작이 안쪽에서 던진다(GevCam: 그 틈에 단발 그랩이 락을 먼저 잡아 "A single grab is waiting") → 그 시작은 의도를 되돌린다.
+    ///    첫 판은 메아리를 삼키며 표시를 그대로 두어 켜짐으로 표시된 채 아무것도 안 돌았다.
+    /// ⑤ 정지 꼬리가 나중 시작을 위해 되켜는 사이 그 시작이 던져 의도를 되돌린다 → 되켠 것을 도로 멈춘다. 첫 판은 판 번호만 봐서 아무도 청하지 않은
+    ///    라이브를 켰다(되돌림이 판을 안 올렸다).
+    /// ⑥ ⑤ 에서 되켠 시작이 스스로 물러난다 → 세션을 교체하지 않는다(첫 판은 "안 켜짐" 만 보고 교체했다).
+    /// ⑦ 교체된 옛 세션에서 아직 안 끝난 우리 정지가 새 세션의 진짜 멈춤을 메아리로 삼키지 않는다(첫 판은 수 하나와 인스턴스 한 칸으로 셌다).
+    /// ⑧ 시작을 늦게(콜백으로) 알리는 안쪽에서 되켜기가 "안 켜짐" 을 보고 세션을 교체하지 않는다 — 늦은 켜짐이 온다.</summary>
+    [Fact]
+    public void ReconnectingCamOwnStopEchoKeepsStateConsistent()
+    {
+        // ④
+        {
+            var made = new SyncList<FakeCam>();
+            var notifyGate = new ManualResetEventSlim();
+            var echoSeen = new ManualResetEventSlim();
+            var startFailed = new ManualResetEventSlim();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            cam.Open();
+            cam.StartContinuous();
+            var inner = made[0];
+            inner.StopNotifyGate = notifyGate;
+            // 감싼 쪽 다음에 불리는 처리기 — 감싼 쪽이 메아리를 처리한 뒤, 나중 시작이 던지고 되돌릴 때까지 정지 스레드를 붙잡는다
+            inner.GrabbingChanged += (_, on) => { if (!on) { echoSeen.Set(); startFailed.Wait(3000); } };
+            inner.OnStartEntry = () => { notifyGate.Set(); echoSeen.Wait(3000); inner.FailNextStart = true; };
+            var stopper = new Thread(cam.StopContinuous) { IsBackground = true };
+            try
+            {
+                stopper.Start();
+                Check(WaitFor(() => inner.IsStopping), "④: premise — the stop is finishing inside the inner camera");
+                var threw = false;
+                try { cam.StartContinuous(); } catch (InvalidOperationException) { threw = true; }
+                Check(threw, "④: premise — the later start fails inside the inner camera");
+            }
+            finally { startFailed.Set(); notifyGate.Set(); }
+            Check(stopper.Join(3000), "④: the stop returns");
+            Check(!cam.IsGrabbing && !inner.IsGrabbing,
+                $"④: a start that failed during our stop leaves nothing reported live (wrapper={cam.IsGrabbing}, inner={inner.IsGrabbing})");
+        }
+        // ⑤ ⑥
+        foreach (var standDown in new[] { false, true })
+        {
+            var tag = standDown ? "⑥" : "⑤";
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            var echoDone = new ManualResetEventSlim();
+            var flipped = new ManualResetEventSlim();
+            var startGate = new ManualResetEventSlim();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            var grab = new SyncList<bool>();
+            cam.GrabbingChanged += (_, g) => grab.Add(g);
+            cam.Open();
+            cam.StartContinuous();
+            var inner = made[0];
+            // 메아리는 의도가 꺼진 채 처리된다. 그 뒤 나중 시작이 의도를 올릴 때까지 정지 스레드를 붙잡아, 정지 꼬리가 "나중 시작이 원한다" 로 되켜게 한다.
+            inner.GrabbingChanged += (_, on) => { if (!on) { echoDone.Set(); flipped.Wait(3000); } };
+            inner.StartGate = startGate;                                   // 되켜기의 시작을 붙잡는다
+            inner.OnStartEntry = () =>                                     // 나중 시작 — 되켜기가 안쪽 시작에 들어간 것을 보고 던진다
+            {
+                flipped.Set();
+                WaitFor(() => inner.IsStarting, 3000);
+                inner.FailNextStart = true;
+            };
+            var stopper = new Thread(cam.StopContinuous) { IsBackground = true };
+            try
+            {
+                stopper.Start();
+                Check(echoDone.Wait(3000), $"{tag}: premise — the echo was handled while the intent was off");
+                var threw = false;
+                try { cam.StartContinuous(); } catch (InvalidOperationException) { threw = true; }
+                Check(threw && inner.IsStarting, $"{tag}: premise — the later start failed while the relight waited inside the inner start");
+                if (standDown) inner.StandDownNextStart = true;          // 되켠 시작이 스스로 물러난다
+            }
+            finally { flipped.Set(); startGate.Set(); }
+            Check(stopper.Join(3000), $"{tag}: the stop returns");
+            Check(WaitFor(() => cam.IsReconnectIdle), $"{tag}: no reconnect round is left running");
+            Check(!cam.IsGrabbing && !inner.IsGrabbing,
+                $"{tag}: no live is left running for a start that had already failed (wrapper={cam.IsGrabbing}, inner={inner.IsGrabbing}) [{grab}]");
+            Check(made.Count == 1 && !log.Any("rebuilding"), $"{tag}: the session is not rebuilt (instances={made.Count}) [{log}]");
+        }
+        // ⑦
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            var notifyGate = new ManualResetEventSlim();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            cam.Open();
+            cam.StartContinuous();
+            var x = made[0];
+            x.StopNotifyGate = notifyGate;
+            var stopper = new Thread(cam.StopContinuous) { IsBackground = true };
+            try
+            {
+                stopper.Start();
+                Check(WaitFor(() => x.IsStopping), "⑦: premise — our stop is still finishing on the old session");
+                x.LoseConnection();                                        // 옛 세션이 끊겨 새 세션으로 교체된다(의도 꺼짐 — 라이브 없이)
+                Check(WaitFor(() => made.Count == 2 && cam.IsConnected), "⑦: the session was replaced");
+                var y = made[1];
+                cam.StartContinuous(); cam.StopContinuous(); cam.StartContinuous();   // 새 세션에서 우리 정지 하나가 끝났고 라이브가 돈다
+                Check(cam.IsGrabbing && y.IsGrabbing, "⑦: premise — live runs on the new session");
+                y.StopGrabbingOnItsOwn();                                 // 새 세션의 진짜 멈춤
+                Check(WaitFor(() => made.Count == 3 && cam.IsGrabbing && made[2].IsGrabbing),
+                    $"⑦: a real stop of the new session is recovered, not swallowed as an echo of the old session's stop (instances={made.Count})");
+            }
+            finally { notifyGate.Set(); }
+            Check(stopper.Join(3000), "⑦: the old stop returns");
+        }
+        // ⑧
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            var echoDone = new ManualResetEventSlim();
+            var laterDone = new ManualResetEventSlim();
+            var lateGate = new ManualResetEventSlim();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+            cam.Open();
+            cam.StartContinuous();
+            var inner = made[0];
+            inner.LateStartGate = lateGate;                               // 이제부터 시작은 늦게(신호를 세워야) 켜진다
+            inner.GrabbingChanged += (_, on) => { if (!on) { echoDone.Set(); laterDone.Wait(3000); } };
+            var stopper = new Thread(cam.StopContinuous) { IsBackground = true };
+            try
+            {
+                stopper.Start();
+                Check(echoDone.Wait(3000), "⑧: premise — the echo was handled while the intent was off");
+                cam.StartContinuous();                                     // 늦은 켜짐이 걸린 채 돌아온다
+            }
+            finally { laterDone.Set(); }
+            Check(stopper.Join(3000), "⑧: the stop returns (its tail tried to relight — the start is only pending)");
+            lateGate.Set();
+            Check(WaitFor(() => cam.IsGrabbing && inner.IsGrabbing), "⑧: the late start is picked up");
+            Check(WaitFor(() => cam.IsReconnectIdle) && made.Count == 1 && !log.Any("rebuilding"),
+                $"⑧: a start that is only pending is not taken as a dead session (instances={made.Count}) [{log}]");
         }
     }
 
