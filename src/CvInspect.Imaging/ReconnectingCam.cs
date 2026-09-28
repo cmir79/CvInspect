@@ -76,6 +76,8 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     private int _lastCloseSeq;            // 마지막으로 불린 Close 의 번호
     private int _openedSeq;               // 게이트 안 판정을 마지막으로 지난 Open 의 번호("이미 열려 있다" 로 돌아간 것 포함) — 게이트 안에서만 쓴다
     private int _attachGen;               // 세션을 장착할 때마다 증가 — 재연결 루프가 "새 사건" 을 알아본다
+    private int _ownStops;                // 지금 안쪽을 멈추는 중인 우리 StopContinuous 수
+    private object? _ownStopCam;          // 그 정지가 멈추는 안쪽 — 그 사이 온 이 안쪽의 꺼짐 통지는 우리 정지의 메아리다
 
     /// <summary>재연결 루프가 없다(돌 일이 끝났다) — 관측 전용. 시험이 "루프가 한 라운드를 마쳤다" 를 시간 대신 이것으로 기다린다:
     /// 잠깐 자고 나서 "더 안 일어났다" 를 보는 부정 단언은 느린 기계에서 루프가 아직 안 돌았는데도 참이 된다.
@@ -389,15 +391,17 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         // 판정과 표시를 같은 락에서 한다 — 판정 뒤 표시 전에 끼어든 상실이 다시 틈이 되지 않게.
         var innerGrabbing = ReadGrabbing(cam);
         bool stopInner = false, announce = false;
+        int decidedAt;
         lock (_sync)
         {
+            decidedAt = _intentVersion;
             var sameInner = ReferenceEquals(_inner, cam);
             var superseded = (_intentVersion != myVersion && !_wantContinuous) || !sameInner || _closed || _disposed;
             if (superseded) stopInner = sameInner;
             else if (innerGrabbing && _connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
         }
         // 안쪽이 이미 시작했다면 정지가 이기도록 한 번 더 멈춘다 — 이미 멈춘 안쪽에는 아무 일도 안 한다. 청산된 안쪽은 건드리지 않는다.
-        if (stopInner) Try(() => cam.StopContinuous());
+        if (stopInner) StopInnerOwned(cam, decidedAt);
         if (announce) SafeRaise(() => GrabbingChanged?.Invoke(this, true), nameof(GrabbingChanged));
     }
 
@@ -411,17 +415,100 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             _wantContinuous = false;
             myVersion = ++_intentVersion;
             cam = _connected ? _inner : null;
+            // 우리가 이 안쪽을 멈추는 중이라고 적어 둔다 — 그 사이 온 이 안쪽의 꺼짐 통지는 우리 정지의 메아리다(OnInnerGrabStopped).
+            if (cam != null) { _ownStops++; _ownStopCam = cam; }
         }
-        cam?.StopContinuous();
+        try
+        {
+            cam?.StopContinuous();
+        }
+        finally
+        {
+            if (cam != null) lock (_sync) { if (--_ownStops == 0) _ownStopCam = null; }
+        }
         // 이 정지가 아직 마지막 명령일 때만 꺼짐을 표시한다 — 안쪽을 멈추는 사이 더 나중의 시작이 들어와 실제로 켰다면, 여기서 내리면
         // 라이브가 도는데 IsGrabbing=false 가 된다. 그 시작이 켜짐을 제 자리에서 알린다.
-        bool lower;
+        // 더 나중의 시작이 있는데 그 시작이 우리 정지보다 먼저 안쪽에 닿았다면(이미 돌고 있어 할 일 없이 돌아갔다) 우리 정지가 그것을 도로 껐다 —
+        // 나중 명령이 이기도록 같은 세션에서 되켠다(StartContinuous 의 "나중 정지가 이기면 한 번 더 멈춘다" 의 거울).
+        bool lower, relight = false;
+        int laterVersion = 0;
         lock (_sync)
         {
             lower = _intentVersion == myVersion && _grabbing;
             if (lower) _grabbing = false;
+            else if (cam != null && _intentVersion != myVersion && _wantContinuous && IsLiveSessionLocked(cam))
+            {
+                relight = true;
+                laterVersion = _intentVersion;
+            }
         }
         if (lower) SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
+        if (relight) RelightAfterOwnStop(cam!, laterVersion);
+    }
+
+    /// <summary>나중 명령(정지)이 이겨 우리가 안쪽을 한 번 더 멈춘다 — <see cref="StopContinuous"/> 와 같이, 멈추는 사이 온 꺼짐 통지를 우리 정지의
+    /// 메아리로 표시하고, 멈추는 사이 또 나중의 시작이 들어와 라이브를 원하면 끝에서 되켠다. 되돌리기 정지가 그 나중 시작의 라이브를 끄고,
+    /// 그 메아리는 "청하지 않은 정지" 로도 안 읽히면 켜짐으로 표시된 채 아무것도 안 도는 거짓이 남는다.</summary>
+    /// <param name="cam">멈출 안쪽 인스턴스.</param>
+    /// <param name="decidedAt">멈추기로 정한 순간의 의도 판 — 그 뒤에 바뀌었으면 더 나중 명령이 있다.</param>
+    private void StopInnerOwned(ICam cam, int decidedAt)
+    {
+        lock (_sync) { _ownStops++; _ownStopCam = cam; }
+        try { Try(() => cam.StopContinuous()); }
+        finally { lock (_sync) { if (--_ownStops == 0) _ownStopCam = null; } }
+        bool relight;
+        int laterVersion;
+        lock (_sync)
+        {
+            relight = _intentVersion != decidedAt && _wantContinuous && IsLiveSessionLocked(cam);
+            laterVersion = _intentVersion;
+        }
+        if (relight) RelightAfterOwnStop(cam, laterVersion);
+    }
+
+    /// <summary><see cref="_sync"/> 보유 전제. 이 인스턴스가 지금 붙어 있고, 연결돼 있고, 죽음이 접수되지 않았고, 닫히지 않았다.</summary>
+    private bool IsLiveSessionLocked(ICam cam)
+        => ReferenceEquals(_inner, cam) && _connected && !ReferenceEquals(_lostInner, cam) && !_closed && !_disposed;
+
+    /// <summary>우리 정지가 도는 사이 들어온 나중 시작이 이기게 한다 — 안쪽이 꺼져 있으면 같은 세션에서 다시 켠다.
+    /// 우리 정지의 꺼짐 통지는 "청하지 않은 정지" 로 읽지 않으므로(OnInnerGrabStopped) 여기서 맞추지 않으면, 시작이 우리 정지보다 먼저 안쪽에
+    /// 닿은 순서에서 IsGrabbing=true·의도 켜짐인데 아무것도 안 도는 거짓이 남는다. 다시 켜지지 않으면 옛 길대로 세션을 교체한다
+    /// (의도 켜짐·아무것도 안 돎을 남기지 않는다). 켜는 사이 더 나중의 정지가 왔으면 그 정지가 이긴다 — 한 번 더 멈춘다.</summary>
+    private void RelightAfterOwnStop(ICam cam, int laterVersion)
+    {
+        if (ReadGrabbing(cam)) return;   // 나중 시작이 제대로 켰다(또는 곧 켤 것을 이미 켰다)
+        try { cam.StartContinuous(); }
+        catch (Exception ex)
+        {
+            bool gone;
+            lock (_sync) gone = !IsLiveSessionLocked(cam);
+            // 그새 닫기·교체·상실이 이겼으면 할 일이 없다. 아니면 이 세션으로는 라이브를 못 되살린다 — 교체로 넘긴다.
+            if (gone) return;
+            CvLog.Publish(CvLogLevel.Warning, LogSource,
+                $"[{Name}] live could not be restarted after a stop and a later start overlapped — rebuilding the session.", ex);
+            OnInnerLost(cam);
+            return;
+        }
+        var on = ReadGrabbing(cam);
+        bool stopInner = false, announce = false, rebuild = false;
+        int decidedAt;
+        lock (_sync)
+        {
+            decidedAt = _intentVersion;
+            var live = IsLiveSessionLocked(cam);
+            var superseded = (_intentVersion != laterVersion && !_wantContinuous) || !live;
+            if (superseded) stopInner = ReferenceEquals(_inner, cam);
+            else if (on) { if (!_grabbing) { _grabbing = true; announce = true; } }
+            else rebuild = true;
+        }
+        if (stopInner) StopInnerOwned(cam, decidedAt);
+        if (announce) SafeRaise(() => GrabbingChanged?.Invoke(this, true), nameof(GrabbingChanged));
+        if (rebuild)
+        {
+            CvLog.Publish(CvLogLevel.Warning, LogSource,
+                $"[{Name}] live did not restart after a stop and a later start overlapped — rebuilding the session.");
+            OnInnerLost(cam);
+        }
     }
 
     public void SetExposureTimeUs(double timeUs)
@@ -698,7 +785,16 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             // 맡는다(곧 이어 온다). 여기서 같이 나서면 요청이 두 건이 되어 방금 살아난 세션을 다시 뜯고,
             // 로그에는 제어 상실이 "청하지도 않았는데 멈췄다" 로 남아 원인을 엉뚱한 데로 보낸다.
             if (sender is ICam { IsConnected: false }) return;
-            resume = _wantContinuous;
+            // 우리 StopContinuous 가 지금 이 안쪽을 멈추는 중이면 이 통지는 그 메아리다 — 의도가 그새 올라가 있어도(다른 스레드의 시작) 청하지
+            // 않은 정지가 아니다. 전에는 통지가 닿은 순간의 의도만 보고, 안쪽이 정지를 마무리하는 동안(GevCam 은 최대 약 2 s) 들어온 시작이
+            // 의도를 올려 두면 멀쩡한 세션을 경고와 함께 교체했다(끊김 알림, 백오프 동안 그랩 실패 — 검토가 찾음). 나중 시작이 이기는 것은
+            // 정지 쪽이 끝에서 맞춘다(RelightAfterOwnStop). ⚠ 정지를 마친 뒤에야(비동기로) 꺼짐을 알리는 구현은 이 표시가 이미 지워져 옛 길로 간다.
+            if (_ownStops > 0 && ReferenceEquals(_ownStopCam, sender))
+            {
+                resume = false;
+                if (_wantContinuous) return;   // 나중 시작이 있다 — 표시는 그 시작과 정지 꼬리가 맞춘다
+            }
+            else resume = _wantContinuous;
         }
         if (!resume)
         {
@@ -906,13 +1002,15 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
 
         var innerGrabbing = ReadGrabbing(cam);   // 안쪽이 실제로 켜졌을 때만 알린다(StartContinuous 와 같은 이유)
         bool undo = false, announce = false;
+        int decidedAt;
         lock (_sync)
         {
+            decidedAt = _intentVersion;
             var sameInner = ReferenceEquals(_inner, cam);
             if ((_intentVersion != version && !_wantContinuous) || !sameInner || _closed || _disposed) undo = sameInner;
             else if (innerGrabbing && _connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
         }
-        if (undo) Try(() => cam.StopContinuous());   // 재개 도중 들어온 정지 명령이 이긴다
+        if (undo) StopInnerOwned(cam, decidedAt);   // 재개 도중 들어온 정지 명령이 이긴다
         if (announce) SafeRaise(() => GrabbingChanged?.Invoke(this, true), nameof(GrabbingChanged));
     }
 

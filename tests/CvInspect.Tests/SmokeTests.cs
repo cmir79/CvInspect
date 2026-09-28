@@ -1476,6 +1476,71 @@ public class SmokeTests
         Check(cam.IsConnected && !made[1].Disposed, "②: the earlier Close does not remove the session the later Open opened");
     }
 
+    /// <summary>10-R30) 우리 정지가 안쪽을 멈추는 사이 다른 스레드의 시작이 들어와도 멀쩡한 세션을 다시 짓지 않고, 나중에 온 시작이 이긴다.
+    /// 정지는 의도를 내린 뒤 락 밖에서 안쪽을 멈추고, 안쪽은 정지를 마무리한 뒤에야 꺼짐을 알린다(GevCam 은 펌프 Join·AcquisitionStop 까지 최대 약 2 s).
+    /// 그 사이 시작이 의도를 올리면, 늦게 온 그 꺼짐이 "청하지 않은 정지" 로 읽혀 경고와 함께 세션을 교체했다 — 연결 끊김 알림, 백오프 동안 그랩 실패
+    /// (검토가 독해로 찾음, 0.29.4 노트의 알려진 한계). 세 순서를 본다: ① 시작이 꺼짐 통지 전에 안쪽을 다시 켰다 ② 시작이 안쪽에서 기다리는 사이 꺼짐이
+    /// 왔다 ③ 시작이 안쪽 정지보다 먼저 안쪽에 닿았다(이미 돌고 있어 할 일 없음) — 그 뒤 정지가 안쪽을 끈다. ③ 은 통지를 무시하는 것만으로는
+    /// 안 되고 정지 쪽이 되켜야 한다(안 그러면 켜짐으로 표시된 채 아무것도 안 돈다).</summary>
+    [Fact]
+    public void ReconnectingCamStartDuringOurOwnStopDoesNotRebuild()
+    {
+        foreach (var order in new[] { "① restarted before the echo", "② start waits while the echo arrives", "③ start reached the inner first" })
+        {
+            using var log = new LogCapture("ReconnectingCam");
+            var made = new SyncList<FakeCam>();
+            var notifyGate = new ManualResetEventSlim(order.StartsWith("③"));   // ③ 은 통지를 붙잡지 않는다
+            var startGate = new ManualResetEventSlim();
+            using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam { StopNotifyGate = notifyGate }), FastReconnect);
+            var conn = new SyncList<bool>();
+            cam.ConnectionChanged += (_, e) => conn.Add(e.IsConnected);
+            cam.Open();
+            cam.StartContinuous();
+            try
+            {
+                if (order.StartsWith("①"))
+                {
+                    var stopper = new Thread(cam.StopContinuous) { IsBackground = true };
+                    stopper.Start();
+                    Check(WaitFor(() => made[0].IsStopping), $"{order}: premise — the stop is finishing inside the inner camera");
+                    cam.StartContinuous();                               // 안쪽을 다시 켠다 — 그 뒤 옛 꺼짐 통지가 온다
+                    notifyGate.Set();
+                    Check(stopper.Join(3000), $"{order}: the stop returns");
+                }
+                else if (order.StartsWith("②"))
+                {
+                    made[0].StartGate = startGate;
+                    var stopper = new Thread(cam.StopContinuous) { IsBackground = true };
+                    stopper.Start();
+                    Check(WaitFor(() => made[0].IsStopping), $"{order}: premise — the stop is finishing inside the inner camera");
+                    var starter = new Thread(cam.StartContinuous) { IsBackground = true };
+                    starter.Start();
+                    Check(WaitFor(() => made[0].IsStarting), $"{order}: premise — the start waits inside the inner camera");
+                    notifyGate.Set();                                    // 꺼짐 통지가 먼저 — 그때 의도는 켜짐, 안쪽은 꺼짐
+                    startGate.Set();
+                    Check(stopper.Join(3000) && starter.Join(3000), $"{order}: both calls return");
+                }
+                else
+                {
+                    made[0].OnStopEntry = () =>                          // 정지가 안쪽에 닿기 직전, 다른 스레드의 시작이 끝까지 간다
+                    {
+                        var starter = new Thread(cam.StartContinuous) { IsBackground = true };
+                        starter.Start();
+                        starter.Join(3000);
+                    };
+                    cam.StopContinuous();
+                }
+            }
+            finally { notifyGate.Set(); startGate.Set(); }
+            Check(WaitFor(() => cam.IsReconnectIdle), $"{order}: no reconnect round is left running");
+            Check(made.Count == 1, $"{order}: the healthy session is not rebuilt (instances={made.Count})");
+            Check(!log.Any("without being asked"), $"{order}: our own stop is not reported as an unrequested stop: [{log}]");
+            Check(WaitFor(() => cam.IsGrabbing && made[0].IsGrabbing),
+                $"{order}: the start called last wins — live runs and is reported (wrapper={cam.IsGrabbing}, inner={made[0].IsGrabbing})");
+            Check(conn.Snapshot().SequenceEqual(new[] { true }), $"{order}: no disconnect is announced: [{conn}]");
+        }
+    }
+
     static bool SaysClosed(CvInspect.Imaging.ReconnectingCam c)
     {
         try { c.GrabOne(); return false; }
