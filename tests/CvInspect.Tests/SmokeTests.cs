@@ -1439,6 +1439,27 @@ public class SmokeTests
         Check(cam.IsConnected && !cam.IsGrabbing && !made[1].IsGrabbing, $"...and the next Open does not start live (grabbing={cam.IsGrabbing})");
     }
 
+    /// <summary>10-R26) 재연결이 포기한 뒤 로그가 시키는 대로 부른 Open 이 실패해도 라이브 의도는 남는다 — 그것은 닫기가 아니라 상실 뒤의 열기다.
+    /// 10-R25 를 처음 고친 판은 "도는 루프가 없으면 닫힌 상태로" 로 갈라서, 포기 뒤(루프 없음)의 실패한 Open 을 닫기로 읽고 의도를 버렸다 —
+    /// 다음 Open 은 붙는데 라이브가 안 켜지고 아무 흔적도 없었다(재검토가 찾음 — 반증 3표 모두 major).</summary>
+    [Fact]
+    public void ReconnectingCamFailedOpenAfterAGiveUpKeepsTheLiveIntent()
+    {
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(i => new FakeCam { FailOnOpen = i == 1 || i == 2 }),
+            new CvInspect.Imaging.CamReconnectOpt { BackoffMs = new[] { 20 }, MaxAttempts = 1, ShutdownWaitMs = 1000 });
+        cam.Open();
+        cam.StartContinuous();
+        made[0].LoseConnection();
+        Check(WaitFor(() => made.Count == 2 && cam.IsReconnectIdle), "the loop tried once and gave up");
+        var threw = false;
+        try { cam.Open(); } catch (InvalidOperationException) { threw = true; }   // "Call Open() to retry" — 장치가 아직 없다
+        Check(threw && made.Count == 3, "the retry Open fails while the device is still away");
+        cam.Open();                                                               // 장치가 돌아왔다
+        Check(cam.IsConnected && made.Count == 4, "the next Open connects");
+        Check(cam.IsGrabbing && made[3].IsGrabbing, $"...and live resumes — a failed Open after a loss is not a Close (grabbing={cam.IsGrabbing})");
+    }
+
     /// <summary>9-V2) 정지 중에 구독한 단발 그랩(CamGrabExt.GrabFrameAsync: 구독 → GrabOne)은 정지된 라이브의 마지막 틱이 아니라 제 프레임을
     /// 답으로 받는다. 틱의 발행을 들어설 때만 막으면, 이미지를 읽던 옛 틱이 그랩이 구독한 뒤에 나가 답을 가로챘다(검토가 찾음 — 9-V1 을 고치며 생긴 틈).</summary>
     [Fact]

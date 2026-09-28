@@ -125,9 +125,10 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         finally { Interlocked.Decrement(ref _openWaiters); }
         ICam? attached;
         Retired retired = default;
+        var wasClosed = false;
         try
         {
-            bool dead;
+            bool replace;
             lock (_sync)
             {
                 ThrowIfDisposed();
@@ -138,16 +139,21 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 닫힌 동안 기록된 라이브 의도는 버린다 — 이제 Open 이 의도를 되살리므로(AnnounceAttached), 닫아 둔 사이 켜 둔 토글이나
                 // 늦은 핸들러가 부른 StartContinuous 가 몇 분 뒤 다음 Open 에서 청하지 않은 라이브를 켰다(검토가 찾음). 0.29.1 도 닫힌 동안의
                 // 시작은 Open 에서 무시했다. 상실 뒤의 Open(닫지 않았다)과 여는 중에 온 시작은 그대로 되살린다.
-                if (_closed) { _wantContinuous = false; _intentVersion++; }
+                wasClosed = _closed;
+                if (wasClosed) { _wantContinuous = false; _intentVersion++; }
                 _closed = false;              // 게이트 해제 — 이제부터 재연결이 허용된다
                 _openedSeq = mySeq;           // 이 Open 보다 먼저 불린 닫기는 이 세션을 걷지 않는다(Close)
                 // 죽음이 접수된 세션이 아직 붙어 있으면(재연결 루프는 백오프를 기다린 뒤에야 그것을 걷는다) 여기서 걷고 새로 연다. 전에는 그것을
                 // "이미 열려 있다" 로 읽어 아무것도 안 하고 정상 반환했다(IsConnected=false) — ICam.Open 은 상실 뒤의 Open 이 다시 연다고 약속하는데
                 // 첫 백오프(기본 1 s) 동안은 거짓이었다(형제 저장소의 판과 대조하다 검토가 찾음). 루프는 뒤에 와서 살아 있는 세션을 보고 물러난다.
-                dead = _inner is { } current && ReferenceEquals(_lostInner, current);
-                if (_inner != null && !dead) return;   // 이미 열려 있음 (중복 Open 이 인스턴스를 둘로 만들지 않게)
+                // 닫기가 불렸는데 세션이 아직 붙어 있는 경우도 새로 연다 — 먼저 불린 닫기가 게이트를 못 잡은 사이 이 Open 이 먼저 잡았다. 그 닫기는
+                // 의도를 이미 걷었고 이 Open 에 져서 세션을 안 걷으므로(Close), 여기서 "이미 열려 있다" 로 돌아가면 의도 없는 옛 세션이 남는다 —
+                // 차례로 부른 닫기·열기처럼 걷고 새로 연다(검토가 찾음).
+                var dead = _inner is { } current && ReferenceEquals(_lostInner, current);
+                replace = _inner != null && (dead || wasClosed);
+                if (_inner != null && !replace) return;   // 이미 열려 있음 (중복 Open 이 인스턴스를 둘로 만들지 않게)
             }
-            if (dead) retired = RetireInner();
+            if (replace) retired = RetireInner();
             try
             {
                 // 여는 사이 닫기가 이겼으면 세션을 버렸다 — 부른 쪽에는 닫힌 채로 돌아간다(연결됨을 알리지 않는다).
@@ -173,17 +179,14 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             }
             catch
             {
-                // 열기가 실패해 부른 쪽에 던진다. 도는 재연결 루프가 없으면(상실 뒤가 아니라 처음·닫은 뒤의 열기) 닫힌 상태로 되돌린다 — 안 그러면
-                // 닫힘도 세션도 루프도 없는 상태가 남아, 그 사이의 StartContinuous 가 조용히 기록됐다가 다음 Open 에서 라이브를 켰다(검토가 찾음).
-                // 상실 뒤의 열기가 실패한 것이면 루프가 계속 돈다 — 이 예외는 포기가 아니다.
+                // 열기가 실패해 부른 쪽에 던진다. <b>닫혀 있던 것을 연 것이면</b>(처음·닫은 뒤의 열기) 닫힌 상태로 되돌린다 — 안 그러면 닫힘도
+                // 세션도 루프도 없는 상태가 남아, 그 사이의 StartContinuous 가 조용히 기록됐다가 다음 Open 에서 라이브를 켰다(검토가 찾음).
+                // ⚠ 판별은 "들어올 때 닫혀 있었는가" 다 — "도는 루프가 없는가" 로 가르던 첫 판은, 재연결이 포기한 뒤(루프 없음) 로그가 시키는 대로
+                // 부른 Open 이 실패하면 닫아 버려 라이브 의도를 잃었다: 다음 Open 은 붙는데 라이브가 안 켜지고 아무 흔적도 없었다(재검토가 찾음).
+                // 상실 뒤의 열기가 실패한 것이면(루프가 돌든 포기했든) 닫지 않는다 — 이 예외는 포기가 아니고 의도는 남는다.
                 lock (_sync)
                 {
-                    if (!_disposed && _reconnectTask is null && _openedSeq == mySeq)
-                    {
-                        _closed = true;
-                        _wantContinuous = false;
-                        _intentVersion++;
-                    }
+                    if (!_disposed && wasClosed && _openedSeq == mySeq) MarkClosedLocked();
                 }
                 throw;
             }
@@ -220,15 +223,11 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         var gated = _gate.Wait(Math.Max(0, _opt.ShutdownWaitMs));
         try
         {
-            bool superseded;
-            lock (_sync)
-            {
-                // 기다리는 사이 <b>나중에 불린</b> Open 이 먼저 게이트를 잡아 이미 열었다면 그 Open 이 이긴다 — 걷지 않는다. 아니면 닫힘을 다시
-                // 세운다: 그 사이 새로 걸린 재연결 루프·의도를 걷는다(나중에 불린 Open 이 아직 안 돌았다면 그것이 뒤에 와서 다시 연다).
-                superseded = _openedSeq > mySeq;
-                if (!superseded) MarkClosedLocked();
-            }
-            if (!superseded) retired = RetireInner();
+            // 기다리는 사이 <b>나중에 불린</b> Open 이 먼저 게이트를 잡아 이미 열었다면 그 Open 이 이긴다 — 걷지 않는다. 아니면 닫힘을 다시
+            // 세운다: 그 사이 새로 걸린 재연결 루프·의도를 걷는다(나중에 불린 Open 이 아직 안 돌았다면 그것이 뒤에 와서 다시 연다).
+            // 판정과 떼어 내기를 한 락에서 한다(RetireInner) — 게이트를 못 잡은 폴백에서는 판정 뒤 떼어 내기 전에 그 Open 이 열어, 나중에 불린
+            // Open 의 세션을 먼저 불린 닫기가 걷을 수 있었다(재검토가 찾음).
+            retired = RetireInner(closeSeq: mySeq);
         }
         finally
         {
@@ -514,12 +513,19 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     /// <see cref="_gate"/> 보유 전제(<see cref="Close"/>·<see cref="Dispose"/> 가 게이트를 시한 안에 못 잡았을 때의 폴백만 예외).
     /// <b>내린 표시를 돌려준다</b> — 여기서 조용히 내리고 뒤에서 "전이일 때만 알린다" 로 끊김을 알리면 "이미 거짓이라 전이가 아니다" 로
     /// 삼켜져, 닫기가 끊김을 한 번도 알리지 않았다(이 코드를 옮겨 간 소비자가 찾았다 — 통지로 상태를 거울질하는 화면은 닫은 카메라를 연결됨으로 든다).</summary>
-    private Retired RetireInner()
+    /// <param name="closeSeq"><see cref="Close"/> 가 부를 때 그 호출 번호 — 그보다 나중에 불린 Open 이 이미 열었으면 아무것도 안 하고, 아니면
+    /// 떼어 내기와 같은 락 안에서 닫힘을 다시 세운다.</param>
+    private Retired RetireInner(int? closeSeq = null)
     {
         ICam? cam;
         Retired retired;
         lock (_sync)
         {
+            if (closeSeq is { } seq)
+            {
+                if (_openedSeq > seq) return default;
+                MarkClosedLocked();
+            }
             cam = _inner;
             _inner = null;
             _lostInner = null;   // 시체를 치웠다 — 다음 인스턴스의 죽음은 새 사건이다
