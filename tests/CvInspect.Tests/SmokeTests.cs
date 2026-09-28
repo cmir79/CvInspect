@@ -1360,11 +1360,6 @@ public class SmokeTests
     [Fact]
     public void ReconnectingCamLaterOfOpenAndCloseWins()
     {
-        static bool SaysClosed(CvInspect.Imaging.ReconnectingCam c)
-        {
-            try { c.GrabOne(); return false; }
-            catch (InvalidOperationException ex) { return ex.Message.Contains("not opened"); }
-        }
         // ① Open 이 먼저 불려 줄 서 있고, 닫기가 나중에 불린다 → 닫힘
         {
             var made = new SyncList<FakeCam>();
@@ -1479,6 +1474,63 @@ public class SmokeTests
         Check(!cam.IsGrabbing && !made[1].IsGrabbing, "①: ...with no live intent — as if Close then Open had run in order");
         cam.FinishClose(closeSeq);                         // 그 닫기가 뒤늦게 게이트를 잡는다
         Check(cam.IsConnected && !made[1].Disposed, "②: the earlier Close does not remove the session the later Open opened");
+    }
+
+    static bool SaysClosed(CvInspect.Imaging.ReconnectingCam c)
+    {
+        try { c.GrabOne(); return false; }
+        catch (InvalidOperationException ex) { return ex.Message.Contains("not opened"); }
+    }
+
+    /// <summary>10-R28) 닫힌 자리에서 Open 여럿이 겹쳐 모두 실패해도 닫힌 채로 남는다. 형제 저장소가 같은 규칙을 옮기며 "들어올 때 닫혀
+    /// 있었나 + 그 뒤 다른 호출 없음" 으로 가르다가, 둘이 겹쳐 둘 다 실패하면 아무도 닫힘을 되돌리지 않는 틈을 실측했다(그쪽 10/10). 이쪽은
+    /// 판별을 게이트 안에서 읽고 되돌림도 게이트 안이라 Open 들이 차례로만 지나간다 — 독해로는 없는 틈이지만 확인에서 멈추지 않고 못 박는다.</summary>
+    [Fact]
+    public void ReconnectingCamOverlappingFailedOpensLeaveItClosed()
+    {
+        using var log = new LogCapture("ReconnectingCam");
+        var calls = 0;
+        var inFactory = new ManualResetEventSlim();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() =>
+        {
+            // 첫 Open 은 게이트를 쥔 채 느리게 실패한다 — 그 사이 두 Open 이 줄 선다. 나머지도 실패한다(장치가 없다).
+            if (Interlocked.Increment(ref calls) == 1) { inFactory.Set(); Thread.Sleep(300); throw new InvalidOperationException("camera absent"); }
+            return new FakeCam { FailOnOpen = true };
+        }, FastReconnect);
+        var threw = 0;
+        var openers = Enumerable.Range(0, 3).Select(_ => new Thread(() =>
+        {
+            try { cam.Open(); } catch (InvalidOperationException) { Interlocked.Increment(ref threw); }
+        }) { IsBackground = true }).ToArray();
+        openers[0].Start();
+        Check(inFactory.Wait(2000), "premise: the first Open holds the gate in a slow, failing open");
+        openers[1].Start();
+        openers[2].Start();
+        Check(WaitFor(() => cam.OpenWaiters == 2), "premise: two more Opens are queued behind it");
+        Check(openers.All(t => t.Join(3000)) && Volatile.Read(ref threw) == 3, $"all three Opens fail (threw={threw}, factory calls={calls})");
+        Check(SaysClosed(cam), "the camera is closed after every Open failed, not 'reconnecting'");
+        cam.StartContinuous();
+        Check(log.Any("StartContinuous ignored"), $"...so a start is ignored as closed, not recorded for a later Open: [{log}]");
+    }
+
+    /// <summary>10-R29) 닫기가 불린 뒤 나중 Open 이 이기기 전의 틈에 옛 세션이 끊겨도, 끝 상태는 차례로 부른 닫기·열기와 같다. 형제 저장소는 닫기가 나중
+    /// Open 에 물러날 때 부를 때 한 일(닫힘 표시·재연결 취소)을 되돌리지 않아, 그 틈의 끊김이 버려질 수 있다고 적었다(그쪽 독해). 이쪽은 닫힌 채로
+    /// 들어온 Open 이 붙어 있던 세션을 걷고 새로 열므로 버려진 끊김의 세션이 남지 않는다 — 끊김을 끼워 넣어 확인한다.</summary>
+    [Fact]
+    public void ReconnectingCamLossBetweenCloseAndALaterOpenIsHarmless()
+    {
+        var made = new SyncList<FakeCam>();
+        using var cam = new CvInspect.Imaging.ReconnectingCam(() => made.AddNew(_ => new FakeCam()), FastReconnect);
+        cam.Open();
+        var closeSeq = cam.BeginClose();                   // 닫기가 불렸다
+        made[0].LoseConnection();                          // 그 틈에 옛 세션이 끊긴다 — 닫힌 뒤라 재연결로 이어지지 않는다
+        cam.Open();                                        // 나중에 불린 Open 이 이긴다
+        Check(cam.IsConnected && made.Count == 2 && made[0].Disposed,
+            $"the later Open replaces the dead session instead of keeping it as 'already open' (instances={made.Count}, connected={cam.IsConnected})");
+        cam.FinishClose(closeSeq);
+        Check(cam.IsConnected && !made[1].Disposed, "the earlier Close does not remove it");
+        made[1].LoseConnection();                          // 이 세션은 정상적으로 살아 있다 — 끊기면 되살아난다
+        Check(WaitFor(() => made.Count == 3 && cam.IsConnected), $"a loss of the new session is reconnected as usual (instances={made.Count})");
     }
 
     /// <summary>9-V2) 정지 중에 구독한 단발 그랩(CamGrabExt.GrabFrameAsync: 구독 → GrabOne)은 정지된 라이브의 마지막 틱이 아니라 제 프레임을
