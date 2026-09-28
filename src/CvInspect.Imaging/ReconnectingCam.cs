@@ -69,8 +69,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
     /// 거절된 시작은 의도를 "들어올 때의 값" 으로 되돌렸는데, 겹친 뒤 시작의 그 값은 앞 시작(곧 거절될)이 세운 켜짐이라, 둘이 모두 거절되면 어느
     /// 순서로든 의도가 켜진 채 남았다(표시는 꺼짐 — 다음 재연결이 아무도 청하지 않은 라이브를 켰다; 형제 저장소가 알려 옴, 10-R32 로 재현).
     /// 그래서 되돌림은 <b>지금 의도가 이 시작의 결정일 때만</b>(판 번호가 아니라 계보로) 그 앞의 결정으로 하고, 그 결정도 거절된 시작이면 이어서 푼다.
-    /// 안쪽이 받아들였거나 세션 상실·교체로 조용히 돌아간 시작은 기록을 지운다(그 결정은 선다). 정지·닫기·닫힌 채 여는 Open 은 계보를 끊으므로
-    /// 기록을 비운다 — 안 비우면 대기 중 시작이 하나라도 있는 동안 거절된 기록이 쌓였다.</summary>
+    /// 안쪽이 받아들였거나 세션 상실·교체로 조용히 돌아간 시작은 기록을 지운다(그 결정은 선다). 정지·닫기는 계보를 끊으므로 기록을 비운다 —
+    /// 안 비우면 대기 중 시작이 하나라도 있는 동안 거절된 기록이 쌓였다. 닫힌 채 여는 Open 도 비우지만 방어일 뿐이다(닫기가 이미 비웠고,
+    /// 닫힌 동안의 시작은 기록하지 않는다).</summary>
     private sealed class StartIntent
     {
         public int Version;
@@ -161,6 +162,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 // 닫힌 동안 기록된 라이브 의도는 버린다 — 이제 Open 이 의도를 되살리므로(AnnounceAttached), 닫아 둔 사이 켜 둔 토글이나
                 // 늦은 핸들러가 부른 StartContinuous 가 몇 분 뒤 다음 Open 에서 청하지 않은 라이브를 켰다(검토가 찾음). 0.29.1 도 닫힌 동안의
                 // 시작은 Open 에서 무시했다. 상실 뒤의 Open(닫지 않았다)과 여는 중에 온 시작은 그대로 되살린다.
+                // ⚠ 지금은 닫힌 동안 의도를 세우는 길이 없다 — 닫기가 의도와 계보를 이미 걷었고(MarkClosedLocked), 닫힌 동안의 시작은 기록하지
+                // 않으며(StartContinuous), 거절된 시작의 되돌림도 닫힘을 보면 건너뛴다. 그래서 아래 줄은 방어다 — 그런 길이 새로 생겨도 다음
+                // Open 이 청하지 않은 라이브를 되살리지 않게.
                 wasClosed = _closed;
                 if (wasClosed) { _wantContinuous = false; _intentVersion++; _intentFromStart = 0; _startIntents.Clear(); }
                 _closed = false;              // 게이트 해제 — 이제부터 재연결이 허용된다
@@ -529,7 +533,8 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         return null;
     }
 
-    /// <summary><see cref="_sync"/> 보유 전제. 안쪽이 받아들인(또는 의도만 기록한) 시작 — 기록을 지운다. 그 결정으로 되돌아오는 뒤 시작은 거기서 멈춘다.</summary>
+    /// <summary><see cref="_sync"/> 보유 전제. 안쪽이 받아들였거나(또는 의도만 기록했거나) 세션 상실·교체로 조용히 돌아간 시작 — 기록을 지운다.
+    /// 그 결정은 서므로, 그 결정으로 되돌아오는 뒤 시작은 거기서 멈춘다.</summary>
     private void ForgetStartIntentLocked(StartIntent s)
     {
         _startIntents.Remove(s);
