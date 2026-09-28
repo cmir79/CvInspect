@@ -114,6 +114,9 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// ⚠ 단언이 던져도 놓이게 finally 에서 세운다.</summary>
     public ManualResetEventSlim? StartGate { get; set; }
 
+    /// <summary><see cref="StartGate"/> 를 기다린 <b>뒤</b> 한 번 거절한다 — "기다리는 사이 사정이 바뀌어 거절된 시작" (GevCam: 그 틈에 단발 그랩이 락을 먼저 잡았다).</summary>
+    public bool FailAfterStartGate { get; set; }
+
     /// <summary>주어지면 늦은 켜짐(<see cref="LateStartMs"/>)이 시각 대신 이 신호를 기다렸다가 켠다.</summary>
     public ManualResetEventSlim? LateStartGate { get; set; }
 
@@ -143,6 +146,7 @@ sealed class FakeCam : CvInspect.Imaging.ICam
             IsStarting = true;
             gate.Wait();
             IsStarting = false;
+            if (FailAfterStartGate) { FailAfterStartGate = false; throw new InvalidOperationException("fake start refused after waiting"); }
         }
         else if (HoldBeforeStartMs > 0)
         {
