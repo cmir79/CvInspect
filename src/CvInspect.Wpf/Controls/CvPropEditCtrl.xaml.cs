@@ -29,7 +29,7 @@ public sealed record CvPropActionFailedEvt(string Label, Exception Error);
 /// 대부분이 INotifyPropertyChanged 미구현이라 이 이벤트가 호스트 dirty 마킹의 유일한 채널이다.
 /// 텍스트 커밋 타이밍은 LostFocus + Enter — 입력 중 커밋으로 편집 처리가 끼어들지 않게.
 /// 평범한 컨트롤 트리라 호스트 테마의 암시 스타일을 그대로 탄다. UI 라이브러리는 참조하지 않는다 —
-/// 캡션·헤더 색은 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가 있으면 따르고 없으면 고정색이다.
+/// 캡션·헤더 색은 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가 있으면 따르고(실행 중 사전 교체도) 없으면 고정색이다.
 /// 소스 INotifyPropertyChanged 구독은 약한 구독이라 파기 시 별도 해제 훅이 없어도 새지 않는다.
 /// </summary>
 public partial class CvPropEditCtrl : UserControl
@@ -84,19 +84,28 @@ public partial class CvPropEditCtrl : UserControl
     /// <summary>지금 펼쳐진 그룹들 — 호스트가 행 수를 세거나 검사할 때 쓴다(읽기 전용 스냅샷).</summary>
     public IReadOnlyList<CvPropGroupVm> Groups => _groups;
 
+    // 호스트 테마 키 슬롯 — 생성자에서 리소스 참조로 키에 묶는다. 트리에 붙을 때와 호스트가 사전을 갈아 끼울 때 WPF 가 참조를
+    // 다시 풀고, 변경 콜백이 XAML 쪽 키(CvPropDescBrush / CvPropHeaderBrush)를 그 브러시로 바꿔 끼운다. 키가 없거나 Brush 가 아니면
+    // XAML 의 기본 브러시로 돌아간다. (한 번 복사해 두면 실행 중 테마를 바꿔도 처음 색으로 굳는다.)
+    // 이 컨트롤은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다. 형이 object 인 이유: 같은 이름의 다른 형 값으로 깨지지 않게.
+    private static readonly DependencyProperty HostDescSlotProperty = DependencyProperty.Register(
+        "HostDescSlot", typeof(object), typeof(CvPropEditCtrl),
+        new PropertyMetadata(null, (d, e) => { var c = (CvPropEditCtrl)d; c.Resources["CvPropDescBrush"] = e.NewValue as Brush ?? c._defaultDesc; }));
+
+    private static readonly DependencyProperty HostHeaderSlotProperty = DependencyProperty.Register(
+        "HostHeaderSlot", typeof(object), typeof(CvPropEditCtrl),
+        new PropertyMetadata(null, (d, e) => { var c = (CvPropEditCtrl)d; c.Resources["CvPropHeaderBrush"] = e.NewValue as Brush ?? c._defaultHeader; }));
+
+    private readonly Brush _defaultDesc;
+    private readonly Brush _defaultHeader;
+
     public CvPropEditCtrl()
     {
         InitializeComponent();
-        // 테마 키는 트리에 붙은 뒤에야 보인다 — 생성자 시점의 TryFindResource 는 호스트 리소스에 닿지 않는다.
-        Loaded += (_, _) => AdoptThemeBrushes();
-    }
-
-    /// <summary>호스트 테마가 정의한 텍스트/강조 키를 있으면 채택 — 없으면 XAML 의 기본 브러시가 그대로 남는다.
-    /// 이 컨트롤은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다.</summary>
-    private void AdoptThemeBrushes()
-    {
-        if (TryFindResource("SecondaryTextBrush") is Brush desc) Resources["CvPropDescBrush"] = desc;
-        if (TryFindResource("PrimaryBrush") is Brush header) Resources["CvPropHeaderBrush"] = header;
+        _defaultDesc = (Brush)Resources["CvPropDescBrush"];
+        _defaultHeader = (Brush)Resources["CvPropHeaderBrush"];
+        SetResourceReference(HostDescSlotProperty, "SecondaryTextBrush");
+        SetResourceReference(HostHeaderSlotProperty, "PrimaryBrush");
     }
 
     private void RebuildRows()

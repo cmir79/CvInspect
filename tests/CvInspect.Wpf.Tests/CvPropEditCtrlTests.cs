@@ -73,6 +73,63 @@ public class CvPropEditCtrlTests
         protected override string GetLocalizedString(string value) => Lang == "ko" ? "나머지" : "Others";
     }
 
+    /// <summary>캡션·머리글 색은 호스트 테마 키(SecondaryTextBrush / PrimaryBrush)를 따르고, 실행 중 사전을 바꾸면 따라 바뀌며, 키가 없으면
+    /// 기본색이다. 종전에는 Loaded 때 그 브러시를 한 번 복사해 두어 테마를 바꿔도 처음 색으로 굳었다(독해로 찾음 — 실행 중 라이트/다크를
+    /// 바꾸는 소비자가 생겨 드러날 자리). 창 없이 그리면 Loaded 가 오지 않으므로 한 번 직접 올려 종전 경로도 지나가게 한다.</summary>
+    [Fact]
+    public void CaptionAndHeaderColorsFollowAHostThemeSwap() => RunSta(() =>
+    {
+        CvLoc.Culture = "en";
+        var ctrl = new CvPropEditCtrl { Source = new CvPatternOpt() };
+        var host = new System.Windows.Controls.Grid();
+        host.Children.Add(ctrl);
+        static System.Windows.ResourceDictionary Theme(byte v) => new()
+        {
+            ["SecondaryTextBrush"] = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(v, 0x11, 0x11)),
+            ["PrimaryBrush"] = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(v, 0x22, 0x22)),
+        };
+        void Layout()
+        {
+            host.Measure(new System.Windows.Size(400, 2000));
+            host.Arrange(new System.Windows.Rect(0, 0, 400, 2000));
+            host.UpdateLayout();
+        }
+        var descStyle = ctrl.Resources["PropRowDesc"];
+        System.Windows.Media.Color? Fg(Func<System.Windows.Controls.TextBlock, bool> pick)
+            => Descendants(ctrl).OfType<System.Windows.Controls.TextBlock>().FirstOrDefault(t => t.Text.Length > 0 && pick(t))?.Foreground is
+                System.Windows.Media.SolidColorBrush b ? b.Color : null;
+        System.Windows.Media.Color? Desc() => Fg(t => t.Style == descStyle && t.Visibility == System.Windows.Visibility.Visible);
+        System.Windows.Media.Color? Head() => Fg(t => t.FontWeight == System.Windows.FontWeights.Bold && t.Visibility == System.Windows.Visibility.Visible);
+
+        host.Resources.MergedDictionaries.Add(Theme(0x40));
+        Layout();
+        ctrl.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.FrameworkElement.LoadedEvent));
+        Layout();
+        Check(Desc() is not null && Head() is not null, "the sample option draws a caption and a group header (otherwise nothing below is checked)");
+        Check(Desc() == System.Windows.Media.Color.FromRgb(0x40, 0x11, 0x11) && Head() == System.Windows.Media.Color.FromRgb(0x40, 0x22, 0x22),
+            $"captions and headers take the host keys: desc={Desc()} head={Head()}");
+
+        host.Resources.MergedDictionaries[0] = Theme(0x80);
+        Layout();
+        Check(Desc() == System.Windows.Media.Color.FromRgb(0x80, 0x11, 0x11) && Head() == System.Windows.Media.Color.FromRgb(0x80, 0x22, 0x22),
+            $"a theme swap at run time repaints them, not frozen at the first theme: desc={Desc()} head={Head()}");
+
+        host.Resources.MergedDictionaries.Clear();
+        Layout();
+        Check(Desc() == System.Windows.Media.Color.FromRgb(0x80, 0x80, 0x80) && Head() == System.Windows.Media.Color.FromRgb(0x15, 0x65, 0xC0),
+            $"without the keys they fall back to the fixed colors: desc={Desc()} head={Head()}");
+    });
+
+    private static IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.DependencyObject root)
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var c = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            yield return c;
+            foreach (var d in Descendants(c)) yield return d;
+        }
+    }
+
     [Fact]
     public void CoreOptUnfoldsThroughStandardAttributes() => RunSta(() =>
     {
