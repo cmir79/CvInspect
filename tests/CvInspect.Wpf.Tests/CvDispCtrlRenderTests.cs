@@ -489,9 +489,9 @@ public class CvDispCtrlRenderTests
 
     /// <summary>렌더 결과와 상태 줄 글자 속성을 읽어 한 줄로 적는다(실패 메시지에 그대로 싣는다). 다 맞으면 ok.
     /// 바탕은 버튼·글자가 없는 패딩 자리에서 읽는다 — 툴바는 위 가장자리 안쪽(가운데, 2 DIP), 상태 줄은 맨 아래 줄.
-    /// 구분선은 가운데 세로줄에서 툴바 아래 가장자리와 상태 줄 위 가장자리를 각각 찾고, 툴바 높이 가운데에서 폭 1화소·위아래로
-    /// 17 DIP 이상 이어지는 세로 구분선 둘을 센다(폭과 길이로 거르는 이유: 기본 테마의 버튼 바탕도 0xDD 라, 이모지 획 사이 틈이
-    /// 폭 1화소 짜리 같은 색으로 나온다 — 폭만 보면 다섯이 잡혔다).
+    /// 구분선은 가운데 세로줄에서 툴바 아래 가장자리와 상태 줄 위 가장자리를 각각 찾고, 툴바 높이 가운데에서 선 폭(1 DIP)·위아래로
+    /// 17 DIP 이상 이어지는 세로 구분선 둘을 센다(폭과 길이로 거르는 이유: 기본 테마의 버튼 바탕도 0xDD 라 넓은 덩어리로 나오고,
+    /// 이모지 획 사이 틈은 좁지만 짧다 — 폭만 보면 다섯이 잡혔다).
     /// 글자는 상태 줄 띠에서 바탕보다 글자색에 가까운 픽셀 수(그려졌다는 증거)와, 두 글자 블록의 Foreground 가 정확히 그 색인지(어느 색인가).
     /// 띠는 찾은 위 가장자리 아래 — 못 찾으면 맨 아래 18 DIP 로 세고 그렇다고 적는다(구분선만 틀린 것을 글자도 없다고 적지 않게).</summary>
     private static string Chrome(Shot s, DependencyObject root, Look want, out bool ok)
@@ -505,13 +505,18 @@ public class CvDispCtrlRenderTests
         var groupSepX = new List<int>();
         if (topEdge > 0)
         {
-            int mid = topEdge / 2, half = (int)(8 * s.S);
-            for (int x = 1; x < s.W - 1; x++)
+            // 1 DIP 선은 배율에 따라 1~2화소 폭으로 반올림된다(150%·200% 에서 2화소) — 같은 색이 이어진 폭이 그 이하인 줄만 센다.
+            int mid = topEdge / 2, half = (int)(8 * s.S), maxW = (int)Math.Ceiling(s.S);
+            for (int x = 0; x < s.W; x++)
             {
-                if (s.At(x - 1, mid) == want.Sep || s.At(x + 1, mid) == want.Sep) continue;
-                bool tall = true;
-                for (int y = mid - half; y <= mid + half && tall; y++) tall = s.At(x, y) == want.Sep;
+                if (s.At(x, mid) != want.Sep) continue;
+                int x1 = x;
+                while (x1 + 1 < s.W && s.At(x1 + 1, mid) == want.Sep) x1++;
+                bool tall = x1 - x + 1 <= maxW;
+                for (int cx2 = x; cx2 <= x1 && tall; cx2++)
+                    for (int y = mid - half; y <= mid + half && tall; y++) tall = s.At(cx2, y) == want.Sep;
                 if (tall) groupSepX.Add(x);
+                x = x1;
             }
         }
         int bandTop = bottomEdge > 0 ? bottomEdge + 1 : s.H - (int)(18 * s.S);
@@ -526,7 +531,7 @@ public class CvDispCtrlRenderTests
         bool fgOk = fgs.Count == 2 && fgs.All(f => f == want.Text.ToString());
         ok = tb == want.Bar && st == want.Status && topEdge > 0 && bottomEdge > 0 && groupSepX.Count == 2 && text > 0 && fgOk;
         return $"scale={s.S}, toolbar={tb} (want {want.Bar}), status={st} (want {want.Status}), separator rows top={topEdge} bottom={bottomEdge}, " +
-               $"1px group separators={groupSepX.Count} at x=[{string.Join(",", groupSepX)}] (want 2), " +
+               $"group separators={groupSepX.Count} at x=[{string.Join(",", groupSepX)}] (want 2), " +
                $"text pixels={text}{(bottomEdge > 0 ? "" : " (status edge missing — counted in the bottom band)")}, " +
                $"status text brushes=[{string.Join(",", fgs)}] (want 2 × {want.Text})";
     }
