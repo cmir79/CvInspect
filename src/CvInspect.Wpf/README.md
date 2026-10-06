@@ -54,6 +54,7 @@ dotnet add package OpenCvSharp4.runtime.win
 | `LoadFrameCommand` | `ICommand` | Receives a `Mat` loaded from a file via the right-click menu. Unset it to hide the load menu entry. |
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (top/bottom/left/right). |
+| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` | `Brush` | Per-instance toolbar and status bar colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
 
 ## Property editor
 
@@ -106,7 +107,8 @@ and so stay enabled — group order comes from `ICvOrderedCategory` (or a `"N. "
 `[Category]` strings), and numeric text commits on Enter or focus loss — an unparsable entry is
 rejected and the row snaps back to the stored value, so what you see is always what is stored.
 The control references no UI library; it adopts the host theme's `SecondaryTextBrush` and
-`PrimaryBrush` when those keys exist and falls back to fixed colors otherwise.
+`PrimaryBrush` when those keys exist (and follows them when the host swaps its dictionary at run
+time) and falls back to fixed colors otherwise.
 
 ## Frame lifetime
 
@@ -136,9 +138,46 @@ and coordinates from the same space, whether that is the original or a derived (
 
 UI strings (menu labels, placeholder text) come from `CvLoc` in the core package, under the `cv:`
 scope. Labels are re-read every time the context menu opens, so a language switch applies without
-rebuilding the control. Toolbar accent colors use the host theme's `PrimaryBrush` / `SuccessBrush` /
-`DangerBrush` resource keys when present, and fall back to fixed colors otherwise — no UI library
-is referenced.
+rebuilding the control.
+
+`CvDispCtrl`'s toolbar and status bar colors come from the first of: a value set on the instance,
+a resource key defined anywhere above it (application dictionary, window, the control's own
+`Resources`), or a fixed default. Keys are held as resource references, so swapping the host's color
+dictionary at run time (a light/dark switch) repaints every display without a restart.
+
+| Key (constant on `CvDispCtrl`) | Key string | Instance property | Default | Paints |
+|---|---|---|---|---|
+| `ToolbarBackgroundKey` | `CvDispToolbarBackgroundBrush` | `ToolbarBackground` | `#FAFAFA` | Toolbar background |
+| `StatusBarBackgroundKey` | `CvDispStatusBarBackgroundBrush` | `StatusBarBackground` | `#FAFAFA` | Status bar background |
+| `StatusBarForegroundKey` | `CvDispStatusBarForegroundBrush` | `StatusBarForeground` | `#555555` | Status bar text |
+| `SeparatorBrushKey` | `CvDispSeparatorBrush` | `SeparatorBrush` | `#DDDDDD` | Toolbar group separators, the toolbar's edge line, the status bar's edge line |
+
+```xml
+<!-- the host's dark color dictionary — one place covers every CvDispCtrl, including those made by a DataTemplate -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:cv="clr-namespace:CvInspect.Controls;assembly=CvInspect.Wpf">
+  <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}" Color="#2D2D30" />
+  <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.StatusBarForegroundKey}" Color="#B4B4B4" />
+</ResourceDictionary>
+```
+
+Write the key through `x:Static`: a typo then fails loudly when the dictionary loads (a
+`XamlParseException` whose inner exception names the member) — the build does not check it — while a mistyped key string
+is silently ignored and the default stays. The value must be a `Brush`. A non-`null` value of another
+type under one of these four keys is ignored, and each display logs a `CvLog` warning naming the key
+when it picks the value up.
+
+The instance properties take a direct value, a binding, a `DynamicResource` or a style setter, and win
+over the keys. Clearing a direct value (`ClearValue`) returns that instance to the next source: a style
+setter if there is one, otherwise the key. `CvDispCtrl` is not a `Control`, so by WPF's rules an
+implicit style in a window's or user control's resources does not reach a `CvDispCtrl` created by a
+`DataTemplate` (one in the application's resources does) — inside templates, use the keys or set the
+property on the element in the template. The image area stays dark (`#2A2A2A`) in every theme.
+
+Toolbar accent colors use the host theme's `PrimaryBrush` / `SuccessBrush` / `DangerBrush` resource
+keys when present, and `CvPropEditCtrl` uses `SecondaryTextBrush` / `PrimaryBrush`; both fall back to
+fixed colors otherwise and follow a dictionary swap the same way — no UI library is referenced.
 
 ## Targets
 

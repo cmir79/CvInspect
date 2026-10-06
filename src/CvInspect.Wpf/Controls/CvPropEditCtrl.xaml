@@ -5,8 +5,8 @@
   <UserControl.Resources>
     <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
-    <!-- 두 브러시는 기본값이다. 컨트롤이 시각 트리에 붙을 때 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가
-         있으면 코드비하인드가 이 항목을 그 브러시로 바꿔 끼운다 — 화면 전체 팔레트를 따르되 테마가 없어도 그려진다. -->
+    <!-- 두 브러시는 기본값이다. 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가 있으면 코드비하인드가 리소스 참조로
+         그 키를 따라가며 이 항목을 그 브러시로 바꿔 끼운다(실행 중 사전 교체도) — 화면 전체 팔레트를 따르되 테마가 없어도 그려진다. -->
     <SolidColorBrush x:Key="CvPropDescBrush" Color="#FF808080" />
     <SolidColorBrush x:Key="CvPropHeaderBrush" Color="#FF1565C0" />
 

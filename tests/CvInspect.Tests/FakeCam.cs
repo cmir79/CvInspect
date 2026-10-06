@@ -114,6 +114,9 @@ sealed class FakeCam : CvInspect.Imaging.ICam
     /// ⚠ 단언이 던져도 놓이게 finally 에서 세운다.</summary>
     public ManualResetEventSlim? StartGate { get; set; }
 
+    /// <summary><see cref="StartGate"/> 를 기다린 <b>뒤</b> 한 번 거절한다 — "기다리는 사이 사정이 바뀌어 거절된 시작" (GevCam: 그 틈에 단발 그랩이 락을 먼저 잡았다).</summary>
+    public bool FailAfterStartGate { get; set; }
+
     /// <summary>주어지면 늦은 켜짐(<see cref="LateStartMs"/>)이 시각 대신 이 신호를 기다렸다가 켠다.</summary>
     public ManualResetEventSlim? LateStartGate { get; set; }
 
@@ -143,6 +146,7 @@ sealed class FakeCam : CvInspect.Imaging.ICam
             IsStarting = true;
             gate.Wait();
             IsStarting = false;
+            if (FailAfterStartGate) { FailAfterStartGate = false; throw new InvalidOperationException("fake start refused after waiting"); }
         }
         else if (HoldBeforeStartMs > 0)
         {
@@ -170,10 +174,29 @@ sealed class FakeCam : CvInspect.Imaging.ICam
         if (!_grabbing) { IsGrabbing = true; GrabbingChanged?.Invoke(this, true); }
         OnStarted?.Invoke();
     }
+    /// <summary>StopContinuous 에 들어오자마자(정지를 세기 전에) 부를 것 — 한 번 쓰고 비운다. 시험이 "정지를 불렀지만 안쪽은 아직 안 멈춤" 에 끼어든다.</summary>
+    public Action? OnStopEntry { get; set; }
+
+    /// <summary>주어지면 StopContinuous 가 취득을 내린 뒤·꺼짐 통지를 내기 전에 이 신호를 기다린다 — 실제 구현이 정지를 마무리하는
+    /// 동안(GevCam: 펌프 Join·AcquisitionStop·큐 비우기, VirtualCam: 도는 틱 기다리기) 통지가 늦게 나가는 모양. ⚠ finally 에서 세운다.</summary>
+    public ManualResetEventSlim? StopNotifyGate { get; set; }
+
+    /// <summary>꺼짐 통지를 붙잡고 있는가.</summary>
+    public volatile bool IsStopping;
+
     public void StopContinuous()
     {
+        if (OnStopEntry is { } entry) { OnStopEntry = null; entry(); }
         Interlocked.Increment(ref _stops);
-        if (_grabbing) { IsGrabbing = false; GrabbingChanged?.Invoke(this, false); }
+        if (!_grabbing) return;
+        IsGrabbing = false;
+        if (StopNotifyGate is { } gate)
+        {
+            IsStopping = true;
+            gate.Wait();
+            IsStopping = false;
+        }
+        GrabbingChanged?.Invoke(this, false);
     }
     public void SetExposureTimeUs(double timeUs)
     {

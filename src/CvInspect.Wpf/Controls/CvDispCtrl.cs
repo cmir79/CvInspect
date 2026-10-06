@@ -18,6 +18,10 @@ namespace CvInspect.Controls;
 /// 호출측이 이미지와 같은 공간의 좌표만 짝지어 바인딩한다.
 /// 조작 체계: 상단 툴바(좌: 📸그랩·⏯️라이브 / 우: ⛶Fit·➕➖줌) +
 /// 우클릭 이미지 불러오기/저장 + 휠 줌·좌드래그 팬/도형 편집.
+/// 툴바·상태 줄 색은 인스턴스 속성 → 호스트 리소스 키 → 고정색 순으로 정해지고 실행 중 사전 교체를 따라온다
+/// (<see cref="ToolbarBackgroundKey"/> 등 — CvDispCtrl.Theme.cs).
+/// <c>Initialized</c> 는 생성자 안에서 난다(첫 논리 자식이 붙는 순간 — WPF 동작). XAML 의 <c>Initialized="…"</c> 처리기나 생성 뒤의
+/// 구독은 불리지 않으니 초기화 훅은 <c>Loaded</c> 에 건다.
 /// </summary>
 public sealed partial class CvDispCtrl : Grid
 {
@@ -26,9 +30,11 @@ public sealed partial class CvDispCtrl : Grid
     private readonly StackPanel _dispPanel;
     private readonly Border _toolbarBorder;
     private readonly Border[] _toolSeps;
+    private readonly Border _statusBorder;
     private readonly MenuItem _loadItem;
     private readonly FrameworkElement[] _toolMenuItems;
     private readonly ToggleButton _playBtn;
+    private readonly ToggleButton _panBtn;
     private readonly TextBlock _statusLeft;
     private readonly TextBlock _statusRight;
     private bool _syncingPlay;
@@ -36,8 +42,7 @@ public sealed partial class CvDispCtrl : Grid
     public CvDispCtrl()
     {
         Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
-        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        // 행 정의와 자식은 이 생성자 맨 끝에서 붙인다 — 이유는 그 자리 주석.
 
         // === 툴바 — 좌: 카메라 조작 / 우: 디스플레이 조작. ToolbarDock 으로 4방향 도킹 (기본 상단) ===
         var toolbar = new DockPanel { LastChildFill = false };
@@ -58,8 +63,7 @@ public sealed partial class CvDispCtrl : Grid
             MinWidth = 44,
             MinHeight = 40,
             Margin = new Thickness(2, 0, 2, 0),
-            Foreground = Brushes.White,
-            Background = ThemeBrush("DangerBrush", 0xC6, 0x28, 0x28),
+            Foreground = Brushes.White,   // 바탕(강조색)은 ApplyAccents 가 칠한다
         };
         _playBtn.Checked += OnPlayToggle;
         _playBtn.Unchecked += OnPlayToggle;
@@ -87,11 +91,12 @@ public sealed partial class CvDispCtrl : Grid
             MinHeight = 40,
             Margin = new Thickness(2, 0, 2, 0),
         };
+        _panBtn = panBtn;
         panBtn.Checked += (_, _) =>
         {
             _surface.IsPanMode = true;
             _surface.Cursor = Cursors.Hand;
-            panBtn.Background = ThemeBrush("PrimaryBrush", 0x15, 0x65, 0xC0);
+            ApplyAccents();
             panBtn.Foreground = Brushes.White;
         };
         panBtn.Unchecked += (_, _) =>
@@ -117,10 +122,9 @@ public sealed partial class CvDispCtrl : Grid
         dispPanel.Children.Add(clearBtn);
         toolbar.Children.Add(dispPanel);
 
+        // 툴바·상태 줄의 바탕·글자·구분선 색은 ApplyTheme 가 칠한다(속성 → 호스트 키 → 기본색) — 여기서 브러시를 박으면 호스트가 못 덮는다.
         _toolbarBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0xFA, 0xFA, 0xFA)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(4, 3, 4, 3),
             Child = toolbar,
@@ -132,26 +136,22 @@ public sealed partial class CvDispCtrl : Grid
         dockHost.Children.Add(_toolbarBorder);
         dockHost.Children.Add(_surface);
         SetRow(dockHost, 0);
-        Children.Add(dockHost);
 
         // === 하단 상태바 — 마우스 이미지 좌표·픽셀 값(좌) + 이미지 크기·줌 배율(우) ===
         var statusFont = new System.Windows.Media.FontFamily("Consolas");
-        _statusLeft = new TextBlock { FontFamily = statusFont, FontSize = 12, Foreground = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)), VerticalAlignment = VerticalAlignment.Center };
-        _statusRight = new TextBlock { FontFamily = statusFont, FontSize = 12, Foreground = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)), VerticalAlignment = VerticalAlignment.Center };
+        _statusLeft = new TextBlock { FontFamily = statusFont, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        _statusRight = new TextBlock { FontFamily = statusFont, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         DockPanel.SetDock(_statusRight, Dock.Right);
         var statusPanel = new DockPanel { LastChildFill = false };
         statusPanel.Children.Add(_statusRight);
         statusPanel.Children.Add(_statusLeft);
-        var statusBorder = new Border
+        _statusBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0xFA, 0xFA, 0xFA)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = new Thickness(8, 2, 8, 2),
             Child = statusPanel,
         };
-        SetRow(statusBorder, 1);
-        Children.Add(statusBorder);
+        SetRow(_statusBorder, 1);
 
         _surface.MouseMove += (_, e) => UpdateStatus(e.GetPosition(_surface));
         _surface.MouseLeave += (_, _) => UpdateStatus(null);
@@ -225,6 +225,20 @@ public sealed partial class CvDispCtrl : Grid
         // 여기서는 "안 붙는 경우"의 기본만 잡아 둔다 — 안 잡으면 불러오기가 없는데 안내 문구만 남는다.
         SyncLoadAvailability(LoadFrameCommand is not null);
         SyncToolbarVisibility(IsToolbarVisible);
+
+        // 색은 요소가 다 만들어진 뒤에 — 묶는 순간 앱 리소스에 키가 있으면 콜백이 생성자 안에서 바로 돈다.
+        ApplyTheme();
+        BindThemeSlots();
+
+        // 행 정의와 자식 붙이기는 맨 끝이어야 한다. 이 컨트롤의 첫 논리 자식이 붙는 순간 WPF 가 생성자 안에서 Initialized 를
+        // 올리고 암시 스타일을 적용한다(그때 보이는 것은 앱 사전뿐이다). 앱 사전의 CvDispCtrl 스타일이 속성(ToolbarBackground·
+        // ToolbarDock·IsToolbarVisible 등)을 주면 그 콜백이 여기서 돈다 — 칠하거나 옮길 필드가 아직 null 이면 생성자가 던진다.
+        // 0.29.4 까지는 이 줄들이 생성자 첫머리에 있어서, 그 구성(앱 사전 스타일이 ToolbarDock 등을 줌)이면 생성자가
+        // NullReferenceException·ArgumentNullException 으로 끝나 그 화면이 뜨지 않았다(실측).
+        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Children.Add(dockHost);
+        Children.Add(_statusBorder);
     }
 
     /// <summary>상태바 갱신 — pos 는 surface 기준 마우스 위치 (null = 이미지 밖/마우스 이탈).</summary>
@@ -255,25 +269,16 @@ public sealed partial class CvDispCtrl : Grid
         Margin = new Thickness(2, 0, 2, 0),
     };
 
-    /// <summary>툴바 강조색 — 호스트 테마가 정의한 컨트롤 라이브러리 키(PrimaryBrush/SuccessBrush/DangerBrush)를
-    /// 있으면 그대로 써서 화면 전체 팔레트를 따르고, 없으면(테마 미병합·콘솔 하네스) 고정색으로 떨어진다.
-    /// 이 컨트롤은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다.</summary>
-    private Brush ThemeBrush(string key, byte r, byte g, byte b)
-        => TryFindResource(key) as Brush ?? new SolidColorBrush(Color.FromRgb(r, g, b));
-
-    /// <summary>툴바 그룹 구분 세로선 — 우클릭 메뉴의 구분선과 동일 그룹 경계.</summary>
+    /// <summary>툴바 그룹 구분 세로선 — 우클릭 메뉴의 구분선과 동일 그룹 경계. 색은 ApplyTheme 가 칠한다.</summary>
     private static Border MakeToolSeparator() => new()
     {
         Width = 1,
-        Background = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
         Margin = new Thickness(4, 6, 4, 6),
     };
 
     private void OnPlayToggle(object sender, RoutedEventArgs e)
     {
-        _playBtn.Background = _playBtn.IsChecked == true
-            ? ThemeBrush("SuccessBrush", 0x2E, 0x7D, 0x32)
-            : ThemeBrush("DangerBrush", 0xC6, 0x28, 0x28);
+        ApplyAccents();
         if (_syncingPlay) return;
         try
         {
