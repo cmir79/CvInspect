@@ -40,8 +40,7 @@ public sealed partial class CvDispCtrl : Grid
     public CvDispCtrl()
     {
         Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
-        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        // 행 정의와 자식은 이 생성자 맨 끝에서 붙인다 — 이유는 그 자리 주석.
 
         // === 툴바 — 좌: 카메라 조작 / 우: 디스플레이 조작. ToolbarDock 으로 4방향 도킹 (기본 상단) ===
         var toolbar = new DockPanel { LastChildFill = false };
@@ -135,7 +134,6 @@ public sealed partial class CvDispCtrl : Grid
         dockHost.Children.Add(_toolbarBorder);
         dockHost.Children.Add(_surface);
         SetRow(dockHost, 0);
-        Children.Add(dockHost);
 
         // === 하단 상태바 — 마우스 이미지 좌표·픽셀 값(좌) + 이미지 크기·줌 배율(우) ===
         var statusFont = new System.Windows.Media.FontFamily("Consolas");
@@ -152,7 +150,6 @@ public sealed partial class CvDispCtrl : Grid
             Child = statusPanel,
         };
         SetRow(_statusBorder, 1);
-        Children.Add(_statusBorder);
 
         _surface.MouseMove += (_, e) => UpdateStatus(e.GetPosition(_surface));
         _surface.MouseLeave += (_, _) => UpdateStatus(null);
@@ -227,9 +224,19 @@ public sealed partial class CvDispCtrl : Grid
         SyncLoadAvailability(LoadFrameCommand is not null);
         SyncToolbarVisibility(IsToolbarVisible);
 
-        // 색은 마지막에 — 묶는 순간 앱 리소스의 키로 콜백이 돌 수 있어 칠할 요소가 다 만들어진 뒤여야 한다.
+        // 색은 요소가 다 만들어진 뒤에 — 묶는 순간 앱 리소스에 키가 있으면 콜백이 생성자 안에서 바로 돈다.
         ApplyTheme();
         BindThemeSlots();
+
+        // 행 정의와 자식 붙이기는 맨 끝이어야 한다. 이 컨트롤의 첫 논리 자식이 붙는 순간 WPF 가 생성자 안에서 Initialized 를
+        // 올리고 암시 스타일을 적용한다(그때 보이는 것은 앱 사전뿐이다). 앱 사전의 CvDispCtrl 스타일이 속성(ToolbarBackground·
+        // ToolbarDock·IsToolbarVisible 등)을 주면 그 콜백이 여기서 돈다 — 칠하거나 옮길 필드가 아직 null 이면 생성자가 던진다.
+        // 0.29.4 까지는 이 줄들이 생성자 첫머리에 있어서, 그 구성(앱 사전 스타일이 ToolbarDock 등을 줌)이면 생성자가
+        // NullReferenceException·ArgumentNullException 으로 끝나 그 화면이 뜨지 않았다(실측).
+        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Children.Add(dockHost);
+        Children.Add(_statusBorder);
     }
 
     /// <summary>상태바 갱신 — pos 는 surface 기준 마우스 위치 (null = 이미지 밖/마우스 이탈).</summary>

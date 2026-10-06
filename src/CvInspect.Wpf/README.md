@@ -153,16 +153,27 @@ dictionary at run time (a light/dark switch) repaints every display without a re
 | `SeparatorBrushKey` | `CvDispSeparatorBrush` | `SeparatorBrush` | `#DDDDDD` | Toolbar group separators, the toolbar's edge line, the status bar's edge line |
 
 ```xml
-<!-- in the host's dark color dictionary — one place covers every CvDispCtrl -->
-<SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}" Color="#2D2D30" />
-<SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.StatusBarForegroundKey}" Color="#B4B4B4" />
+<!-- the host's dark color dictionary — one place covers every CvDispCtrl, including those made by a DataTemplate -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:cv="clr-namespace:CvInspect.Controls;assembly=CvInspect.Wpf">
+  <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}" Color="#2D2D30" />
+  <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.StatusBarForegroundKey}" Color="#B4B4B4" />
+</ResourceDictionary>
 ```
 
-Writing the key through `x:Static` turns a typo into a compile error; a mistyped key string is
-silently ignored and the default stays. The value must be a `Brush` — anything else under one of
-these keys is ignored with a `CvLog` warning. The instance properties take a direct value, a binding,
-a `DynamicResource` or an implicit-style setter, and win over the keys; clearing one
-(`ClearValue`) returns that instance to the key. The image area stays dark (`#2A2A2A`) in every theme.
+Write the key through `x:Static`: a typo then fails loudly when the dictionary loads (a
+`XamlParseException` naming the member) — the build does not check it — while a mistyped key string
+is silently ignored and the default stays. The value must be a `Brush`. A non-`null` value of another
+type under one of these four keys is ignored, and each display logs a `CvLog` warning naming the key
+when it picks the value up.
+
+The instance properties take a direct value, a binding, a `DynamicResource` or a style setter, and win
+over the keys. Clearing a direct value (`ClearValue`) returns that instance to the next source: a style
+setter if there is one, otherwise the key. `CvDispCtrl` is not a `Control`, so by WPF's rules an
+implicit style in a window's or user control's resources does not reach a `CvDispCtrl` created by a
+`DataTemplate` (one in the application's resources does) — inside templates, use the keys or set the
+property on the element in the template. The image area stays dark (`#2A2A2A`) in every theme.
 
 Toolbar accent colors use the host theme's `PrimaryBrush` / `SuccessBrush` / `DangerBrush` resource
 keys when present, and `CvPropEditCtrl` uses `SecondaryTextBrush` / `PrimaryBrush`; both fall back to

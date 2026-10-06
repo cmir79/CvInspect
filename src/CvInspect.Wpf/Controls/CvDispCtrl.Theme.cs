@@ -10,9 +10,10 @@ namespace CvInspect.Controls;
 public sealed partial class CvDispCtrl
 {
     /// <summary>툴바 바탕 리소스 키. 호스트 리소스(앱 색 사전, 창, 이 컨트롤의 <c>Resources</c> 등 위쪽 어디든)에 이 키로
-    /// <see cref="Brush"/> 를 두면 그 아래 모든 CvDispCtrl 의 툴바 바탕이 된다. 없으면 #FAFAFA. 사전을 갈아 끼우면 따라온다.
-    /// XAML 에서는 <c>x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}"</c> 로 적으면 오타가 컴파일 오류로 잡힌다
-    /// (글자로 적은 키는 틀려도 아무 말 없이 기본색으로 남는다).</summary>
+    /// <see cref="Brush"/> 를 두면 그 아래 모든 CvDispCtrl 의 툴바 바탕이 된다(DataTemplate 이 만든 것 포함). 없으면 #FAFAFA.
+    /// 사전을 갈아 끼우면 따라온다. XAML 에서는 <c>x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}"</c> 로 적기를 권한다 —
+    /// 오타가 그 사전을 읽는 순간 멤버 이름을 담은 XamlParseException 으로 드러난다(빌드는 잡지 않는다). 글자로 적은 키는 틀려도
+    /// 아무 말 없이 기본색으로 남는다.</summary>
     public const string ToolbarBackgroundKey = "CvDispToolbarBackgroundBrush";
 
     /// <summary>하단 상태 줄(커서 좌표·픽셀 값·이미지 크기·배율) 바탕 리소스 키. 없으면 #FAFAFA.</summary>
@@ -21,14 +22,18 @@ public sealed partial class CvDispCtrl
     /// <summary>상태 줄 글자 리소스 키. 없으면 #555555.</summary>
     public const string StatusBarForegroundKey = "CvDispStatusBarForegroundBrush";
 
-    /// <summary>구분선 리소스 키 — 툴바 버튼 그룹 사이 세로선, 툴바가 영상 영역과 맞닿는 가장자리선, 상태 줄 위 가장자리선
-    /// 셋을 함께 칠한다. 없으면 #DDDDDD.</summary>
+    /// <summary>구분선 리소스 키 — 툴바 버튼 그룹 사이 구분선(도킹 방향에 따라 세로·가로), 툴바가 영상 영역과 맞닿는 가장자리선,
+    /// 상태 줄 위 가장자리선 셋을 함께 칠한다. 없으면 #DDDDDD.</summary>
     public const string SeparatorBrushKey = "CvDispSeparatorBrush";
 
     public static readonly DependencyProperty ToolbarBackgroundProperty = RegisterChrome(nameof(ToolbarBackground));
 
     /// <summary>이 인스턴스의 툴바 바탕. 주면 <see cref="ToolbarBackgroundKey"/> 를 이긴다. null(기본)이면 키 → 없으면 #FAFAFA.
-    /// 직접 값·바인딩·스타일 세터 어느 것으로 줘도 되고, 걷으면(<c>ClearValue</c>) 다시 키를 따른다.</summary>
+    /// 직접 값·바인딩·<c>DynamicResource</c>·스타일 세터 어느 것으로 줘도 된다. 직접 준 값을 걷으면(<c>ClearValue</c>) 다음 출처로
+    /// 돌아간다 — 스타일 세터가 있으면 그것, 없으면 키. 이 컨트롤은 Control 이 아니라서, 창·UserControl 수준의 암시 스타일은
+    /// DataTemplate 이 만든 CvDispCtrl 에 닿지 않는다(WPF 규칙 — 앱 사전의 암시 스타일은 닿는다). 템플릿 안에서는 키를 쓰거나
+    /// 템플릿의 요소에 속성을 직접 준다. 나머지 셋(<see cref="StatusBarBackground"/>·<see cref="StatusBarForeground"/>·
+    /// <see cref="SeparatorBrush"/>)도 같다.</summary>
     public Brush? ToolbarBackground
     {
         get => (Brush?)GetValue(ToolbarBackgroundProperty);
@@ -66,8 +71,9 @@ public sealed partial class CvDispCtrl
     // 호스트 키 슬롯 — 생성자 끝에서 SetResourceReference 로 키에 묶는다. 키가 없으면 기본값(null)으로 남고, 호스트가 사전을 바꾸면
     // WPF 가 리소스 참조를 다시 풀어 값이 바뀐다 — 그 변경 콜백이 다시 칠한다. 공개 속성과 따로 두는 이유: 공개 속성에 참조를 걸면
     // 그것이 Local 값이라 호스트의 스타일 세터를 조용히 이기고, 호스트가 값을 줬다가 걷으면 참조까지 지워져 키로 돌아오지 않는다.
-    // 형은 object 다 — 같은 이름에 Brush 가 아닌 값(Color 등)이 있어도 기본색으로 남는다. Brush 형 속성에 참조를 걸면 WPF 가 값을
-    // 풀 때 InvalidOperationException("유효한 값이 아닙니다")을 던진다(공개 속성에 참조를 거는 변이로 실측 — 렌더가 그 예외로 끝났다).
+    // 형은 object 다 — 같은 이름에 Brush 가 아닌 값(Color 등)이 있어도 기본색으로 남는다. Brush 형 속성에 Brush 가 아닌 값을 가리키는
+    // 참조를 걸면 WPF 가 값을 풀 때 InvalidOperationException("'#FF010203' is not a valid value for property …")을 던진다
+    // (공개 속성에 참조를 거는 변이로 실측 — 렌더가 그 예외로 끝났다). Brush 를 가리키는 참조는 물론 정상이다.
     private static readonly DependencyProperty ToolbarBackgroundSlotProperty = RegisterSlot("ToolbarBackgroundSlot");
     private static readonly DependencyProperty StatusBarBackgroundSlotProperty = RegisterSlot("StatusBarBackgroundSlot");
     private static readonly DependencyProperty StatusBarForegroundSlotProperty = RegisterSlot("StatusBarForegroundSlot");
