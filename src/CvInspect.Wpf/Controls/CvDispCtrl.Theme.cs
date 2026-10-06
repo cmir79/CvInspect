@@ -12,7 +12,7 @@ public sealed partial class CvDispCtrl
     /// <summary>툴바 바탕 리소스 키. 호스트 리소스(앱 색 사전, 창, 이 컨트롤의 <c>Resources</c> 등 위쪽 어디든)에 이 키로
     /// <see cref="Brush"/> 를 두면 그 아래 모든 CvDispCtrl 의 툴바 바탕이 된다(DataTemplate 이 만든 것 포함). 없으면 #FAFAFA.
     /// 사전을 갈아 끼우면 따라온다. XAML 에서는 <c>x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}"</c> 로 적기를 권한다 —
-    /// 오타가 그 사전을 읽는 순간 멤버 이름을 담은 XamlParseException 으로 드러난다(빌드는 잡지 않는다). 글자로 적은 키는 틀려도
+    /// 오타가 그 사전을 읽는 순간 XamlParseException 으로 드러난다(멤버 이름은 그 안쪽 예외에 있다 — 빌드는 잡지 않는다). 글자로 적은 키는 틀려도
     /// 아무 말 없이 기본색으로 남는다.</summary>
     public const string ToolbarBackgroundKey = "CvDispToolbarBackgroundBrush";
 
@@ -68,7 +68,7 @@ public sealed partial class CvDispCtrl
         set => SetValue(SeparatorBrushProperty, value);
     }
 
-    // 호스트 키 슬롯 — 생성자 끝에서 SetResourceReference 로 키에 묶는다. 키가 없으면 기본값(null)으로 남고, 호스트가 사전을 바꾸면
+    // 호스트 키 슬롯 — 생성자에서 요소를 다 만든 뒤(행·자식을 붙이기 전) SetResourceReference 로 키에 묶는다. 키가 없으면 기본값(null)으로 남고, 호스트가 사전을 바꾸면
     // WPF 가 리소스 참조를 다시 풀어 값이 바뀐다 — 그 변경 콜백이 다시 칠한다. 공개 속성과 따로 두는 이유: 공개 속성에 참조를 걸면
     // 그것이 Local 값이라 호스트의 스타일 세터를 조용히 이기고, 호스트가 값을 줬다가 걷으면 참조까지 지워져 키로 돌아오지 않는다.
     // 형은 object 다 — 같은 이름에 Brush 가 아닌 값(Color 등)이 있어도 기본색으로 남는다. Brush 형 속성에 Brush 가 아닌 값을 가리키는
@@ -106,7 +106,7 @@ public sealed partial class CvDispCtrl
     private static DependencyProperty RegisterSlot(string name) => DependencyProperty.Register(
         name, typeof(object), typeof(CvDispCtrl), new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d).OnSlotChanged(e)));
 
-    /// <summary>슬롯을 키에 묶는다. 생성자 끝에서 한 번 — 묶는 순간 앱 리소스에 키가 있으면 콜백이 바로 돌므로 칠할 요소가 다 만들어진 뒤여야 한다.
+    /// <summary>슬롯을 키에 묶는다. 생성자에서 한 번, 요소를 다 만든 뒤 — 묶는 순간 앱 리소스에 키가 있으면 콜백이 바로 돌므로 칠할 요소가 다 만들어진 뒤여야 한다.
     /// 부모 요소에 둔 키는 트리에 붙을 때 WPF 가 참조를 다시 풀어 그때 들어온다.</summary>
     private void BindThemeSlots()
     {

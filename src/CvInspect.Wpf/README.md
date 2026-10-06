@@ -163,7 +163,7 @@ dictionary at run time (a light/dark switch) repaints every display without a re
 ```
 
 Write the key through `x:Static`: a typo then fails loudly when the dictionary loads (a
-`XamlParseException` naming the member) — the build does not check it — while a mistyped key string
+`XamlParseException` whose inner exception names the member) — the build does not check it — while a mistyped key string
 is silently ignored and the default stays. The value must be a `Brush`. A non-`null` value of another
 type under one of these four keys is ignored, and each display logs a `CvLog` warning naming the key
 when it picks the value up.

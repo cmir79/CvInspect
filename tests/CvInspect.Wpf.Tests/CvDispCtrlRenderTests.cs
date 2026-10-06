@@ -409,8 +409,8 @@ public class CvDispCtrlRenderTests
     // 앞의 넷은 코드가 고정 브러시를 직접 넣어(값 출처 Local) 호스트가 리소스로 덮을 길이 없었다 — 다크 테마에서도 흰 띠로
     // 남았다(소비자 실측, 0.29.4). 호스트는 키(색 사전 한 곳에서 모든 인스턴스)나 속성(인스턴스마다)으로 넣고, 실행 중 사전
     // 교체를 따라온다. 교체는 부모 요소의 Resources 로 잰다 — 이 프로세스의 Application 은 하나뿐이고 전역이라 교체 실험에
-    // 쓰지 않는다. 앱 사전에서만 닿는 길(생성자 안의 스타일·키)은 맨 아래 절 하나가 잰다. 앱 사전 교체 자체(네 가지 방식,
-    // HandyControl 테마 사전 교체 포함)는 진짜 Application 을 띄운 별도 프로브로 쟀다 — 여기 회귀로는 남기지 않았다.
+    // 쓰지 않는다. 앱 사전에서만 닿는 길(생성자 안의 스타일·키)은 맨 아래 절 하나가 잰다. 앱 사전을 실행 중에 갈아 끼우는 것은
+    // 이 스위트가 재지 않는다 — 리소스 탐색은 부모 요소와 같은 길로 앱 사전에 닿는다.
     // 레이아웃 반올림을 켜고, 시스템 배율대로 그린다 — 1px 선이 장치 화소에 걸쳐 두 줄로 번지면 정확한 색 대조가 안 된다.
 
     /// <summary>호스트가 고르는 네 색 — 툴바 바탕, 상태 줄 바탕, 상태 줄 글자, 구분선.</summary>
@@ -723,40 +723,62 @@ public class CvDispCtrlRenderTests
 
     /// <summary>앱 사전에서만 닿는 길 — 생성자 안에서 도는 것들. 이 컨트롤의 첫 논리 자식이 붙는 순간 WPF 가 생성자 안에서 암시 스타일을
     /// 적용하고(그때 보이는 것은 앱 사전뿐이다), 앱 사전의 키는 슬롯을 묶는 순간 풀린다. 행·자식을 생성자 첫머리에서 붙이던 판은 앱 사전의
-    /// CvDispCtrl 스타일이 새 색 속성이나 ToolbarDock·IsCamControlVisible 을 주면 생성자에서 NullReferenceException 이 나 그 화면이 뜨지
-    /// 않았다(검토 실측 — 호스트는 전역 스타일을 앱 사전에 병합한다). 부모 요소의 Resources 로는 이 길에 닿지 않는다: 부모 키는 생성자가
-    /// 끝난 뒤 트리에 붙을 때 풀린다.
-    /// Application 은 프로세스에 하나라 한 번 만들면 남는다 — 이 절은 끝에서 앱 사전을 비워 다른 시험에 새지 않게 한다.</summary>
+    /// CvDispCtrl 스타일이 새 색 속성이나 ToolbarDock·IsToolbarVisible·IsCamControlVisible·IsRunning·LoadFrameCommand 를 주면 생성자에서
+    /// NullReferenceException(ToolbarDock 은 ArgumentNullException)이 나 그 화면이 뜨지 않았다(실측 — 호스트는 전역 스타일을 앱 사전에
+    /// 병합한다). 스타일은 콜백이 만지는 필드 가운데 가장 늦게 만들어지는 것을 건드리는 속성까지 준다(불러오기 메뉴 항목 — LoadFrameCommand,
+    /// 툴바 짝 메뉴 항목 — IsToolbarVisible). 행 정의만 상태 줄 뒤로 옮기는 부분 되돌림도 여기서 떨어져야 한다. 툴바를 접는 스타일은 렌더
+    /// 단언과 섞이지 않게 따로 만든다. 부모 요소의 Resources 로는 이 길에 닿지 않는다: 부모 키는 생성자가 끝난 뒤 트리에 붙을 때 풀린다.
+    /// Application 은 프로세스에 하나라 한 번 만들면 그 Dispatcher(이 시험 스레드의 것)와 함께 남는다. 이 절은 들어올 때의 앱 사전을 되돌려
+    /// 놓을 뿐이다 — Application.Current.Dispatcher 에 기대는 시험을 더하면, 이 절 뒤에서는 그 Dispatcher 의 스레드가 죽어 있다.</summary>
     [Fact]
     public void AppLevelStyleAndKeysWorkInsideTheConstructor() => RunSta(() =>
     {
         var app = Application.Current ?? new Application();
+        var before = app.Resources;
         var bar = Color.FromRgb(0x21, 0x43, 0x65);
+        int commandRuns = 0;
+        var counting = new Cmd(() => commandRuns++);
         var style = new Style(typeof(CvDispCtrl));
         style.Setters.Add(new Setter(CvDispCtrl.ToolbarBackgroundProperty, new SolidColorBrush(bar)));
         style.Setters.Add(new Setter(CvDispCtrl.ToolbarDockProperty, System.Windows.Controls.Dock.Left));
         style.Setters.Add(new Setter(CvDispCtrl.IsCamControlVisibleProperty, false));
+        style.Setters.Add(new Setter(CvDispCtrl.IsRunningProperty, true));
+        style.Setters.Add(new Setter(CvDispCtrl.LoadFrameCommandProperty, counting));
+        style.Setters.Add(new Setter(CvDispCtrl.ContinuousCommandProperty, counting));
+        style.Setters.Add(new Setter(CvDispCtrl.StopCommandProperty, counting));
         var rd = HostChrome(ThemeA);
-        rd["DangerBrush"] = new SolidColorBrush(Color.FromRgb(0x40, 3, 3));
+        rd["SuccessBrush"] = new SolidColorBrush(Color.FromRgb(0x40, 2, 2));
         rd.Add(typeof(CvDispCtrl), style);
         app.Resources = rd;
         try
         {
             CvDispCtrl? ctrl = null;
             var ex = Record.Exception(() => ctrl = new CvDispCtrl());
-            Check(ex is null, $"an application-level style setting ToolbarBackground, ToolbarDock and IsCamControlVisible does not break construction: {ex}");
+            Check(ex is null, $"an application-level style setting the colors, ToolbarDock, IsCamControlVisible, IsRunning and the commands does not break construction: {ex}");
             var play = FindToggle(ctrl!, "Play / Stop")!;
-            Check(ColorOf(play.Background) == Color.FromRgb(0x40, 3, 3),
-                $"an application key is picked up inside the constructor, before the control joins any tree: {ColorOf(play.Background)}");
-            Check(ctrl!.ToolbarBackground is SolidColorBrush b && b.Color == bar && ctrl.ToolbarDock == System.Windows.Controls.Dock.Left && !ctrl.IsCamControlVisible,
+            Check(play.IsChecked == true && ColorOf(play.Background) == Color.FromRgb(0x40, 2, 2),
+                $"a styled IsRunning shows a live ⏯ in the application's SuccessBrush, picked up inside the constructor: checked={play.IsChecked} {ColorOf(play.Background)}");
+            Check(commandRuns == 0, $"applying the style runs no command: {commandRuns}");
+            Check(ctrl!.ContextMenu.Items[0] is System.Windows.Controls.MenuItem load && load.Visibility == Visibility.Visible,
+                "a styled LoadFrameCommand shows the load entry in the context menu");
+            Check(ctrl.ToolbarBackground is SolidColorBrush b && b.Color == bar && ctrl.ToolbarDock == System.Windows.Controls.Dock.Left && !ctrl.IsCamControlVisible,
                 "the application style was applied");
 
             var shot = Shoot(ctrl);
             var tb = shot.At((int)(2 * shot.S), shot.H / 3);
             var st = shot.At(shot.W / 2, shot.H - 1);
             Check(tb == bar && st == ThemeA.Status, $"the left-docked toolbar shows the style color and the status bar the application key: toolbar={tb} status={st}");
+
+            var hide = new Style(typeof(CvDispCtrl));
+            hide.Setters.Add(new Setter(CvDispCtrl.IsToolbarVisibleProperty, false));
+            app.Resources = new ResourceDictionary { [typeof(CvDispCtrl)] = hide };
+            CvDispCtrl? hidden = null;
+            var ex2 = Record.Exception(() => hidden = new CvDispCtrl());
+            Check(ex2 is null && hidden!.IsToolbarVisible == false, $"an application-level style hiding the toolbar does not break construction: {ex2}");
+            Check(hidden!.ContextMenu.Items[hidden.ContextMenu.Items.Count - 1] is System.Windows.Controls.MenuItem clear && clear.Visibility == Visibility.Collapsed,
+                "...and the toolbar-paired context-menu entry is hidden with it");
         }
-        finally { app.Resources = new ResourceDictionary(); }
+        finally { app.Resources = before; }
     });
 
     /// <summary>툴바 버튼을 툴팁 문구로 찾는다(버튼은 내부에서 만들어져 이름이 없다).</summary>

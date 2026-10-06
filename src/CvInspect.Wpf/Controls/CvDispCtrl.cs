@@ -20,6 +20,8 @@ namespace CvInspect.Controls;
 /// 우클릭 이미지 불러오기/저장 + 휠 줌·좌드래그 팬/도형 편집.
 /// 툴바·상태 줄 색은 인스턴스 속성 → 호스트 리소스 키 → 고정색 순으로 정해지고 실행 중 사전 교체를 따라온다
 /// (<see cref="ToolbarBackgroundKey"/> 등 — CvDispCtrl.Theme.cs).
+/// <c>Initialized</c> 는 생성자 안에서 난다(첫 논리 자식이 붙는 순간 — WPF 동작). XAML 의 <c>Initialized="…"</c> 처리기나 생성 뒤의
+/// 구독은 불리지 않으니 초기화 훅은 <c>Loaded</c> 에 건다.
 /// </summary>
 public sealed partial class CvDispCtrl : Grid
 {
