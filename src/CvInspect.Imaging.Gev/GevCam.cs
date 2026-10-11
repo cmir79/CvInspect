@@ -209,11 +209,12 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // "이미 열려 있다" 로 읽혀 예외도 로그도 없이 아무 일도 일어나지 않는다 — 부른 쪽은 다시
             // 열렸다고 여긴 채 오지 않을 프레임을 기다린다. 부른 뜻은 "다시 열어라" 이므로 먼저 접는다.
             // 통지는 내지 않는다 — 끊겼다는 말은 제어 상실 때 이미 나갔고, 여기서 한 번 더 내면
-            // 연결이 false 로 두 번 떨어졌다가 올라온 것처럼 보인다.
+            // 연결이 false 로 두 번 떨어졌다가 올라온 것처럼 보인다. 펌프도 제어 상실(OnControlLost)이 이미 접고
+            // 꺼짐을 알렸으므로 여기서 접을 것이 없다고 보고 그 결과를 버린다.
             if (_dev != null && !IsConnected)
             {
                 WriteLog(CvLogLevel.Info, "reopening after control loss — folding the dead session first");
-                CloseWhileLocked();
+                CloseWhileLocked(out _);
             }
             if (_dev != null) return;
             Run(OpenCoreAsync);
@@ -425,30 +426,37 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
     public void Close()
     {
-        bool closed;
+        bool closed, wasGrabbing;
         lock (_sync)
         {
             if (_disposed) return;
-            closed = CloseWhileLocked();
+            closed = CloseWhileLocked(out wasGrabbing);
         }
-        if (closed) RaiseClosed();
+        if (closed) RaiseClosed(wasGrabbing);
     }
 
-    /// <summary><see cref="_sync"/> 보유 전제. 열려 있었으면 정리하고 <c>true</c>.</summary>
-    private bool CloseWhileLocked()
+    /// <summary><see cref="_sync"/> 보유 전제. 열려 있었으면 정리하고 <c>true</c>.
+    /// <paramref name="wasGrabbing"/> 은 닫기 직전 연속 취득이 실제로 돌고 있었는가다 — 펌프를 접은 그 자리에서 정한다(락 안).</summary>
+    private bool CloseWhileLocked(out bool wasGrabbing)
     {
+        wasGrabbing = false;
         if (_dev is null) return false;
         AbortGrabWhileLocked("The camera was closed while the single grab waited for its frame.");
-        StopPumpCore();
+        wasGrabbing = StopPumpCore();
         Run(CloseCoreAsync, CancellationToken.None);
         IsConnected = false;
         return true;
     }
 
-    /// <summary>닫힘 통지 — <b>락 밖에서</b> 부른다. 핸들러가 이 카메라를 다시 부를 수 있다.</summary>
-    private void RaiseClosed()
+    /// <summary>닫힘 통지 — <b>락 밖에서</b> 부른다. 핸들러가 이 카메라를 다시 부를 수 있다.
+    ///
+    /// 꺼짐(<see cref="GrabbingChanged"/> false)은 <b>닫기 직전 실제로 돌고 있었을 때만</b> 낸다 — ICam 계약은 전이일 때만 내라고 한다.
+    /// 전에는 무조건 냈다: 라이브를 멈추고 닫으면 정지가 이미 낸 꺼짐이 한 번 더 나갔고, 그랩하지 않던 카메라를 닫아도 "멈췄다" 가
+    /// 나갔다. 통지를 거울질하는 화면에는 닫을 때마다 없던 정지가 찍힌다(회귀 10-G-17·18). 정지 경로·제어 상실·펌프 자멸과 같이
+    /// 펌프를 접은 결과(<see cref="StopPumpCore"/>)로 가른다 — 그 셋과 겹쳐도 꺼짐은 먼저 접은 쪽이 한 번만 낸다.</summary>
+    private void RaiseClosed(bool wasGrabbing)
     {
-        GrabbingChanged?.Invoke(this, false);
+        if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
         ConnectionChanged?.Invoke(this, new ConnArgs(false));
         WriteLog(CvLogLevel.Info, "closed");
     }
@@ -489,14 +497,14 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// </summary>
     public void Dispose()
     {
-        bool closed;
+        bool closed, wasGrabbing;
         lock (_sync)
         {
             if (_disposed) return;
-            closed = CloseWhileLocked();
+            closed = CloseWhileLocked(out wasGrabbing);
             _disposed = true;
         }
-        if (closed) RaiseClosed();
+        if (closed) RaiseClosed(wasGrabbing);
     }
 
     /// <summary>제어권 상실 — 하트비트가 끊겼거나 다른 응용이 카메라를 가져갔다. 스레드풀에서 오고
@@ -978,6 +986,17 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // "손실 아님" 으로 내려가 로그만으로는 아무 일도 없었던 것처럼 보였다. 앞 라이브의 꼬리가 이보다 늦게 닫히면 그 한 줄은
         // 경고로 나온다 — 진짜 손실을 묻는 것보다 그 편이 낫다(단발 그랩의 창과 같은 판단).
         CloseStopWindows();
+        // ⚠ **확인 안 됨 — 여기는 남은 장을 버리지 않는다.** 단발 그랩과 달리 시작 전에 대기열을 비우지도(DrainStream), 시작선보다 이른
+        // 장을 거르지도(IsStale) 않는다. 그래서 시한 초과·취소로 끝난 단발 그랩의 장이 그 그랩의 AcquisitionStop 뒤에 마저 완성돼
+        // 대기열에 들어와 있으면(시한이 노출 + 전송의 경계에 걸린 그랩, 트리거 모드에서 시한과 멈춤 사이에 든 트리거 등) 이 라이브의
+        // **첫 장으로 발행될 수 있다.** 앞 그랩 뒤의 시작 대기(SettleWaitMs)는 그 장이 도착할 만큼 기다리므로 오히려 대기열 쪽으로 민다.
+        // 재현 수단이 없어(장치도 스트림 흉내도 이 저장소에 없다) 실제로 나는지는 안 쟀다 — 그래서 동작은 그대로 둔다.
+        // 해가 작다고 보는 근거(코드 독해): ① 라이브 첫 장 하나다 — 연속 취득의 장은 어느 호출의 답도 아니다(답을 짝지을 수 있는 것은
+        // 단발 그랩뿐이다, ICam.GrabOne). ② 단발 그랩의 답으로는 못 간다 — 펌프가 그 장을 라이브로 내보내 소비하고, 정지(StopContinuous)는
+        // 펌프를 세운 뒤 대기열을 비우며, 다음 그랩(GrabOnceAsync)도 시작 전에 비우고 시작선보다 이른 장을 버린다(시계를 못 찍는 기종의
+        // 번호 판정 약점은 그쪽 드레인 주석에 있다).
+        // 막을 일이 생기면 비우기만으로는 모자란다 — 비우기는 완성된 장만 치우고 조립 중이던 장은 그 뒤에 완성된다(DrainStream 주석).
+        // 단발 그랩처럼 시작선으로 걸러야 한다.
         Run(async ct =>
         {
             // 모드 전환이 거절되면 그것을 여기서 말해야 한다 — 삼키면 장치는 옛 모드(대개 SingleFrame)
