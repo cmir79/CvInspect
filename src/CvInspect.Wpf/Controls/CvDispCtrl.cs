@@ -33,14 +33,18 @@ public sealed partial class CvDispCtrl : Grid
     private readonly Border _statusBorder;
     private readonly MenuItem _loadItem;
     private readonly FrameworkElement[] _toolMenuItems;
+    private readonly Button _grabBtn;
     private readonly ToggleButton _playBtn;
     private readonly ToggleButton _panBtn;
     private readonly TextBlock _statusLeft;
     private readonly TextBlock _statusRight;
+    private readonly EventHandler<EventArgs> _onCamCommandCanExecuteChanged;
     private bool _syncingPlay;
 
     public CvDispCtrl()
     {
+        // 명령 속성 콜백(SwapCamCommand)이 쓰는 처리기 — 앱 사전 스타일이 명령을 주면 그 콜백이 생성자 안에서 돈다(맨 끝 주석).
+        _onCamCommandCanExecuteChanged = OnCamCommandCanExecuteChanged;
         Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
         // 행 정의와 자식은 이 생성자 맨 끝에서 붙인다 — 이유는 그 자리 주석.
 
@@ -50,9 +54,14 @@ public sealed partial class CvDispCtrl : Grid
         _camPanel = new StackPanel { Orientation = Orientation.Horizontal };
         DockPanel.SetDock(_camPanel, Dock.Left);
 
-        var grabBtn = MakeToolButton("📸", "Grab");
-        grabBtn.Click += (_, _) => GrabCommand?.Execute(null);
-        _camPanel.Children.Add(grabBtn);
+        // 활성 여부는 RefreshCamButtons 가 명령의 CanExecute 로 정한다. 클릭에서도 다시 묻는다 — 회색이 되기 전에 이미 들어와 있던
+        // 클릭(자동화·큐에 쌓인 입력)이 막힌 명령을 실행하면 안 된다.
+        _grabBtn = MakeToolButton("📸", "Grab");
+        _grabBtn.Click += (_, _) =>
+        {
+            if (GrabCommand is { } cmd && CanRun(cmd)) cmd.Execute(null);
+        };
+        _camPanel.Children.Add(_grabBtn);
 
         _playBtn = new ToggleButton
         {
@@ -282,8 +291,10 @@ public sealed partial class CvDispCtrl : Grid
         if (_syncingPlay) return;
         try
         {
-            if (_playBtn.IsChecked == true) ContinuousCommand?.Execute(null);
-            else StopCommand?.Execute(null);
+            // 토글 직후라 눌림이면 시작, 풀림이면 정지다. CanExecute 가 false 면 내지 않는다 — 버튼이 회색이어도 이 길에는 회색이 되기
+            // 전에 들어온 클릭이 닿는다. 내지 않아도 아래 되돌림이 버튼을 IsRunning 으로 돌려놓는다.
+            var cmd = _playBtn.IsChecked == true ? ContinuousCommand : StopCommand;
+            if (cmd is not null && CanRun(cmd)) cmd.Execute(null);
         }
         finally
         {
@@ -292,6 +303,62 @@ public sealed partial class CvDispCtrl : Grid
             // 다시 알려도 속성 값이 안 바뀌어 풀리지 않는다(소비자가 원문 독해로 짚음). 명령 뒤 곧바로 권위 있는 값으로 되돌린다:
             // 동기로 켜졌으면 이미 같은 값이라 아무 일도 없고, 비동기로 켜지면 켜지는 순간 콜백이 다시 누른다. 정지 쪽도 같다.
             SyncPlayState(IsRunning);
+        }
+    }
+
+    // === 카메라 버튼과 명령의 CanExecute ===
+    // 0.30.0 까지는 두 버튼이 Execute 를 직접 불러 CanExecute 를 한 번도 묻지 않았다 — 호스트가 촬영 중에 명령을 막아 둬도 버튼이
+    // 살아 있고 눌렸다. 이제 WPF 버튼의 Command 와 같은 뜻을 따른다: false 면 회색이고 실행하지 않으며, CanExecuteChanged 가 오면 다시 묻는다.
+    // WPF 버튼과 다른 점 둘(그 버튼의 처리기는 알림을 올린 스레드에서 바로 IsEnabled 를 다시 계산하고, CanExecute 의 예외를 그대로 흘린다 —
+    // 원문 확인): 다른 스레드에서 온 알림은 UI 스레드로 넘기고, CanExecute 가 던져도 알림을 올린 쪽으로 돌려보내지 않는다. 알림을 올리는
+    // 쪽은 흔히 바쁨 표식을 세운 직후 try 밖에서 올리므로, 여기서 던지면 그 표식이 안 풀린 채 남아 카메라 명령이 영구히 막힌다.
+
+    /// <summary>명령 속성이 바뀌면 옛 명령의 구독을 놓고 새 명령에 건다. 구독은 <see cref="CanExecuteChangedEventManager"/>(약한 구독)로
+    /// 건다 — WPF 버튼이 Command 를 들을 때와 같은 길이다. 명령은 대개 컨트롤보다 오래 사는 view-model 이 들고 있어, 보통 구독이면 버려진
+    /// 컨트롤이 백버퍼째 수집되지 않는다. 편집 도형처럼 Loaded/Unloaded 에 걸지 않는 이유: 화면에 올라오기 전이나 가려진 동안에도 버튼
+    /// 상태가 맞아야 하는데, 약한 구독은 누수 없이 그것까지 준다. 처리기는 필드 하나에 담아 붙이고 뗄 때 같은 것을 쓴다 — 관리자는 대리자
+    /// 같음으로 찾아 떼고, 대리자를 그 대상(이 컨트롤)에 묶어서만 살려 둔다(원문 확인).</summary>
+    private void SwapCamCommand(ICommand? oldCmd, ICommand? newCmd)
+    {
+        if (oldCmd is not null) CanExecuteChangedEventManager.RemoveHandler(oldCmd, _onCamCommandCanExecuteChanged);
+        if (newCmd is not null) CanExecuteChangedEventManager.AddHandler(newCmd, _onCamCommandCanExecuteChanged);
+        RefreshCamButtons();
+    }
+
+    /// <summary>약한 구독의 중계자는 알림을 올린 스레드에서 이 처리기를 부른다. UI 스레드가 아니면 넘기고 돌아간다 — 기다리지 않는다.
+    /// 여기서 하는 일은 다시 묻기뿐이고 그 안의 예외는 <see cref="CanRun"/> 이 삼키므로 이 처리기는 던지지 않는다.</summary>
+    private void OnCamCommandCanExecuteChanged(object? sender, EventArgs e)
+    {
+        if (Dispatcher.CheckAccess()) RefreshCamButtons();
+        else Dispatcher.BeginInvoke(new Action(RefreshCamButtons));
+    }
+
+    /// <summary>📸·⏯ 의 활성을 지금의 명령으로 다시 정한다. 명령이 없으면 종전대로 살아 있다. ⏯ 는 눌렀을 때 낼 명령이 정한다 —
+    /// 돌고 있으면(IsRunning) StopCommand, 멈춰 있으면 ContinuousCommand. 시작 명령 하나로 정하면 시작이 막힌 사이에 라이브를 끌 수
+    /// 없게 된다. 그래서 IsRunning 이 바뀔 때도 다시 정한다(SyncPlayState). 활성만 바꾸고 색은 넣지 않는다 — 회색은 호스트의 버튼
+    /// 스타일이 그린다. ⏯ 에 넣어 둔 강조색은 그대로 두어도 된다: 기본 버튼 스타일의 비활성 트리거가 그 위를 덮는다(실측, Windows 기본
+    /// 테마·96DPI 오프스크린: 멈춘 ⏯ 가 살아 있으면 정지 강조색 화소 1409, 회색이면 0 이고 #F4F4F4 로 그려진다).</summary>
+    private void RefreshCamButtons()
+    {
+        _grabBtn.IsEnabled = GrabCommand is not { } grab || CanRun(grab);
+        var next = IsRunning ? StopCommand : ContinuousCommand;
+        _playBtn.IsEnabled = next is null || CanRun(next);
+    }
+
+    /// <summary>CanExecute 를 null 로 묻는다 — 버튼이 Execute 에 넘기는 값도 늘 null 이다. 던지면 실행 가능으로 보고 경고만 남긴다:
+    /// 이 판 전에는 CanExecute 를 묻지 않았으니 그것이 종전 동작이고(클릭은 Execute 에 닿고, 고장 난 명령이면 거기서 종전대로 던진다),
+    /// 회색으로 바꾸면 요란하던 실패가 조용히 굳은 버튼이 된다.</summary>
+    private static bool CanRun(ICommand cmd)
+    {
+        try
+        {
+            return cmd.CanExecute(null);
+        }
+        catch (Exception ex)
+        {
+            CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
+                $"{cmd.GetType().Name}.CanExecute threw; the button is left enabled as if the command had no CanExecute.", ex);
+            return true;
         }
     }
 
