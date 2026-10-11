@@ -118,8 +118,9 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         // 돌아가고, 안쪽은 그것을 자기 실패로 읽는다(실제로 GevCam 은 "frame conversion failed" 로 적었다).
         _onInnerFrame = (s, f) => { if (IsCurrent(s)) SafeRaise(() => FrameAcquired?.Invoke(this, f), nameof(FrameAcquired)); };
         _onInnerConnection = (s, e) => { if (!e.IsConnected) OnInnerLost(s); };
-        // 시작 통지는 대개 중계할 것이 없다 — 시작은 우리가 부른 자리에서, 안쪽이 실제로 켜졌는지 보고 낸다. 다만 시작을 반환 뒤에
-        // (콜백으로) 알리는 구현은 반환 시점에 아직 꺼져 있어 거기서 못 알린다 — 그 늦은 켜짐만 받아 맞춘다(OnInnerGrabStarted).
+        // 켜짐 통지도 받는다(OnInnerGrabStarted). 시작을 StartContinuous 안에서 동기로 알리는 안쪽(GevCam·VirtualCam·VideoCaptureCam)은
+        // 그 통지가 우리 시작 꼬리보다 먼저 닿으므로 <b>켜짐 표시는 대개 여기서 선다</b> — 꼬리의 알림은 통지가 없거나 걸러진 경우의 뒷받침이다.
+        // 시작을 반환 뒤에(콜백으로) 알리는 구현은 반환 시점에 아직 꺼져 있어 꼬리가 못 알리므로 그 늦은 켜짐을 여기서만 받는다.
         _onInnerGrabbing = (s, on) => { if (on) OnInnerGrabStarted(s); else OnInnerGrabStopped(s); };
     }
 
@@ -451,11 +452,18 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         // 우리 의도 순서와 안쪽의 정지 순서가 엇갈려도(두 스레드가 거의 같이 부른 정지·시작) 같은 이유로 거짓이 남는다(검토가 찾음).
         // 안쪽 IsGrabbing 은 계약상 마지막 통지와 같은 말을 하고, 이 저장소의 구현은 전부 반환 전에 세운다 — 락 밖에서 읽는다(안쪽
         // 게터가 제 락을 쥘 수 있다). 읽은 뒤 안쪽이 멈추면 그 통지가 OnInnerGrabStopped 로 와서 맞춰진다.
+        // 켜짐을 동기로 알리는 안쪽이면 그 통지(OnInnerGrabStarted)가 이미 표시를 세워 여기서는 알릴 것이 없다 — 여기는 뒷받침이다.
         // 그 밖에: 정지·닫기가 나중에 왔으면 알리지 않고(나중 명령이 이긴다), 시작하는 사이 세션이 죽었어도 알리지 않는다(끊김 뒤에
         // 켜짐이 나가 IsGrabbing=true·IsConnected=false 로 남았다 — 의도는 남아 재연결이 새 세션에서 되살린다).
         // 판정과 표시를 같은 락에서 한다 — 판정 뒤 표시 전에 끼어든 상실이 다시 틈이 되지 않게.
+        //
+        // 반대로 <b>안쪽이 이 시작을 물렀는데 표시가 앞 라이브의 켜짐으로 남아 있으면 내린다</b>. 다른 스레드의 정지가 안쪽을 멈추는 중이고 그 꺼짐
+        // 통지가 아직 안 왔으면, 우리 순서로는 이 시작이 나중이라 의도가 켜짐이어서 그 정지의 꼬리도 이 꼬리도 표시를 안 내렸다 — 꺼진 안쪽 위에
+        // IsGrabbing=true 가 그 통지가 닿을 때까지 남았다(가짜 카메라로 순서를 강제해 재현). 라이브를 되켜는 것은 그 정지의 꼬리다(의도가 켜짐이다).
+        // 내린 뒤에는 한 번 더 읽어 그새 켜졌으면 다시 알린다 — 읽은 뒤·내리기 전에 그 꼬리가 안쪽을 되켜고 "이미 켜짐" 을 보고 알리기를 건너뛰었으면
+        // 이 내리기가 도는 라이브를 꺼짐으로 덮는다(되켜기는 이미 끝나 아무도 다시 알리지 않는다).
         var innerGrabbing = ReadGrabbing(cam);
-        bool stopInner = false, announce = false;
+        bool stopInner = false, announce = false, lower = false;
         int decidedAt;
         lock (_sync)
         {
@@ -464,11 +472,17 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
             var sameInner = ReferenceEquals(_inner, cam);
             var superseded = (_intentVersion != myVersion && !_wantContinuous) || !sameInner || _closed || _disposed;
             if (superseded) stopInner = sameInner;
-            else if (innerGrabbing && _connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; }
+            else if (innerGrabbing) { if (_connected && !ReferenceEquals(_lostInner, cam) && !_grabbing) { _grabbing = true; announce = true; } }
+            else if (_grabbing) { _grabbing = false; lower = true; }
         }
         // 안쪽이 이미 시작했다면 정지가 이기도록 한 번 더 멈춘다 — 이미 멈춘 안쪽에는 아무 일도 안 한다. 청산된 안쪽은 건드리지 않는다.
         if (stopInner) StopInnerOwned(cam, decidedAt);
         if (announce) SafeRaise(() => GrabbingChanged?.Invoke(this, true), nameof(GrabbingChanged));
+        if (lower)
+        {
+            SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
+            AnnounceIfLiveWanted(cam);
+        }
     }
 
     public void StopContinuous()
@@ -494,21 +508,34 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         {
             if (cam != null) lock (_sync) RemoveOwnStopLocked(cam);
         }
-        // 꺼짐 표시는 <b>최종 의도</b>로 정한다 — 의도가 꺼져 있으면 내린다(이미 내려가 있으면 아무 일도 없다). 안쪽을 멈추는 사이 더 나중의 시작이
-        // 들어와 실제로 켰다면 의도가 켜져 있어 내리지 않는다 — 그 시작이 켜짐을 제 자리에서 알린다. 전에는 "이 정지가 아직 마지막 명령인가(판 일치)"
-        // 로 정해서, 그 나중 시작이 안쪽에서 던져 의도를 되돌린 경우 아무도 내리지 않아 켜짐으로 표시된 채 아무것도 안 돌았다(검토가 재현).
+        // 꺼짐 표시는 <b>최종 의도와 안쪽의 사실</b>로 정한다 — 의도가 꺼져 있으면 내린다(이미 내려가 있으면 아무 일도 없다). 전에는 "이 정지가 아직
+        // 마지막 명령인가(판 일치)" 로 정해서, 그 나중 시작이 안쪽에서 던져 의도를 되돌린 경우 아무도 내리지 않아 켜짐으로 표시된 채 아무것도 안
+        // 돌았다(검토가 재현).
+        // 안쪽을 멈추는 사이 더 나중의 시작이 들어와 의도가 켜져 있어도, <b>이 세션의 안쪽이 지금 꺼져 있으면 내린다</b>. 전에는 "그 시작이 켜짐을 제
+        // 자리에서 알린다" 로 두었는데, 다른 스레드의 정지가 이미 안쪽을 끄고 꺼짐 통지를 아직 안 낸 사이라면(우리 정지는 할 일이 없어 통지도 없다)
+        // 그 시작은 안쪽에서 물러지고 아무도 표시를 안 내려, 이 정지가 돌아온 뒤에도 꺼진 안쪽 위에 IsGrabbing=true 가 남았다(가짜 카메라로 순서를
+        // 강제해 재현 — 그 틈에 이어 부른 단발 그랩을 받은 쪽은 라이브가 도는 줄 안다). 안쪽 상태는 락 밖에서 읽는다(안쪽 게터가 제 락을 쥘 수 있다).
         // 더 나중의 시작이 있는데 그 시작이 우리 정지보다 먼저 안쪽에 닿았다면(이미 돌고 있어 할 일 없이 돌아갔다) 우리 정지가 그것을 도로 껐다 —
         // 나중 명령이 이기도록 같은 세션에서 되켠다(StartContinuous 의 "나중 정지가 이기면 한 번 더 멈춘다" 의 거울). 같은 안쪽에 우리 정지가 아직
         // 더 돌고 있으면 그 정지의 끝에 맡긴다(그 정지가 끝나야 되켠 것이 남는다).
-        bool lower, relight = false;
+        // 사실로 내렸고 되켜기를 다른 정지에 맡겼으면 한 번 더 읽어 그새 켜졌으면 다시 알린다 — 읽은 뒤·내리기 전에 나중 시작이 안쪽을 켜고 "이미
+        // 켜짐" 을 보고 알리기를 건너뛰었으면 이 내리기가 도는 라이브를 꺼짐으로 덮는다. 여기서 되켜면 되켜기가 먼저 안쪽을 다시 읽으므로 같다.
+        var innerOn = cam != null && ReadGrabbing(cam);
+        bool lower, relight = false, recheck = false;
         lock (_sync)
         {
-            lower = !_wantContinuous && _grabbing;
+            var innerOff = cam != null && !innerOn && ReferenceEquals(_inner, cam);
+            lower = _grabbing && (!_wantContinuous || innerOff);
             if (lower) _grabbing = false;
-            else relight = cam != null && _intentVersion != myVersion && _wantContinuous && IsLiveSessionLocked(cam) && !IsOwnStopLocked(cam);
+            if (cam != null && _wantContinuous && _intentVersion != myVersion && IsLiveSessionLocked(cam))
+            {
+                relight = !IsOwnStopLocked(cam);
+                recheck = lower && !relight;
+            }
         }
         if (lower) SafeRaise(() => GrabbingChanged?.Invoke(this, false), nameof(GrabbingChanged));
         if (relight) RelightAfterOwnStop(cam!);
+        else if (recheck) AnnounceIfLiveWanted(cam!);
     }
 
     /// <summary>나중 명령(정지)이 이겨 우리가 안쪽을 한 번 더 멈춘다 — <see cref="StopContinuous"/> 와 같이, 멈추는 사이 온 꺼짐 통지를 우리 정지의
@@ -856,12 +883,21 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
         if (lostConn) SafeRaise(() => ConnectionChanged?.Invoke(this, new ConnArgs(false)), nameof(ConnectionChanged));
     }
 
-    /// <summary>내부에서 온 "연속 취득이 켜졌다" 통지 — 시작을 반환 뒤에 알리는 구현의 늦은 켜짐만 받아 맞춘다. 그 구현은 반환 시점에
-    /// 아직 꺼져 있어 StartContinuous·ResumeContinuous 가 켜짐을 알리지 않았다. 켜짐을 받아들이는 것은 <b>현재 인스턴스이고, 연결돼 있고,
-    /// 죽음이 접수되지 않았고, 라이브 의도가 살아 있을 때만</b>이다 — 의도가 내려간 뒤의 켜짐(정지에 진 재개 등)은 받지 않는다. 그래서
-    /// 정지가 이긴 재개에서 켜짐/꺼짐 한 쌍이 덧나지 않는다. 우리가 이미 켜짐을 알렸으면 전이가 아니라 아무 일도 없다.</summary>
+    /// <summary>내부에서 온 "연속 취득이 켜졌다" 통지. 시작을 StartContinuous 안에서 동기로 알리는 안쪽(이 저장소의 구현 전부)에서는 이 통지가
+    /// 우리 시작 꼬리·재개·되켜기보다 먼저 닿으므로 <b>켜짐 표시는 대개 여기서 선다</b>(꼬리는 뒷받침이다). 시작을 반환 뒤에 알리는 구현의 늦은
+    /// 켜짐도 여기서만 받는다 — 그 구현은 반환 시점에 아직 꺼져 있어 꼬리가 켜짐을 알리지 않았다.
+    /// 켜짐을 받아들이는 것은 <b>현재 인스턴스이고, 연결돼 있고, 죽음이 접수되지 않았고, 라이브 의도가 살아 있고, 안쪽이 지금 실제로 돌 때만</b>이다 —
+    /// 의도가 내려간 뒤의 켜짐(정지에 진 재개 등)은 받지 않는다. 그래서 정지가 이긴 재개에서 켜짐/꺼짐 한 쌍이 덧나지 않는다. 우리가 이미 켜짐을
+    /// 알렸으면 전이가 아니라 아무 일도 없다.
+    /// 안쪽의 지금 값을 다시 보는 것은 구현이 상태를 락 안에서 정하고 통지는 락 밖에서 내기 때문이다 — 그 사이 다른 스레드의 정지가 안쪽을 끄면
+    /// 이 통지는 이미 멈춘 안쪽의 것이다. 통지만 보고 켜짐을 세우면 꺼진 안쪽 위에 IsGrabbing=true 가 서고, 그 정지의 꺼짐 통지는 이미 지나가
+    /// 아무도 내리지 않았다(가짜 카메라로 재현 — 늦은 켜짐 통지를 붙잡은 사이 정지와 거절된 되켜기가 지나감). ICam.IsGrabbing 도 통지가 엇갈리면
+    /// 값이 권위라고 적는다. 읽은 뒤에 안쪽이 멈추면 그 정지가 내린 의도(우리 정지)나 접수된 죽음(스스로 멈춤)이 아래 판정을 막거나, 그 정지의 꺼짐
+    /// 통지·꼬리가 뒤에 와서 맞춘다 — 읽기와 락 사이에 정지와 그 꼬리가 통째로 지나가는 틈까지 닫지는 않는다(다른 읽기 자리와 같은 한계).</summary>
     private void OnInnerGrabStarted(object? sender)
     {
+        // 락 밖에서 읽는다(안쪽 게터가 제 락을 쥘 수 있다) — OnInnerGrabStopped 와 같다.
+        if (sender is not ICam senderCam || !ReadGrabbing(senderCam)) return;
         lock (_sync)
         {
             if (_disposed || _closed || !ReferenceEquals(_inner, sender) || ReferenceEquals(_lostInner, sender)) return;
@@ -916,7 +952,7 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
                 echoWhileWanted = _wantContinuous;
             }
             else resume = _wantContinuous;
-            // 내리기는 판정과 <b>같은 락</b>에서 한다. 락을 놓았다 다시 잡아 내리면(RaiseGrabbing) 그 사이 정지 꼬리가 되켜고 켜짐을 확인한 뒤에
+            // 내리기는 판정과 <b>같은 락</b>에서 한다. 락을 놓았다 다시 잡아 내리면 그 사이 정지 꼬리가 되켜고 켜짐을 확인한 뒤에
             // 이 내리기가 떨어져, 라이브가 도는데 IsGrabbing=false 로 굳었다(검토가 재현 — 다른 스레드에서 온 스스로 멈춤이 메아리로 읽힌 경우).
             if (!resume && _grabbing) { _grabbing = false; lowered = true; }
         }
@@ -1196,18 +1232,8 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
 
     // 연결을 세우는 알림은 RaiseConnectedIfCurrent 하나뿐이다(현재 인스턴스인지 다시 보고 세운다). 내리는 알림은 상실(OnInnerLost)과
     // 청산(RaiseRetired)이 각자 판정과 함께 낸다. 확인 없이 세우던 옛 RaiseConnection 은 닫은 뒤에 연결됨을 세운 경로라 걷었다.
-
-    /// <summary>취득 표시를 내린다 — 상태가 실제로 바뀐 경계에서만 발화한다. 켜는 쪽은 판정과 함께 락 안에서 세운다(StartContinuous·
-    /// ResumeContinuous) — 여기로 켜면 죽은 세션이나 정지에 진 시작을 켜짐으로 알릴 수 있다.</summary>
-    private void RaiseGrabbing(bool grabbing)
-    {
-        lock (_sync)
-        {
-            if (_grabbing == grabbing) return;
-            _grabbing = grabbing;
-        }
-        SafeRaise(() => GrabbingChanged?.Invoke(this, grabbing), nameof(GrabbingChanged));
-    }
+    // 취득 표시도 같다 — 켜고 내리는 자리마다 판정과 같은 락에서 바꾼다. 값만 보고 바꾸던 도우미는 쓰는 곳이 없어 걷었다(판정 없이 켜면 죽은 세션이나
+    // 정지에 진 시작을 켜짐으로 알리고, 락을 놓았다 다시 잡아 내리면 그 틈에 되켠 라이브를 꺼짐으로 덮는다).
 
     /// <summary>
     /// 구독자에게 통지한다 — <b>구독자가 던져도 우리가 하는 일은 달라지지 않는다.</b>
