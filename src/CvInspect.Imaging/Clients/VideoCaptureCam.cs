@@ -31,6 +31,12 @@ public sealed class VideoCaptureCam : ICam
     private bool _disposed;
     private double? _setExposureUs;   // SetExposureTimeUs 로 받은 마지막 값 — 열 때 다시 넣는다(ICam 계약)
 
+    // 단발 그랩이 진행 중이다(_sync 아래에서 읽고 쓴다) — GrabOne 의 진입 검사에서 세우고, 읽기·발행이 끝나 돌아갈 때(예외로 끝나도)
+    // 내린다. 서 있는 동안 연속 시작과 두 번째 그랩은 던진다(ICam 계약). 읽기는 락 아래라 그동안 온 시작·그랩은 락에서 기다리지만,
+    // 발행은 락 밖이라 표식이 없을 때는 그 사이에 시작이 서고 두 번째 그랩이 돌아, 그랩을 부른 쪽의 구독에 라이브나 남의 그랩의 장이
+    // 섞여 들어왔다(LocalCamGrabContractTests: 발행 중인 그랩을 붙잡아 두고 시작·그랩을 걸면 매번 섰다).
+    private bool _grabPending;
+
     public VideoCaptureCam(CamOpt opt)
     {
         _opt = opt ?? throw new ArgumentNullException(nameof(opt));
@@ -108,23 +114,37 @@ public sealed class VideoCaptureCam : ICam
 
     public void GrabOne()
     {
-        CamFrame? frame;
-        lock (_sync)
+        var marked = false;   // 이 호출이 표식을 세웠다 — 진입 검사에서 던진 호출은 남(앞선 그랩)의 표식을 내리면 안 된다
+        try
         {
-            ThrowIfDisposed();
-            EnsureConnected();
-            // 연속 취득 중에는 답할 수 없다 — 여기서 한 장 더 내도 부른 쪽은 그것과 흐르던 장을 가릴 수 없다.
-            if (_liveThread != null)
-                throw new InvalidOperationException(
-                    "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
-                    "stream's. Call StopContinuous() first.");
-            // 읽기 실패를 삼키지 않는다 — 사람이 부른 한 장이다. 종전에는 프레임도 예외도 로그도 없이
-            // 돌아와서, 부른 쪽에서 성공과 구분되지 않았다(구독자가 아무것도 못 받은 것이 유일한 단서인데
-            // 그것을 이유와 함께 설명해 주는 곳이 없었다). 연속 취득 루프는 같은 실패를 이미 남긴다.
-            if (!TryReadFrame(out frame))
-                WriteLog(CvLogLevel.Warning, "frame read failed — the single grab produced no frame.");
+            CamFrame? frame;
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                EnsureConnected();
+                // 연속 취득 중에는 답할 수 없다 — 여기서 한 장 더 내도 부른 쪽은 그것과 흐르던 장을 가릴 수 없다.
+                if (_liveThread != null)
+                    throw new InvalidOperationException(
+                        "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
+                        "stream's. Call StopContinuous() first.");
+                // 그랩은 한 번에 하나다 — 앞 그랩이 아직 발행 중이면(락 밖) 둘이 서로의 구독에 장을 넣는다. 이 그랩이 낸 장의
+                // 핸들러가 같은 카메라를 되불러도 여기서 걸린다(ICam.FrameAcquired).
+                if (_grabPending)
+                    throw new InvalidOperationException(
+                        "A single grab is already waiting for its frame on this camera. Wait for that GrabOne() to return first.");
+                _grabPending = marked = true;
+                // 읽기 실패를 삼키지 않는다 — 사람이 부른 한 장이다. 종전에는 프레임도 예외도 로그도 없이
+                // 돌아와서, 부른 쪽에서 성공과 구분되지 않았다(구독자가 아무것도 못 받은 것이 유일한 단서인데
+                // 그것을 이유와 함께 설명해 주는 곳이 없었다). 연속 취득 루프는 같은 실패를 이미 남긴다.
+                if (!TryReadFrame(out frame))
+                    WriteLog(CvLogLevel.Warning, "frame read failed — the single grab produced no frame.");
+            }
+            if (frame != null) Publish(frame);
         }
-        if (frame != null) Publish(frame);
+        finally
+        {
+            if (marked) lock (_sync) _grabPending = false;
+        }
     }
 
     /// <summary>구독자에게 프레임을 넘긴다 — <b>구독자가 던져도 우리가 하는 일은 달라지지 않는다</b>(ICam 계약).
@@ -145,6 +165,12 @@ public sealed class VideoCaptureCam : ICam
             ThrowIfDisposed();
             EnsureConnected();
             if (_liveThread != null) return;
+            // 단발 그랩이 장을 읽거나 내는 중이면 켜지 않는다 — 켜면 라이브의 장이 그 그랩을 부른 쪽의 구독(구독 → 그랩 → 반환)으로
+            // 들어가 제 답과 가릴 수 없다. 그랩이 읽는 동안 온 시작은 위 락에서 기다렸다가, 그랩이 아직 발행 중이면 여기서 던진다.
+            if (_grabPending)
+                throw new InvalidOperationException(
+                    "A single grab is waiting for its frame; continuous acquisition cannot start until it returns. " +
+                    "Wait for GrabOne() to return first.");
 
             _liveCts = new CancellationTokenSource();
             var token = _liveCts.Token;

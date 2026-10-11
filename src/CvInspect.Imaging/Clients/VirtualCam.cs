@@ -36,6 +36,12 @@ public sealed class VirtualCam : ICam
     private int _emitThreadId;   // 지금 틱을 도는 스레드 — 그 스레드가 부른 정지는 자기를 기다리면 안 된다
     private bool _disposed;
 
+    // 단발 그랩이 진행 중이다(_sync 아래에서 읽고 쓴다) — GrabOne 의 진입 검사에서 세우고, 틱 기다림·생성·발행이 끝나
+    // 돌아갈 때(예외로 끝나도) 내린다. 서 있는 동안 연속 시작과 두 번째 그랩은 던진다(ICam 계약). 없을 때는 둘 다 그대로 진행해,
+    // 붙잡힌 그랩의 장과 막 켜진 라이브(또는 다른 그랩)의 장이 같은 구독으로 섞여 들어왔다 — 부른 쪽은 어느 장이 제 답인지 모른다
+    // (LocalCamGrabContractTests: 그랩을 틱 기다림·이미지 읽기·발행에 붙잡아 두고 시작·그랩을 걸면 매번 섰다).
+    private bool _grabPending;
+
     // 정지가 기다리는 것 — 타이머의 폐기 대기(Dispose(WaitHandle))가 아니라 우리가 센 "발행 중인 틱". 폐기 대기는 그것을 부른 첫 정지만
     // 받아서, 겹쳐 부른 두 번째 정지·닫기·해제·단발 그랩은 기다리지 않고 돌아가 그 뒤에 옛 틱의 프레임이 나갔다(다음 단발 그랩의 답으로
     // 읽힌다 — 검토가 찾음). 그리고 폐기 대기가 도는 콜백을 기다리는지는 런타임 구현에 달려 있다(.NET 8 은 기다린다, 다른 런타임은 확인 안 함).
@@ -113,28 +119,38 @@ public sealed class VirtualCam : ICam
 
     public void GrabOne()
     {
-        lock (_sync)
+        var marked = false;   // 이 호출이 표식을 세웠다 — 진입 검사에서 던진 호출은 남(앞선 그랩)의 표식을 내리면 안 된다
+        try
         {
-            ThrowIfDisposed();
-            EnsureConnected();
-            // 연속 취득 중에는 답할 수 없다 — 여기서 한 장 더 내도 부른 쪽은 그것과 흐르던 장을 가릴 수 없다.
-            if (_timer != null)
-                throw new InvalidOperationException(
-                    "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
-                    "stream's. Call StopContinuous() first.");
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                EnsureConnected();
+                // 연속 취득 중에는 답할 수 없다 — 여기서 한 장 더 내도 부른 쪽은 그것과 흐르던 장을 가릴 수 없다.
+                if (_timer != null)
+                    throw new InvalidOperationException(
+                        "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
+                        "stream's. Call StopContinuous() first.");
+                // 그랩은 한 번에 하나다 — 둘이 함께 돌면 두 호출자의 구독에 서로의 장이 들어간다. 이 그랩이 낸 장의 핸들러가
+                // 같은 카메라를 되불러도 여기서 걸린다(ICam.FrameAcquired).
+                if (_grabPending)
+                    throw new InvalidOperationException(
+                        "A single grab is already waiting for its frame on this camera. Wait for that GrabOne() to return first.");
+                _grabPending = marked = true;
+            }
+            WaitTicksOutsideLock();   // 정지된 라이브의 마지막 틱이 아직 돌면 그 프레임이 이 그랩의 답으로 읽힌다
+            // 기다리는 사이(최대 1 s) 닫히거나 해제됐을 수 있다 — 다시 보고 낸다. 라이브는 다시 켜질 수 없다: 표식이 서 있는 동안 시작은 던진다.
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                EnsureConnected();
+            }
+            Emit(null);
         }
-        WaitTicksOutsideLock();   // 정지된 라이브의 마지막 틱이 아직 돌면 그 프레임이 이 그랩의 답으로 읽힌다
-        // 기다리는 사이(최대 1 s) 닫히거나 해제됐거나 라이브가 다시 켜졌을 수 있다 — 다시 보고 낸다.
-        lock (_sync)
+        finally
         {
-            ThrowIfDisposed();
-            EnsureConnected();
-            if (_timer != null)
-                throw new InvalidOperationException(
-                    "Continuous acquisition was started while the single grab waited, so the grab cannot tell its own " +
-                    "frame from the stream's. Call StopContinuous() first.");
+            if (marked) lock (_sync) _grabPending = false;
         }
-        Emit(null);
     }
 
     public void StartContinuous()
@@ -145,6 +161,12 @@ public sealed class VirtualCam : ICam
             ThrowIfDisposed();
             EnsureConnected();
             if (_timer != null) return;
+            // 단발 그랩이 장을 기다리거나 내는 중이면 켜지 않는다 — 켜면 라이브의 장이 그 그랩을 부른 쪽의 구독(구독 → 그랩 → 반환)으로
+            // 들어가 제 답과 가릴 수 없다. 기다리는 그랩은 틱을 기다리느라 최대 1 s 걸릴 수 있다(WaitTicksOutsideLock).
+            if (_grabPending)
+                throw new InvalidOperationException(
+                    "A single grab is waiting for its frame; continuous acquisition cannot start until it returns. " +
+                    "Wait for GrabOne() to return first.");
 
             var fps = _opt.FrameRate > 0 ? _opt.FrameRate : 30;
             var intervalMs = (int)Math.Max(1, Math.Round(1000.0 / fps));
