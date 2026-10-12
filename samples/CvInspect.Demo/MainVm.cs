@@ -213,7 +213,23 @@ public sealed partial class MainVm : ObservableObject, IDisposable
             if (ReferenceEquals(_cam, cam) && t.Result is not null) Status = $"grab failed: {t.Result}";
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
-    [RelayCommand] private void Live() => _cam?.StartContinuous();
+    /// <summary>라이브 시작 — 실패는 상태줄에 낸다. 단발 그랩이 장을 기다리는 동안의 시작은 던지고(ICam.StartContinuous), 소스를 여는
+    /// 중이면 "열려 있지 않다" 로 던진다. 둘 다 버튼 한 번에 나는 일이라, 커맨드 밖으로 새면 창이 통째로 닫힌다.
+    /// 그랩과 달리 UI 스레드에서 그대로 부른다 — 이 소스들의 시작은 붙잡지 않고(영상 소스는 진행 중인 한 장 읽기만큼 락에서 기다린다),
+    /// 다른 스레드로 넘기면 뒤이어 누른 Stop 이 먼저 돌아 멈춘 뒤에 라이브가 켜질 수 있다.</summary>
+    [RelayCommand]
+    private void Live()
+    {
+        if (_cam is not { } cam) return;
+        try
+        {
+            cam.StartContinuous();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Status = $"live failed: {ex.Message}";
+        }
+    }
     [RelayCommand] private void Stop() => _cam?.StopContinuous();
 
     /// <summary>우클릭 불러오기 — 받은 Mat 은 수신자 소유. CamFrame 으로 실체화한 뒤 바로 놓는다.</summary>

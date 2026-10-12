@@ -271,14 +271,45 @@ public sealed class VideoCaptureCam : ICam
         {
             LiveLoopCore(token);
         }
-        catch (ObjectDisposedException)
+        catch (ObjectDisposedException) when (token.IsCancellationRequested)
         {
-            // 정지와의 경합 — 토큰이 우리 발밑에서 놓였다. 정지하려던 참이므로 조용히 물러난다.
+            // 정지와의 경합 — 정지가 먼저 취소하고 나서 자원을 놓으므로, 취소가 서 있을 때만 이 경합이다. 정지하려던 참이므로 조용히 물러난다.
+            // 취소 없이 온 같은 형은 경합이 아니라 고장이라 아래로 간다 — 종전에는 이 갈래가 형만 보고 삼켜, 놓인 캡처를 읽다 죽은 루프가
+            // 로그 한 줄 없이 사라졌다(LocalCamGrabContractTests (5) disposed-capture).
         }
         catch (Exception ex)
         {
             WriteLog(CvLogLevel.Error, $"the live loop stopped on an unexpected error: {ex.GetType().Name}", ex);
         }
+        // 취소 없이 여기 왔다 = 루프가 우리 뜻과 무관하게 끝났다. 정지 경로의 취소는 정지가 상태를 내리고 알리므로 건드리지 않는다.
+        if (!token.IsCancellationRequested) LiveEndedBySelf();
+    }
+
+    /// <summary>라이브 루프가 정지 요청 없이 끝났을 때의 뒷정리 — <b>라이브 스레드 자신에서</b> 부른다.
+    /// 여기서 손을 놓으면 <see cref="_liveThread"/> 참조가 남아 <see cref="IsGrabbing"/> 이 영영 참으로 굳고, 꺼짐 통지가 안 나가며,
+    /// 다음 <see cref="StartContinuous"/> 는 "이미 도는 중" 으로 읽혀 <b>예외도 로그도 없이</b> 돌아간다 — 프레임은 영영 안 오는데 아무도
+    /// 모른다. 감싼 <see cref="ReconnectingCam"/> 도 그 꺼짐 통지로만 청하지 않은 정지를 알아 세션을 다시 세운다
+    /// (LocalCamGrabContractTests (5): 루프 안에 예외를 넣으면 종전에는 IsGrabbing=true·꺼짐 0번·세션 1개로 굳었다).
+    ///
+    /// <b>참조가 아직 이 스레드일 때만</b> 내린다 — 그 사이 정지가 먼저 닿았으면 통지는 그쪽이 냈고, 정지 뒤 다시 켰으면 지금 참조는 새 루프다
+    /// (여기서 지우면 멀쩡히 도는 새 라이브를 끈다). 상태를 락 안에서 먼저 내리고 통지는 락 밖에서 낸다(<see cref="ICam.GrabbingChanged"/> 의
+    /// 구현자 안내). 그래서 정지·닫기·해제와 겹쳐도 꺼짐은 먼저 내린 쪽이 한 번만 낸다.
+    /// 장치는 닫지 않는다 — 연결은 그대로 두고(<see cref="IsConnected"/> 참) 정리는 다음 닫기에 맡긴다.</summary>
+    private void LiveEndedBySelf()
+    {
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_liveThread, Thread.CurrentThread)) return;
+            _liveThread = null;
+            // 이 취소원을 만지는 것은 이 스레드와 정지뿐인데, 참조를 위에서 내렸으니 정지는 더 닿지 않고 이 스레드도 곧 끝난다 — 놓아도 된다.
+            _liveCts?.Dispose();
+            _liveCts = null;
+        }
+        WriteLog(CvLogLevel.Warning,
+            "the live loop ended without a stop request — continuous grab is no longer running. Call StartContinuous again.");
+        // 이 스레드에는 예외를 받을 사람이 없다 — 구독자가 던진 것은 여기서 받아 남긴다(삼키지 않는다).
+        try { GrabbingChanged?.Invoke(this, false); }
+        catch (Exception ex) { WriteLog(CvLogLevel.Error, "a GrabbingChanged subscriber threw.", ex); }
     }
 
     private void LiveLoopCore(CancellationToken token)
