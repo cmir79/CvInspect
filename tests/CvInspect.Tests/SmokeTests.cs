@@ -2625,12 +2625,19 @@ public class SmokeTests
         }
 
         // 11-0) 취득 라이브러리 진단이 CvLog 로 흐르는가 — 안 흐르면 설비에서 볼 수 있는 게 예외 문구뿐이다
+        // 자동 연결은 프로세스 전역 "꽂았다" 표식(GevLogBridge._attached)을 남겨 두 번째 GevCam 부터는 다시 꽂지 않는다. 그래서 이 항은
+        // 시작할 때 그 표식을 스스로 비운다 — 안 비우면 이 항이 프로세스의 첫 GevCam 일 때만 통과한다(다른 GevCam 시험이 먼저 돌면
+        // 빨강 — 실측: 그 순서를 한 시험 안에서 강제하면 비우기 전 빨강, 비운 뒤 초록). 끝나면 들어올 때의 값으로 되돌린다.
         {
             var seen = new List<string>();
             var prevSink = CvLog.Sink;
+            var bridgeAttached = typeof(CvInspect.Imaging.Gev.GevLogBridge)
+                .GetField("_attached", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var prevAttached = bridgeAttached.GetValue(null);
             CvLog.Sink = (lv, src, msg, _) => seen.Add($"{lv}|{src}|{msg}");
             try
             {
+                bridgeAttached.SetValue(null, false);
                 GevSharp.GevLog.Sink = null;
                 // 호스트가 창구를 안 꽂았으면 GevCam 생성이 자동으로 연결한다
                 using (var _ = new CvInspect.Imaging.Gev.GevCam(new CvInspect.Imaging.CamOpt { SerialNumber = "x" }))
@@ -2647,7 +2654,7 @@ public class SmokeTests
                 GevSharp.GevLog.Sink!(GevSharp.GevLogLevel.Info, "s", "m", null);
                 Check(mine == 1, "an existing host sink is left alone");
             }
-            finally { CvLog.Sink = prevSink; GevSharp.GevLog.Sink = null; }
+            finally { CvLog.Sink = prevSink; GevSharp.GevLog.Sink = null; bridgeAttached.SetValue(null, prevAttached); }
         }
 
         // 11-5) 위상 대수 — 시프트 표와 미러의 짝수/홀수 폭 의존
