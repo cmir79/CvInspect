@@ -107,7 +107,9 @@ public sealed partial class CvDispCtrl
 
     // 카메라 명령 셋은 WPF 버튼의 Command 와 같은 뜻이다 — CanExecute(null) 이 false 면 버튼이 회색이고 눌러도 실행하지 않으며,
     // CanExecuteChanged 가 오면 다시 묻는다(어느 스레드에서 올려도 된다 — UI 스레드로 넘겨 갱신하고, 올린 쪽으로 예외를 돌려보내지 않는다).
-    // 구독은 약한 구독이라 명령이 컨트롤보다 오래 살아도 컨트롤을 붙잡지 않는다. null 이면 버튼은 살아 있고 누르면 아무 일도 없다.
+    // 거절된 클릭 뒤에도 다시 묻는다 — 알림 없이 false 가 된 명령이면 그 클릭에서 회색이 된다. CanExecute 가 던지면 실행 가능으로 보고
+    // 명령 인스턴스마다 한 번 경고한다. 구독은 약한 구독이라 명령이 컨트롤보다 오래 살아도 컨트롤을 붙잡지 않는다. null 이면 버튼은
+    // 살아 있고 누르면 아무 일도 없다.
     // 근거와 세부는 CvDispCtrl.cs 의 SwapCamCommand·RefreshCamButtons·CanRun.
     private static void CamCommandChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         => ((CvDispCtrl)d).SwapCamCommand(e.OldValue as ICommand, e.NewValue as ICommand);
@@ -115,7 +117,9 @@ public sealed partial class CvDispCtrl
     public static readonly DependencyProperty GrabCommandProperty = DependencyProperty.Register(
         nameof(GrabCommand), typeof(ICommand), typeof(CvDispCtrl), new PropertyMetadata(null, CamCommandChanged));
 
-    /// <summary>단발 그랩 명령 (📸). CanExecute 가 false 인 동안 📸 는 회색이다.</summary>
+    /// <summary>단발 그랩 명령 (📸). CanExecute 가 false 인 동안 📸 는 회색이다. false 로 바꾸고 CanExecuteChanged 를 올리지 않았으면
+    /// 거절된 첫 클릭에서 회색이 된다. 다시 true 로 바꿀 때도 CanExecuteChanged 를 올려야 확실히 풀린다(그 밖에는 다른 재계산 —
+    /// 다른 카메라 명령의 알림·IsRunning 변화 — 이 우연히 풀 때뿐이다).</summary>
     public ICommand? GrabCommand
     {
         get => (ICommand?)GetValue(GrabCommandProperty);
@@ -149,7 +153,9 @@ public sealed partial class CvDispCtrl
 
     /// <summary>파일 로드 프레임 전달 명령 — 파라미터 Mat(소유권은 수신 측 — 다 쓰면 dispose 책임).
     /// VM 이 원본(테스트/학습 입력)으로 취급. 미지정이면 이 디스플레이는 파일을 못 받는다는 뜻이라,
-    /// 우클릭 메뉴의 불러오기와 무이미지 안내의 "우클릭 → 불러오기" 문구가 함께 사라진다.</summary>
+    /// 우클릭 메뉴의 불러오기와 무이미지 안내의 "우클릭 → 불러오기" 문구가 함께 사라진다.
+    /// 카메라 명령 셋과 달리 CanExecute 는 묻지 않는다 — 넘길 매개변수(Mat)가 파일 대화상자를 닫은 뒤에야 생겨 메뉴를 열 때 물을 값이
+    /// 없으므로 메뉴 항목은 CanExecute 와 무관하게 살아 있다. 바쁜 동안 막으려면 Execute 안에서 거절하되, 그때도 받은 Mat 은 해제한다.</summary>
     public ICommand? LoadFrameCommand
     {
         get => (ICommand?)GetValue(LoadFrameCommandProperty);

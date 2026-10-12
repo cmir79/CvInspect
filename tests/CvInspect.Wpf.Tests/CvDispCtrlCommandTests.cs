@@ -295,6 +295,92 @@ public class CvDispCtrlCommandTests
         finally { CvLog.Sink = prev; }
     });
 
+    /// <summary>(5) 거절된 📸 클릭은 버튼을 지금의 CanExecute 로 바로잡는다 — ⏯ 와 같게. 호스트가 CanExecute 를 false 로 바꾸고
+    /// CanExecuteChanged 를 올리지 않으면 버튼은 살아 보이는데 눌러도 아무 일이 없다. ⏯ 는 거절된 토글 뒤의 되돌림(SyncPlayState)이 다시
+    /// 물어 회색으로 바로잡혔고, 📸 는 거절만 하고 묻지 않아 죽은 채 살아 보이는 버튼으로 남았다(7650d05). 대조로 ⏯ 를 먼저 같은 순서로
+    /// 본다 — 📸 가 따라야 할 동작이 같은 런에서 실제로 돈다는 증거다. 알림을 빠뜨린 것은 호스트 잘못이지만, 클릭이 그 사실을 알려 준
+    /// 유일한 신호라 그때 바로잡는다.</summary>
+    [Fact]
+    public void ARefusedGrabClickGreysAStaleButtonLikePlay() => RunSta(() =>
+    {
+        var (ctrl, grab, play) = Make();
+        var grabCmd = new ProbeCmd { Can = true };
+        var liveCmd = new ProbeCmd { Can = true };
+        ctrl.GrabCommand = grabCmd;
+        ctrl.ContinuousCommand = liveCmd;
+
+        // 대조 — ⏯ : 시작 명령이 알림 없이 막혔다
+        liveCmd.Can = false;
+        var playStale = play.IsEnabled;
+        var liveAsked = liveCmd.Asks;
+        var peerT = PeerToggle(play);
+        Check(playStale && peerT is null && liveCmd.Asks > liveAsked,
+            $"control setup: ⏯ still looks live after its command turned false without a notification, and the toggle asked again " +
+            $"(enabled before={playStale}, peer toggle threw {Name(peerT)}, asks {liveAsked}->{liveCmd.Asks})");
+        Check(liveCmd.Runs == 0 && !play.IsEnabled && play.IsChecked == false,
+            $"control: a refused ⏯ toggle runs nothing and re-queries on the way out, so the stale button turns grey " +
+            $"(ran {liveCmd.Runs}x, enabled={play.IsEnabled}, checked={play.IsChecked})");
+
+        // 📸 : 같은 순서
+        grabCmd.Can = false;
+        var grabStale = grab.IsEnabled;
+        var grabAsked = grabCmd.Asks;
+        var peer = PeerClick(grab);
+        Check(grabStale && peer is null && grabCmd.Asks > grabAsked,
+            $"setup: 📸 still looks live after its command turned false without a notification, and the click asked again — " +
+            $"else the greying below proves nothing (enabled before={grabStale}, peer click threw {Name(peer)}, asks {grabAsked}->{grabCmd.Asks})");
+        Check(grabCmd.Runs == 0, $"the refused 📸 click runs nothing (ran {grabCmd.Runs}x)");
+        Check(!grab.IsEnabled,
+            $"a refused 📸 click re-queries like ⏯ does, so a button left live by a missed CanExecuteChanged turns grey instead of " +
+            $"staying a live-looking button that does nothing (enabled={grab.IsEnabled})");
+        var again = PeerClick(grab);
+        Check(again is ElementNotEnabledException && grabCmd.Runs == 0,
+            $"...and the next click meets a grey button (peer click threw {Name(again)}, ran {grabCmd.Runs}x)");
+    });
+
+    /// <summary>(6) 던지는 CanExecute 의 경고는 명령 인스턴스마다 한 번이다. 버튼 상태는 대입·알림·IsRunning 변화·클릭마다 다시 묻고,
+    /// CommandManager.RequerySuggested 로 알리는 명령이면 입력마다 다시 묻는다 — 7650d05 는 물을 때마다 같은 경고를 남겨 로그가 그것으로
+    /// 덮였다. 다른 인스턴스는 제 경고를 따로 낸다 — "프로세스에서 한 번" 으로 줄여 다른 명령의 고장까지 숨기지 않는지 함께 본다.</summary>
+    [Fact]
+    public void AThrowingCanExecuteIsWarnedOncePerCommandInstance() => RunSta(() =>
+    {
+        var (ctrl, grab, _) = Make();
+        var warnings = new List<string>();
+        var prev = CvLog.Sink;
+        CvLog.Sink = (level, src, msg, ex) =>
+        {
+            if (level == CvLogLevel.Warning && src == nameof(CvDispCtrl) && msg.Contains("CanExecute"))
+                lock (warnings) warnings.Add(msg);
+        };
+        lock (warnings) warnings.Clear();   // 붙는 순간 그동안 붙잡혀 있던 줄이 흘러든다 — 세는 것은 그 뒤의 것이다
+        try
+        {
+            var bad = new ProbeCmd { Can = true, Throws = true };
+            ctrl.GrabCommand = bad;                                   // 대입
+            bad.Raise(); bad.Raise(); bad.Raise();                    // 알림 셋
+            ctrl.IsRunning = true; ctrl.IsRunning = false;            // ⏯ 되돌림이 📸 도 다시 묻는다
+            RawClick(grab); RawClick(grab);                           // 클릭 길
+            string[] first;
+            lock (warnings) first = [.. warnings];
+            Check(bad.Asks >= 5 && bad.Runs == 2,
+                $"setup: the throwing CanExecute was asked again and again (asked {bad.Asks}x, want >= 5) and clicks still reached Execute " +
+                $"(ran {bad.Runs}x, want 2) — else a single warning proves nothing");
+            Check(first.Length == 1,
+                $"a CanExecute that throws on every re-query is warned once for that command instance, not once per query — " +
+                $"asked {bad.Asks}x, warned {first.Length}x: [{string.Join(" | ", first)}]");
+
+            var other = new ProbeCmd { Can = true, Throws = true };
+            ctrl.ContinuousCommand = other;                           // ⏯ 는 멈춰 있어 이 명령이 정한다
+            other.Raise(); other.Raise();
+            string[] both;
+            lock (warnings) both = [.. warnings];
+            Check(other.Asks >= 2 && both.Length == 2,
+                $"a second throwing command instance gets its own single warning — the once is per instance, not once for the process " +
+                $"(second asked {other.Asks}x, warnings now {both.Length}, want 2): [{string.Join(" | ", both)}]");
+        }
+        finally { CvLog.Sink = prev; }
+    });
+
     /// <summary>시험용 명령 — CanExecute 값을 바꾸고 알림을 직접 올리며, 구독을 실제로 보관해 그 수를 센다.</summary>
     private sealed class ProbeCmd : ICommand
     {
@@ -302,6 +388,7 @@ public class CvDispCtrlCommandTests
         public bool Can { get; set; }
         public bool Throws { get; init; }
         public int Runs { get; private set; }
+        public int Asks { get; private set; }
         public int Adds { get; private set; }
         public int Removes { get; private set; }
         public int Subscribers => _changed?.GetInvocationList().Length ?? 0;
@@ -312,7 +399,12 @@ public class CvDispCtrlCommandTests
             remove { Removes++; _changed -= value; }
         }
 
-        public bool CanExecute(object? parameter) => Throws ? throw new InvalidOperationException("probe CanExecute failure") : Can;
+        /// <summary>던지기 전에 센다 — 던지는 명령도 물은 횟수가 남아야 "다시 물었다" 를 단언할 수 있다.</summary>
+        public bool CanExecute(object? parameter)
+        {
+            Asks++;
+            return Throws ? throw new InvalidOperationException("probe CanExecute failure") : Can;
+        }
         public void Execute(object? parameter) => Runs++;
         public void Raise() => _changed?.Invoke(this, EventArgs.Empty);
     }

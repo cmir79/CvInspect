@@ -2,6 +2,7 @@
 // 렌더·입력은 내부 서피스(CvDispSurface)가 맡고, 바인딩 표면은 CvDispCtrl.Props.cs 에 있다.
 
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -55,11 +56,18 @@ public sealed partial class CvDispCtrl : Grid
         DockPanel.SetDock(_camPanel, Dock.Left);
 
         // 활성 여부는 RefreshCamButtons 가 명령의 CanExecute 로 정한다. 클릭에서도 다시 묻는다 — 회색이 되기 전에 이미 들어와 있던
-        // 클릭(자동화·큐에 쌓인 입력)이 막힌 명령을 실행하면 안 된다.
+        // 클릭(자동화·큐에 쌓인 입력)이 막힌 명령을 실행하면 안 된다. 거절하면 버튼 상태도 다시 정한다(⏯ 는 OnPlayToggle 의 되돌림이 같은
+        // 일을 한다): 호스트가 CanExecuteChanged 없이 CanExecute 를 false 로 바꿨다면 이 클릭이 그것을 알려 준 유일한 신호이고, 다시 정하지
+        // 않으면 버튼이 살아 보이는데 눌러도 아무 일이 없는 채로 남는다(7650d05 실측 — 회귀 ARefusedGrabClickGreysAStaleButtonLikePlay).
+        // 실행한 뒤에는 다시 묻지 않는다 — 바쁨 표식을 Execute 안에서 세우는 명령이면 매 클릭이 버튼을 회색으로 만들고, 그 명령이 풀 때
+        // 알리지 않으면 회색이 다음 알림까지 남는다. 거절 뒤 회색도 같은 이유로 다음 알림까지 남지만, 그때는 그것이 명령의 지금 답이다.
+        // (⏯ 의 되돌림은 실행 뒤에도 다시 정한다 — IsRunning 을 맞추는 길에 딸려 오는 것이다.)
         _grabBtn = MakeToolButton("📸", "Grab");
         _grabBtn.Click += (_, _) =>
         {
-            if (GrabCommand is { } cmd && CanRun(cmd)) cmd.Execute(null);
+            if (GrabCommand is not { } cmd) return;
+            if (CanRun(cmd)) cmd.Execute(null);
+            else RefreshCamButtons();
         };
         _camPanel.Children.Add(_grabBtn);
 
@@ -309,9 +317,11 @@ public sealed partial class CvDispCtrl : Grid
     // === 카메라 버튼과 명령의 CanExecute ===
     // 0.30.0 까지는 두 버튼이 Execute 를 직접 불러 CanExecute 를 한 번도 묻지 않았다 — 호스트가 촬영 중에 명령을 막아 둬도 버튼이
     // 살아 있고 눌렸다. 이제 WPF 버튼의 Command 와 같은 뜻을 따른다: false 면 회색이고 실행하지 않으며, CanExecuteChanged 가 오면 다시 묻는다.
-    // WPF 버튼과 다른 점 둘(그 버튼의 처리기는 알림을 올린 스레드에서 바로 IsEnabled 를 다시 계산하고, CanExecute 의 예외를 그대로 흘린다 —
+    // WPF 버튼과 다른 점 셋(그 버튼의 처리기는 알림을 올린 스레드에서 바로 IsEnabled 를 다시 계산하고, CanExecute 의 예외를 그대로 흘린다 —
     // 원문 확인): 다른 스레드에서 온 알림은 UI 스레드로 넘기고, CanExecute 가 던져도 알림을 올린 쪽으로 돌려보내지 않는다. 알림을 올리는
     // 쪽은 흔히 바쁨 표식을 세운 직후 try 밖에서 올리므로, 여기서 던지면 그 표식이 안 풀린 채 남아 카메라 명령이 영구히 막힌다.
+    // 셋째로 거절된 클릭 뒤에 버튼 상태를 다시 정한다(📸 는 Click 처리기, ⏯ 는 OnPlayToggle 의 되돌림) — 알림을 빠뜨린 명령에서 살아 보이는
+    // 죽은 버튼이 남지 않게. WPF 버튼의 클릭 길은 CanExecute 가 false 면 Execute 를 건너뛸 뿐 IsEnabled 는 다시 계산하지 않는다(원문 확인).
 
     /// <summary>명령 속성이 바뀌면 옛 명령의 구독을 놓고 새 명령에 건다. 구독은 <see cref="CanExecuteChangedEventManager"/>(약한 구독)로
     /// 건다 — WPF 버튼이 Command 를 들을 때와 같은 길이다. 명령은 대개 컨트롤보다 오래 사는 view-model 이 들고 있어, 보통 구독이면 버려진
@@ -335,8 +345,8 @@ public sealed partial class CvDispCtrl : Grid
 
     /// <summary>📸·⏯ 의 활성을 지금의 명령으로 다시 정한다. 명령이 없으면 종전대로 살아 있다. ⏯ 는 눌렀을 때 낼 명령이 정한다 —
     /// 돌고 있으면(IsRunning) StopCommand, 멈춰 있으면 ContinuousCommand. 시작 명령 하나로 정하면 시작이 막힌 사이에 라이브를 끌 수
-    /// 없게 된다. 그래서 IsRunning 이 바뀔 때도 다시 정한다(SyncPlayState). 활성만 바꾸고 색은 넣지 않는다 — 회색은 호스트의 버튼
-    /// 스타일이 그린다. ⏯ 에 넣어 둔 강조색은 그대로 두어도 된다: 기본 버튼 스타일의 비활성 트리거가 그 위를 덮는다(실측, Windows 기본
+    /// 없게 된다. 그래서 IsRunning 이 바뀔 때도 다시 정한다(SyncPlayState). 거절된 클릭 뒤에도 다시 정한다(📸 Click 처리기·⏯ 되돌림).
+    /// 활성만 바꾸고 색은 넣지 않는다 — 회색은 호스트의 버튼 스타일이 그린다. ⏯ 에 넣어 둔 강조색은 그대로 두어도 된다: 기본 버튼 스타일의 비활성 트리거가 그 위를 덮는다(실측, Windows 기본
     /// 테마·96DPI 오프스크린: 멈춘 ⏯ 가 살아 있으면 정지 강조색 화소 1409, 회색이면 0 이고 #F4F4F4 로 그려진다).</summary>
     private void RefreshCamButtons()
     {
@@ -345,9 +355,19 @@ public sealed partial class CvDispCtrl : Grid
         _playBtn.IsEnabled = next is null || CanRun(next);
     }
 
-    /// <summary>CanExecute 를 null 로 묻는다 — 버튼이 Execute 에 넘기는 값도 늘 null 이다. 던지면 실행 가능으로 보고 경고만 남긴다:
-    /// 이 판 전에는 CanExecute 를 묻지 않았으니 그것이 종전 동작이고(클릭은 Execute 에 닿고, 고장 난 명령이면 거기서 종전대로 던진다),
-    /// 회색으로 바꾸면 요란하던 실패가 조용히 굳은 버튼이 된다.</summary>
+    /// <summary>CanExecute 가 던졌다고 이미 경고한 명령 인스턴스. 약한 키라 명령의 수명을 늘리지 않고, 참조로 찾으므로 명령이 Equals 를
+    /// 바꿔도 인스턴스별이다. 정적이라 같은 명령을 여러 컨트롤에 묶어도 한 번이다. 값은 처음 던진 예외의 형식이다(디버거에서 볼 진단용 —
+    /// 코드는 읽지 않는다).</summary>
+    private static readonly ConditionalWeakTable<ICommand, object> _canExecuteThrowWarned = new();
+
+    /// <summary>CanExecute 를 null 로 묻는다 — 버튼이 Execute 에 넘기는 값도 늘 null 이다. 던지면 실행 가능으로 본다: 이 판 전에는
+    /// CanExecute 를 묻지 않았으니 그것이 종전 동작이고(버튼은 살아 있고 클릭은 Execute 에 닿는다 — 고장 난 명령이면 거기서 종전대로 던진다),
+    /// 회색으로 바꾸면 요란하던 실패가 조용히 굳은 버튼이 된다.
+    /// 경고는 명령 인스턴스마다 한 번만 남긴다. 버튼 상태는 대입·알림·IsRunning 변화·클릭마다 다시 묻고, CommandManager.RequerySuggested 로
+    /// 알리는 명령이면 입력마다 묻는다 — 물을 때마다 남기면 같은 줄이 로그를 덮는다(실측: 던지는 명령 하나를 📸 에 걸고 대입 1·알림 3·
+    /// IsRunning 왕복 2·클릭 2 → 8번 물었고 7650d05 는 경고 8줄을 남겼다 — 회귀 AThrowingCanExecuteIsWarnedOncePerCommandInstance). 그 뒤의
+    /// 예외는 남기지 않으니 문구에 그것을 밝힌다. 문구는 상태 갱신 길과 클릭 길 모두에서 참인 것만 적는다 — 7650d05 의 "the button is left
+    /// enabled" 는 클릭 길에서 실제로 일어난 일(그대로 실행)을 말하지 않았다.</summary>
     private static bool CanRun(ICommand cmd)
     {
         try
@@ -356,8 +376,10 @@ public sealed partial class CvDispCtrl : Grid
         }
         catch (Exception ex)
         {
-            CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
-                $"{cmd.GetType().Name}.CanExecute threw; the button is left enabled as if the command had no CanExecute.", ex);
+            if (_canExecuteThrowWarned.TryAdd(cmd, ex.GetType()))
+                CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
+                    $"{cmd.GetType().Name}.CanExecute threw; treating the command as runnable, so the throw does not grey its button " +
+                    "and clicks still reach Execute. Logged once per command instance; later throws from it are not logged.", ex);
             return true;
         }
     }
