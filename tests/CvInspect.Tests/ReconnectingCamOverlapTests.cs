@@ -110,6 +110,21 @@ public class ReconnectingCamOverlapTests
         /// <summary>다음 시작 하나를 거절한다(던진다) — GevCam: 그 틈에 단발 그랩이 기다린다.</summary>
         public volatile bool RefuseNextStart;
 
+        /// <summary>다음 정지 하나가 안쪽을 끄기 <b>전에</b> 던진다 — 라이브는 계속 돈다. 장치 계층이 닫기와 겹친 요청에
+        /// <see cref="ObjectDisposedException"/> 을 내는 갈래의 모양(ICam 은 정지가 던지지 않는다고 약속하지 않는다).</summary>
+        public volatile bool ThrowNextStopBeforeOff;
+        /// <summary>다음 정지 하나가 안쪽을 끈 <b>뒤</b> 꺼짐 통지 없이 던진다 — 멈추기는 했는데 그 뒤에서 실패한 모양.</summary>
+        public volatile bool ThrowNextStopAfterOff;
+        private int _stopsThrown;
+        /// <summary>정지가 실제로 던진 수.</summary>
+        public int StopsThrown => Volatile.Read(ref _stopsThrown);
+
+        private ObjectDisposedException StopFailure()
+        {
+            Interlocked.Increment(ref _stopsThrown);
+            return new ObjectDisposedException(nameof(GateCam), "fake: the stop request overlapped a close");
+        }
+
         private Action? _readHookOnConcede;
         /// <summary>시작을 무른 스레드의 다음 <see cref="IsGrabbing"/> 읽기에 걸 고리 — 부른 쪽이 "안 켜졌다" 를 읽은 뒤·정하기 전에 끼어든다.</summary>
         public Action? ReadHookOnConcede { set => Volatile.Write(ref _readHookOnConcede, value); }
@@ -230,6 +245,7 @@ public class ReconnectingCamOverlapTests
             try
             {
                 if (Interlocked.Exchange(ref _onStopEntry, null) is { } entry) entry();
+                if (ThrowNextStopBeforeOff) { ThrowNextStopBeforeOff = false; throw StopFailure(); }
                 Interlocked.Increment(ref _stops);   // GevCam 과 같이 락 전에 센다 — 락을 기다리는 시작이 부를 때 뜬 값과 견준다
                 bool stopped;
                 lock (_sync)
@@ -238,6 +254,7 @@ public class ReconnectingCamOverlapTests
                     stopped = _on;
                     _on = false;
                 }
+                if (ThrowNextStopAfterOff) { ThrowNextStopAfterOff = false; throw StopFailure(); }   // 꺼짐 통지를 내지 않는다
                 if (!stopped) return;
                 if (Interlocked.Exchange(ref _stopNotifyGate, null) is { } gate)
                 {
@@ -316,23 +333,26 @@ public class ReconnectingCamOverlapTests
 
     /// <summary>끝 상태 세 값 — 표시·실제가 마지막에 불린 명령과 같은 말을 하고, 멀쩡한 세션은 다시 지어지지 않았으며(교체는 연결 상실만),
     /// 통지는 전이만 났다. 의도는 고장을 일으켜 드러낸다 — 고장 뒤 라이브가 되살아나면 의도가 켜짐이다. 그래서 이 단언은 "진짜 고장은 여전히
-    /// 되살아난다" 도 함께 본다. <paramref name="streamCollapse"/> 면 연결 상실 대신 취득만 죽인다(세션 교체로 되살아나야 한다).</summary>
-    private static void CheckEndTriple(Rig r, bool on, string tag, bool streamCollapse = false)
+    /// 되살아난다" 도 함께 본다. <paramref name="streamCollapse"/> 면 연결 상실 대신 취득만 죽인다(세션 교체로 되살아나야 한다).
+    /// <paramref name="intent"/> 는 의도가 표시·실제와 갈려야 하는 경우만 준다(던진 정지: 라이브는 돌고 의도는 꺼짐) — 생략하면 <paramref name="on"/> 과 같다.</summary>
+    private static void CheckEndTriple(Rig r, bool on, string tag, bool streamCollapse = false, bool? intent = null)
     {
         var inner = r.Inner;
+        var want = intent ?? on;
         Check(WaitFor(() => r.Cam.IsReconnectIdle), $"{tag}: no reconnect round is left running");
         Check(r.Made.Count == 1 && r.Conn.Snapshot().SequenceEqual(new[] { true }) && !r.Log.Any("without being asked"),
             $"{tag}: the healthy session is not rebuilt — only a lost connection replaces it (instances={r.Made.Count}, connection edges [{r.Conn}]) [{r.Log}]");
         Check(r.Cam.IsGrabbing == on && inner.IsGrabbing == on,
-            $"{tag}: the command called last wins — expected {(on ? "live" : "off")} (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing})");
+            $"{tag}: {(intent is null ? "the command called last wins" : "the display follows what runs")} — expected {(on ? "live" : "off")} (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing})");
         CheckNotices(r, tag);
 
-        if (streamCollapse && on) inner.StopGrabbingOnItsOwn();
+        var collapse = streamCollapse && on && want;
+        if (collapse) inner.StopGrabbingOnItsOwn();
         else inner.LoseConnection();
         Check(WaitFor(() => r.Made.Count == 2 && r.Cam.IsConnected && r.Cam.IsReconnectIdle),
-            $"{tag}: a real fault ({(streamCollapse && on ? "the stream collapsed" : "the connection was lost")}) is still recovered (instances={r.Made.Count})");
-        Check(r.Cam.IsGrabbing == on && r.Made[1].IsGrabbing == on,
-            $"{tag}: the hidden intent agrees — the recovery {(on ? "resumes" : "does not start")} live (wrapper={r.Cam.IsGrabbing}, new inner={r.Made[1].IsGrabbing})");
+            $"{tag}: a real fault ({(collapse ? "the stream collapsed" : "the connection was lost")}) is still recovered (instances={r.Made.Count})");
+        Check(r.Cam.IsGrabbing == want && r.Made[1].IsGrabbing == want,
+            $"{tag}: the hidden intent agrees — the recovery {(want ? "resumes" : "does not start")} live (wrapper={r.Cam.IsGrabbing}, new inner={r.Made[1].IsGrabbing})");
         CheckNotices(r, $"{tag} after recovery");
     }
 
@@ -502,6 +522,61 @@ public class ReconnectingCamOverlapTests
         finally { zGate.Set(); aGate.Set(); }
         Check(z.Join(5000), "LB: Z returns");
         CheckEndTriple(r, on: false, "LB");
+    }
+
+    /// <summary>
+    /// (e) LC — LA 고침이 바꾼 동작을 못 박는다: LA 의 자리에서 정지 X 가 <b>돌아온 뒤</b>·Z 가 아직 꺼짐 통지를 붙잡고 있는 사이에 화면의 ⏯ 토글이
+    /// 눌리면 이제 <b>시작</b>으로 간다 — X 가 꺼진 안쪽 위에서 표시를 꺼짐으로 내리고 돌아오기 때문이다. 고치기 전에는 X 가 켜짐을 남기고 돌아와
+    /// (이 항의 첫 전제가 거기서 빨갛다) 토글이 정지로 갔다 — 라이브를 켜려고 누른 사람에게 정지가 나갔다. 토글의 시작은 라이브를 켜고, 안쪽 시작에
+    /// 붙잡혀 있던 앞 시작은 이미 도는 라이브를 보고 할 일 없이 돌아오며, Z 의 꺼짐 통지는 우리 정지의 메아리로 읽혀 그 라이브를 끄지 않는다 —
+    /// 끝은 세 값 모두 켜짐. (LB 는 X 가 돌아오기 <b>전의</b> 토글이라 정지로 가고, 이 항은 돌아온 <b>뒤의</b> 토글이다 — 둘이 함께 이 동작 변화의 경계다.)
+    /// </summary>
+    [Fact]
+    public void LcToggleAfterTheStopReturnsRoutesToStartAndEndsLive()
+    {
+        using var r = new Rig();
+        var inner = r.OpenLive("LC");
+        var zGate = new ManualResetEventSlim();
+        var aGate = new ManualResetEventSlim();
+        Thread? a = null;
+        var aParked = false;
+        string? routed = null;
+        var z = new Thread(r.Cam.StopContinuous) { IsBackground = true };
+        try
+        {
+            inner.StopNotifyGate = zGate;
+            z.Start();
+            Check(WaitFor(() => inner.IsStopping), "LC: premise — Z has turned the inner off and holds its off-notice");
+            inner.StartGate = aGate;
+            inner.OnStopEntry = () =>
+            {
+                a = new Thread(r.Cam.StartContinuous) { IsBackground = true };
+                a.Start();
+                aParked = WaitFor(() => inner.IsStarting);
+            };
+            r.Cam.StopContinuous();                                                    // X
+            Check(aParked && !inner.IsGrabbing && inner.IsStopping,
+                $"LC: premise — ⏯ waits inside the inner start, the inner is off and Z still holds its off-notice when X returns (parked={aParked}, inner={inner.IsGrabbing})");
+            Check(!r.Cam.IsGrabbing,
+                $"LC: premise — X returned with live reported off over the stopped inner (wrapper={r.Cam.IsGrabbing}); before the LA fix it stayed live and the toggle below routed to stop");
+            // 화면의 ⏯ 토글 — 지금 표시를 읽고 반대 명령을 낸다
+            if (r.Cam.IsGrabbing) { routed = "stop"; r.Cam.StopContinuous(); }
+            else { routed = "start"; r.Cam.StartContinuous(); }
+            Check(routed == "start",
+                $"LC: a toggle pressed after X returned routes to start — the display it reads says off because nothing runs (routed={routed})");
+            Check(r.Cam.IsGrabbing && inner.IsGrabbing && inner.IsStopping,
+                $"LC: the toggle's start lights live and reports it while Z still finishes (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing}, lit={inner.StartsLit})");
+            aGate.Set();
+            Check(a!.Join(5000), "LC: ⏯ returns");
+            Check(inner.StartsAlreadyOn == 1 && inner.StartsConceded == 0,
+                $"LC: premise — the parked ⏯ found live already running (alreadyOn={inner.StartsAlreadyOn}, conceded={inner.StartsConceded})");
+            Check(r.Cam.IsGrabbing && inner.IsGrabbing,
+                $"LC: live still runs and is reported after the parked ⏯ returns (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing})");
+            CheckNotices(r, "LC before Z's notice");
+        }
+        finally { zGate.Set(); aGate.Set(); }
+        Check(z.Join(5000), "LC: Z returns");
+        CheckEndTriple(r, on: true, "LC");
     }
 
     /// <summary>
@@ -676,5 +751,49 @@ public class ReconnectingCamOverlapTests
         Check(!r.Cam.IsGrabbing && !inner.IsGrabbing,
             $"R3: the stop called last wins over a late on-notice read before it (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing}) [{r.Grab}]");
         CheckEndTriple(r, on: false, "R3");
+    }
+
+    /// <summary>
+    /// (j) J1 — 안쪽 정지가 라이브를 끈 뒤 꺼짐 통지 없이 <b>던진다</b>(장치 계층이 닫기와 겹친 요청에 ObjectDisposedException 을 내는 갈래 —
+    /// ICam 은 정지가 던지지 않는다고 약속하지 않는다). 감싼 쪽 정지는 그 예외에 표시 내리기 꼬리를 통째로 건너뛰어, 의도도 안쪽도 꺼짐인데
+    /// IsGrabbing=true 가 다음 명령·재연결까지 남았다 — 그 사이 "라이브 중이면 단발 그랩을 막는다" 같은 가드는 도는 줄 알고 막는다.
+    /// 결정적이다: 다른 스레드 없이 순서가 하나뿐이다. 부른 쪽은 안쪽의 예외를 그대로 받는다(실패한 정지가 성공처럼 보이면 안 된다).
+    /// </summary>
+    [Fact]
+    public void J1StopThatThrowsAfterTurningLiveOffLowersTheDisplay()
+    {
+        using var r = new Rig();
+        var inner = r.OpenLive("J1");
+        inner.ThrowNextStopAfterOff = true;
+        var ex = Record.Exception(() => r.Cam.StopContinuous());
+        Check(inner.StopsThrown == 1 && !inner.IsGrabbing,
+            $"J1: premise — the inner stop turned live off and threw without an off-notice (thrown={inner.StopsThrown}, inner={inner.IsGrabbing})");
+        Check(ex is ObjectDisposedException && ex.Message.Contains("fake:"),
+            $"J1: the caller receives the inner stop's exception as it is — a failed stop must not look like a success ({ex?.GetType().Name}: {ex?.Message})");
+        Check(!r.Cam.IsGrabbing,
+            $"J1: a stop whose inner call threw after turning live off still lowers the display — skipping the tail on the exception left IsGrabbing=true over a stopped inner with the intent off (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing}) [{r.Grab}]");
+        CheckEndTriple(r, on: false, "J1");
+    }
+
+    /// <summary>
+    /// (j) J2 — J1 의 짝: 안쪽 정지가 라이브를 끄기 <b>전에</b> 던진다(라이브는 계속 돈다). 표시는 사실대로 켜짐으로 남아야 한다 — 정지 꼬리를
+    /// 예외 경로에서도 타게 하면서 <b>의도</b>(꺼짐)로 내리면 도는 라이브를 꺼짐으로 덮는다. 정상 반환한 정지에서는 "의도 꺼짐" 이 곧 "방금 멈췄다" 지만
+    /// 던진 정지에서는 아니다. 의도는 마지막 명령인 정지대로 꺼짐이다 — 재연결이 라이브를 되살리지 않는다(예외를 받은 쪽이 다시 멈출지 정한다).
+    /// 고치기 전에도 초록이다(꼬리를 건너뛰어 표시가 그대로였다) — J1 의 고침이 넘지 말아야 할 선이다.
+    /// </summary>
+    [Fact]
+    public void J2StopThatThrowsBeforeTurningLiveOffKeepsLiveReported()
+    {
+        using var r = new Rig();
+        var inner = r.OpenLive("J2");
+        inner.ThrowNextStopBeforeOff = true;
+        var ex = Record.Exception(() => r.Cam.StopContinuous());
+        Check(inner.StopsThrown == 1 && inner.IsGrabbing,
+            $"J2: premise — the inner stop threw before turning live off; live still runs (thrown={inner.StopsThrown}, inner={inner.IsGrabbing})");
+        Check(ex is ObjectDisposedException && ex.Message.Contains("fake:"),
+            $"J2: the caller receives the inner stop's exception as it is ({ex?.GetType().Name}: {ex?.Message})");
+        Check(r.Cam.IsGrabbing,
+            $"J2: a stop whose inner call threw before turning live off leaves live reported — the display follows what runs, not the intent the failed stop set (wrapper={r.Cam.IsGrabbing}, inner={inner.IsGrabbing}) [{r.Grab}]");
+        CheckEndTriple(r, on: true, "J2", intent: false);
     }
 }
