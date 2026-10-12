@@ -202,25 +202,43 @@ public sealed class GevCam : ICam, ICamGrabAsync
     public void Open()
     {
         string opened;
-        lock (_sync)
+        var foldedGrabbing = false;
+        try
         {
-            ThrowIfDisposed();
-            // 제어를 잃은 세션은 장치 참조만 남아 있고 쓸 수는 없다. 그 상태에서 _dev 만 보고 돌아가면
-            // "이미 열려 있다" 로 읽혀 예외도 로그도 없이 아무 일도 일어나지 않는다 — 부른 쪽은 다시
-            // 열렸다고 여긴 채 오지 않을 프레임을 기다린다. 부른 뜻은 "다시 열어라" 이므로 먼저 접는다.
-            // 통지는 내지 않는다 — 끊겼다는 말은 제어 상실 때 이미 나갔고, 여기서 한 번 더 내면
-            // 연결이 false 로 두 번 떨어졌다가 올라온 것처럼 보인다.
-            if (_dev != null && !IsConnected)
+            lock (_sync)
             {
-                WriteLog(CvLogLevel.Info, "reopening after control loss — folding the dead session first");
-                CloseWhileLocked();
+                ThrowIfDisposed();
+                // 제어를 잃은 세션은 장치 참조만 남아 있고 쓸 수는 없다. 그 상태에서 _dev 만 보고 돌아가면
+                // "이미 열려 있다" 로 읽혀 예외도 로그도 없이 아무 일도 일어나지 않는다 — 부른 쪽은 다시
+                // 열렸다고 여긴 채 오지 않을 프레임을 기다린다. 부른 뜻은 "다시 열어라" 이므로 먼저 접는다.
+                // 끊김은 내지 않는다 — 끊겼다는 말은 제어 상실 때 이미 나갔고, 여기서 한 번 더 내면 연결이 false 로 두 번
+                // 떨어졌다가 올라온 것처럼 보인다(연결 표시가 이미 내려가 있어 CloseWhileLocked 가 끊김 대상으로 세지 않는다).
+                // ⚠ **꺼짐은 낸다 — 접을 때 펌프가 돌고 있을 수 있다.** 제어 상실(OnControlLost)은 그때 돌던 펌프를 접고 꺼짐을
+                // 알렸지만, 상실 뒤 다시 열기 전에 불린 StartContinuous 가 펌프를 새로 세우는 갈래가 있다: 부를 때부터 끊겨 있던 시작은
+                // 장치 명령의 예외로 던지게 두었는데, 모드 쓰기가 장치에 닿지 않으면 그 예외가 안 난다 — AcquisitionMode 노드나 그
+                // Continuous 항목이 없는 기종, 그리고 모드 잠금을 취득 계층이 쓴 값을 기억하는 캐시로 판정하는 기종에서 상실 순간 라이브가
+                // 돌고 있던 경우(상실은 AcquisitionStop 을 보내지 않아 캐시가 잠김으로 남고 모드 쓰기가 호스트에서 거절된다 — GrabOnceAsync 의
+                // 잠금 주석, 검토가 가짜 장치로 재현). "라이브 중 케이블이 빠짐 → 라이브 버튼" 이 바로 그 순서다. 그러면 AcquisitionStart 의
+                // 제어 상실 예외는 TryExecuteAsync 가 Debug 로 삼켜, 시작이 던지지 않고 켜짐을 알린다(회귀 10-G-25 의 앞 절은 노드가 없는
+                // 쪽으로 그 갈래를 실행으로 돌린다). 그 펌프를 여기서 접으며 꺼짐을 버리던 때는
+                // IsGrabbing=false 인데 마지막 통지가 true 로 남았다. 열기가 실패해도 펌프는 이미 접혔으므로 finally 에서 낸다 — 연결
+                // 통지보다 먼저, 락 밖에서.
+                if (_dev != null && !IsConnected)
+                {
+                    WriteLog(CvLogLevel.Info, "reopening after control loss — folding the dead session first");
+                    CloseWhileLocked(out foldedGrabbing, out _);
+                }
+                if (_dev != null) return;
+                Run(OpenCoreAsync);
+                IsConnected = true;
+                // 문구는 락 안에서 뜬다 — 밖에서 장치를 읽으면 곧바로 닫는 흐름과 겹친 순간 신원도 주소도
+                // 빠진 줄이 남는다.
+                opened = DescribeOpened();
             }
-            if (_dev != null) return;
-            Run(OpenCoreAsync);
-            IsConnected = true;
-            // 문구는 락 안에서 뜬다 — 밖에서 장치를 읽으면 곧바로 닫는 흐름과 겹친 순간 신원도 주소도
-            // 빠진 줄이 남는다.
-            opened = DescribeOpened();
+        }
+        finally
+        {
+            if (foldedGrabbing) GrabbingChanged?.Invoke(this, false);
         }
         ConnectionChanged?.Invoke(this, new ConnArgs(true));
         // 이름과 장치 신원을 한 번 이어 둔다 — 취득 라이브러리는 자기 줄에 주소를 달고 우리 이름은
@@ -425,31 +443,45 @@ public sealed class GevCam : ICam, ICamGrabAsync
 
     public void Close()
     {
-        bool closed;
+        bool closed, wasGrabbing, wasConnected;
         lock (_sync)
         {
             if (_disposed) return;
-            closed = CloseWhileLocked();
+            closed = CloseWhileLocked(out wasGrabbing, out wasConnected);
         }
-        if (closed) RaiseClosed();
+        if (closed) RaiseClosed(wasGrabbing, wasConnected);
     }
 
-    /// <summary><see cref="_sync"/> 보유 전제. 열려 있었으면 정리하고 <c>true</c>.</summary>
-    private bool CloseWhileLocked()
+    /// <summary><see cref="_sync"/> 보유 전제. 열려 있었으면 정리하고 <c>true</c>.
+    /// <paramref name="wasGrabbing"/> 은 닫기 직전 연속 취득이 실제로 돌고 있었는가다 — 펌프를 접은 그 자리에서 정한다(락 안).
+    /// <paramref name="wasConnected"/> 는 닫기 직전 연결 표시가 서 있었는가다 — 제어를 잃은 세션은 이미 내려가 있다(끊김은 상실이 냈다).</summary>
+    private bool CloseWhileLocked(out bool wasGrabbing, out bool wasConnected)
     {
+        wasGrabbing = false;
+        wasConnected = false;
         if (_dev is null) return false;
         AbortGrabWhileLocked("The camera was closed while the single grab waited for its frame.");
-        StopPumpCore();
+        wasGrabbing = StopPumpCore();
+        wasConnected = IsConnected;
         Run(CloseCoreAsync, CancellationToken.None);
         IsConnected = false;
         return true;
     }
 
-    /// <summary>닫힘 통지 — <b>락 밖에서</b> 부른다. 핸들러가 이 카메라를 다시 부를 수 있다.</summary>
-    private void RaiseClosed()
+    /// <summary>닫힘 통지 — <b>락 밖에서</b> 부른다. 핸들러가 이 카메라를 다시 부를 수 있다.
+    ///
+    /// 꺼짐(<see cref="GrabbingChanged"/> false)은 <b>닫기 직전 실제로 돌고 있었을 때만</b> 낸다 — ICam 계약은 전이일 때만 내라고 한다.
+    /// 전에는 무조건 냈다: 라이브를 멈추고 닫으면 정지가 이미 낸 꺼짐이 한 번 더 나갔고, 그랩하지 않던 카메라를 닫아도 "멈췄다" 가
+    /// 나갔다. 통지를 거울질하는 화면에는 닫을 때마다 없던 정지가 찍힌다(회귀 10-G-17·18). 정지 경로·제어 상실·펌프 자멸과 같이
+    /// 펌프를 접은 결과(<see cref="StopPumpCore"/>)로 가른다 — 그 셋과 겹쳐도 꺼짐은 먼저 접은 쪽이 한 번만 낸다.
+    ///
+    /// 끊김(<see cref="ConnectionChanged"/> false)도 같은 규칙이다 — <b>닫기 직전 연결 표시가 서 있었을 때만</b> 낸다. 제어를 잃은 세션은
+    /// 상실(<see cref="OnControlLost"/>)이 표시를 내리며 끊김을 이미 냈다. 전에는 무조건 내서 상실 뒤 닫기·해제가 끊김을 한 번 더 냈다 —
+    /// 연결이 false 로 두 번 떨어진 것처럼 보였다(ICam 수명 계약: 이미 그 상태면 이벤트 없이. 회귀 10-G-24).</summary>
+    private void RaiseClosed(bool wasGrabbing, bool wasConnected)
     {
-        GrabbingChanged?.Invoke(this, false);
-        ConnectionChanged?.Invoke(this, new ConnArgs(false));
+        if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
+        if (wasConnected) ConnectionChanged?.Invoke(this, new ConnArgs(false));
         WriteLog(CvLogLevel.Info, "closed");
     }
 
@@ -489,14 +521,14 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// </summary>
     public void Dispose()
     {
-        bool closed;
+        bool closed, wasGrabbing, wasConnected;
         lock (_sync)
         {
             if (_disposed) return;
-            closed = CloseWhileLocked();
+            closed = CloseWhileLocked(out wasGrabbing, out wasConnected);
             _disposed = true;
         }
-        if (closed) RaiseClosed();
+        if (closed) RaiseClosed(wasGrabbing, wasConnected);
     }
 
     /// <summary>제어권 상실 — 하트비트가 끊겼거나 다른 응용이 카메라를 가져갔다. 스레드풀에서 오고
@@ -511,7 +543,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// 프레임을 시한이 다 될 때까지 기다린다.
     ///
     /// 접고 나면 <see cref="IsGrabbing"/> 이 방금 낸 <see cref="GrabbingChanged"/> 와 같은 말을 하고,
-    /// 그 뒤의 그랩은 장치가 던지는 제어 상실 예외로 <b>시끄럽게</b> 실패한다.
+    /// 그 뒤의 그랩은 대개 장치가 던지는 제어 상실 예외로 <b>시끄럽게</b> 실패한다. ⚠ 다 그렇지는 않다 — 모드 쓰기가 장치에 닿지 않는 경우
+    /// (AcquisitionMode 노드나 그 Continuous 항목이 없는 기종, 또는 잠금을 쓴 값 캐시로 판정하는 기종에서 상실 순간 라이브가 돌던 경우 —
+    /// 여기서는 AcquisitionStop 을 보내지 않아 캐시가 잠김으로 남는다) 그 뒤의 <see cref="StartContinuous"/> 가 던지지 않고 죽은 세션에
+    /// 펌프를 세운다(그쪽 주석).
     ///
     /// 이 통지는 취득 계층이 스레드 풀에서 올린다 — 수신 펌프 자신이 아니므로 여기서 펌프를 기다려도
     /// 자기 자신을 기다리지 않는다(그 경우도 <see cref="StopPumpCore"/> 가 따로 막는다).
@@ -531,8 +566,16 @@ public sealed class GevCam : ICam, ICamGrabAsync
             wasGrabbing = StopPumpCore();
         }
         WriteLog(CvLogLevel.Warning, "control lost", ex);
-        if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
-        ConnectionChanged?.Invoke(this, new ConnArgs(false));
+        // 구독자 예외를 통지마다 따로 받는다 — 꺼짐 구독자 하나가 던지면 끊김이 아예 안 나갔다. 전에는 뒤이은 닫기가 끊김을 무조건 내서
+        // 결국 한 번은 나갔지만, 닫기가 "이미 끊김" 이면 끊김을 안 내게 된 뒤로는 다시 열 때까지 한 번도 안 나간다(통지로 연결 표시를
+        // 거울질하는 화면은 "연결됨" 에 머문다 — 검토가 재현, 회귀 10-G-26). 펌프 자멸과 같이 남의 결함을 사유까지 우리 로그에 남긴다.
+        if (wasGrabbing)
+        {
+            try { GrabbingChanged?.Invoke(this, false); }
+            catch (Exception sx) { WriteLog(CvLogLevel.Error, "a GrabbingChanged subscriber threw.", sx); }
+        }
+        try { ConnectionChanged?.Invoke(this, new ConnArgs(false)); }
+        catch (Exception sx) { WriteLog(CvLogLevel.Error, "a ConnectionChanged subscriber threw.", sx); }
     }
 
     /// <summary>버려진 프레임 진단. 수신 스레드에서 오므로 세는 것 말고는 하지 않는다 —
@@ -942,7 +985,11 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 notStarted = "StopContinuous was called after this start was requested";
             // 부를 때는 연결돼 있었는데 기다리는 사이 제어를 잃었다 — 죽은 장치에 시작을 걸면 제어 상실 예외가 올라가, 감싼 쪽은 그것을
             // "시작 거부" 로 읽고 라이브 의도를 거둔다(재연결이 라이브를 안 되살린다). 상실은 이미 통지됐으니 조용히 접는다.
-            // 부를 때부터 끊겨 있던 것은 이 갈래가 아니다 — 그때는 종전대로 아래 장치 명령이 던진다.
+            // 부를 때부터 끊겨 있던 것은 이 갈래가 아니다 — 그때는 종전대로 아래 장치 명령에 맡긴다. 대개 모드 쓰기가 제어 상실 예외로
+            // 던지지만, ⚠ 모드 쓰기가 장치에 안 닿으면(AcquisitionMode 노드나 그 Continuous 항목이 없는 기종, 또는 잠금을 쓴 값 캐시로
+            // 판정하는 기종에서 상실 순간 라이브가 돌던 경우 — 캐시가 잠김으로 남아 호스트에서 거절된다) AcquisitionStart 의 상실 예외는
+            // TryExecuteAsync 가 삼켜, **던지지 않고 죽은 세션에 펌프가 선다**(켜짐도 알린다. 회귀 10-G-25 앞 절). 그 펌프는 다시 열 때
+            // 접기가 꺼짐과 함께 접는다(Open 주석).
             else if (connectedAtCall && !IsConnected)
                 notStarted = "control of the camera was lost after this start was requested";
             else
@@ -956,7 +1003,7 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 {
                     // 위 갈래의 앞 순간 — 취득 라이브러리는 제어 상실을 먼저 장치 상태에 세우고 통지는 뒤에 낸다(스레드 풀). 그 사이에 든
                     // 시작은 IsConnected 가 아직 참이라 위에서 안 걸리고 장치 명령에서 상실 예외를 받는다. 그것도 거부가 아니라 상실이라
-                    // 같이 조용히 접는다 — 상실 통지는 곧 따로 나간다. 부를 때부터 끊겨 있던 것은 여기 오지 않고 종전대로 던진다.
+                    // 같이 조용히 접는다 — 상실 통지는 곧 따로 나간다. 부를 때부터 끊겨 있던 것은 여기서 잡지 않는다(위 갈래 주석).
                     notStarted = "control of the camera was lost while this start was being carried out";
                 }
             }
@@ -978,6 +1025,23 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // "손실 아님" 으로 내려가 로그만으로는 아무 일도 없었던 것처럼 보였다. 앞 라이브의 꼬리가 이보다 늦게 닫히면 그 한 줄은
         // 경고로 나온다 — 진짜 손실을 묻는 것보다 그 편이 낫다(단발 그랩의 창과 같은 판단).
         CloseStopWindows();
+        // ⚠ **확인 안 됨 — 여기는 남은 장을 버리지 않는다.** 단발 그랩과 달리 시작 전에 대기열을 비우지도(DrainStream), 시작선보다 이른
+        // 장을 거르지도(IsStale) 않는다. 그래서 시한 초과·취소로 끝난 단발 그랩의 장이 그 그랩의 AcquisitionStop 뒤에 마저 완성돼
+        // 대기열에 들어와 있으면(시한이 노출 + 전송의 경계에 걸린 그랩, 트리거 모드에서 시한과 멈춤 사이에 든 트리거 등) 이 라이브의
+        // **첫 장으로 발행될 수 있다.** 앞 그랩 뒤의 시작 대기(SettleWaitMs)는 그 장이 도착할 만큼 기다리므로 오히려 대기열 쪽으로 민다.
+        // 재현 수단이 없어(장치도 스트림 흉내도 이 저장소에 없다) 실제로 나는지는 안 쟀다 — 그래서 동작은 그대로 둔다.
+        // 해가 얼마인지는 쓰임에 따라 갈린다(코드 독해):
+        // ① 자유 실행 라이브(화면·미리보기)에서는 첫 장 하나가 한 장 늦은 그림일 뿐이다.
+        //    ⚠ **트리거 모드 연속 취득으로 대상마다 판정하는 쓰임에서는 작지 않다** — ICam 이 그 쓰임을 직접 든다(FrameAcquired·StopContinuous
+        //    주석: 트리거마다 판정하는 쪽). 거기서는 라이브의 장 하나하나가 대상 하나의 답이라, 그 낡은 장은 **첫 대상의 판정으로 들어가고**
+        //    예외도 경고도 없이 판정만 틀린다. 위에 든 경우 하나(시한과 멈춤 사이에 든 트리거)가 바로 그 모드에서 난다. 그리고 열 때
+        //    TriggerMode On 으로 읽힌 카메라는 시작 대기가 0 이라(SettleWaitMs) 위 "대기열 쪽으로 민다" 도 해당이 없다 — 그 장은 대기열에
+        //    들어 있었든 시작 뒤에 완성돼 기다리던 수신으로 곧장 왔든(DrainStream 주석) 첫 장으로 나간다.
+        // ② 단발 그랩의 답으로는 못 간다 — 펌프가 그 장을 라이브로 내보내 소비하고, 정지(StopContinuous)는
+        // 펌프를 세운 뒤 대기열을 비우며, 다음 그랩(GrabOnceAsync)도 시작 전에 비우고 시작선보다 이른 장을 버린다(시계를 못 찍는 기종의
+        // 번호 판정 약점은 그쪽 드레인 주석에 있다).
+        // 막을 일이 생기면 비우기만으로는 모자란다 — 비우기는 완성된 장만 치우고 조립 중이던 장은 그 뒤에 완성된다(DrainStream 주석).
+        // 단발 그랩처럼 시작선으로 걸러야 한다.
         Run(async ct =>
         {
             // 모드 전환이 거절되면 그것을 여기서 말해야 한다 — 삼키면 장치는 옛 모드(대개 SingleFrame)
@@ -1001,30 +1065,43 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 돌 펌프가 없어도, 락을 잡기 전에 센다 — 락 밖에서 대기 중이거나 락을 기다리는 StartContinuous 가 부를 때 떠 둔 값과 견준다
         // (_stopRequests 참조). 락을 잡은 뒤에 세면 먼저 불렸지만 락을 기다리던 정지가 나중 시작을 무른다.
         Interlocked.Increment(ref _stopRequests);
-        bool stopped;
-        lock (_sync)
+        var stopped = false;
+        // ⚠ **펌프를 세운 뒤에는 무엇이 던져도 꺼짐을 낸다(finally).** 세운 순간 IsGrabbing 은 이미 false 다 — 그 뒤 장치 단계(AcquisitionStop·
+        // 대기열 비우기)가 실패했다고 꺼짐을 빼면, 통지를 거울질하는 쪽(감싸는 ReconnectingCam·화면)은 마지막 통지 true 를 들고 라이브
+        // 중으로 남는다(ICam: 상태를 정한 뒤에 알린다). 예외는 삼키지 않고 그대로 올린다 — 장치가 멈춤을 못 받았을 수 있다는 것은 부른
+        // 쪽이 들어야 한다. 장치 계층의 오류 계약 안의 예외는 TryExecuteAsync 가 이미 남기고 삼키므로, 이 finally 가 일하는 것은 그 밖의
+        // 예외뿐이다 — **보험이다**: 그런 예외가 실제로 난 것은 본 적이 없다. 그래도 두는 것은, 명령 자리가 잡는 종류에서
+        // ObjectDisposedException 하나가 빠지자 꺼짐이 통째로 사라졌기 때문이다(회귀 10-G-21). 10-G-23 은 계약 밖 예외를 흉내낸 포트로
+        // 이 finally 를 못 박는다.
+        try
         {
-            if (_disposed) return;
-            stopped = StopPumpCore();
-            if (stopped)
-                MarkLiveStopped(DateTime.UtcNow.Ticks);
-            if (stopped && _nodes != null)
+            lock (_sync)
             {
-                Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
-                // 단발 경로와 같은 이유 — 멈춘 뒤 번호가 이어진다는 보장이 없다. 펌프는 위에서 이미 섰다.
-                ResetFrameIdBaseline();
-            }
+                if (_disposed) return;
+                stopped = StopPumpCore();
+                if (stopped)
+                    MarkLiveStopped(DateTime.UtcNow.Ticks);
+                if (stopped && _nodes != null)
+                {
+                    Run(ct => TryExecuteAsync(_nodes, "AcquisitionStop", ct), CancellationToken.None);
+                    // 단발 경로와 같은 이유 — 멈춘 뒤 번호가 이어진다는 보장이 없다. 펌프는 위에서 이미 섰다.
+                    ResetFrameIdBaseline();
+                }
 
-            // 멈춘 뒤에 대기열을 비운다 — 남겨 두면 다음 단발 그랩이 그것을 가져간다.
-            // 펌프를 세운 다음이라야 배수가 수신과 겹치지 않는다 — 이 자리를 락 밖으로도, 정지 앞으로도 옮기지 않는다.
-            if (stopped && _stream != null && DrainStream(_stream, out var drainedUpTo) is var left and > 0)
-                WriteLog(CvLogLevel.Debug,
-                    $"discarded {left} frame(s) left in the queue when acquisition stopped (up to frame {drainedUpTo})");
+                // 멈춘 뒤에 대기열을 비운다 — 남겨 두면 다음 단발 그랩이 그것을 가져간다.
+                // 펌프를 세운 다음이라야 배수가 수신과 겹치지 않는다 — 이 자리를 락 밖으로도, 정지 앞으로도 옮기지 않는다.
+                if (stopped && _stream != null && DrainStream(_stream, out var drainedUpTo) is var left and > 0)
+                    WriteLog(CvLogLevel.Debug,
+                        $"discarded {left} frame(s) left in the queue when acquisition stopped (up to frame {drainedUpTo})");
+            }
         }
-        if (stopped)
+        finally
         {
-            GrabbingChanged?.Invoke(this, false);
-            WriteLog(CvLogLevel.Info, "continuous grab stopped");
+            if (stopped)
+            {
+                GrabbingChanged?.Invoke(this, false);
+                WriteLog(CvLogLevel.Info, "continuous grab stopped");
+            }
         }
     }
 
@@ -2053,6 +2130,15 @@ public sealed class GevCam : ICam, ICamGrabAsync
         // 정리(닫기·단발 그랩 뒷정리)마다 카메라당 경고와 스택이 덧붙어 현장 로그에서 원인 줄이 묻혔다(소비자 현장 로그). 판정은 스냅샷한
         // 연결 표시가 아니라 예외 종류로 한다 — 닫기가 상실 통지보다 먼저 락을 잡는 경합에서도 맞다.
         catch (GevControlLostException ex) { WriteLog(CvLogLevel.Debug, $"failed to execute {name} (expected: control of the camera was already lost)", ex); }
+        // 장치 계층의 오류 계약은 GevException 계열과 함께 ObjectDisposedException 을 든다 — 버린 장치에 대한 접근, 그리고 닫히는 제어
+        // 채널에 늦게 닿은 요청(취득 라이브러리 0.5.0 원문: GevDevice 오류 계약·ThrowIfClosed, GvcpChannel 은 닫힌 표시를 먼저 세우고
+        // 그 자리에서 세션을 제어 상실로 넘긴다). 이 자리에 그것이 오는 길은 둘이다(코드 독해 — 부르는 자리 넷 중 셋은 락 안이고 장치를
+        // 버리는 것은 락 안의 닫기뿐이다): 제어 채널이 스스로 닫히는 순간에 든 명령(상실 통지가 곧 따로 나가고 경고로 남는다), 그리고
+        // 락 밖에서 도는 단발 그랩의 시작·멈춤이 우리 닫기·해제가 장치를 버린 뒤에 닿은 것(닫기가 그 그랩을 끊고 사유를 남긴다). 둘 다
+        // 원인이 따로 남는 예상된 실패라 제어 상실과 같은 등급(Debug)으로 남긴다.
+        // 안 잡던 때: 정지(StopContinuous)는 펌프를 세운 뒤 이 예외로 빠져 꺼짐 통지가 없었고(IsGrabbing=false 인데 마지막 통지는 true),
+        // 닫기(CloseCoreAsync)는 장치 참조를 걷은 채 연결 표시를 못 내리고 빠졌다 — 회귀 10-G-21·22 가 둘을 실행으로 못 박는다.
+        catch (ObjectDisposedException ex) { WriteLog(CvLogLevel.Debug, $"failed to execute {name} (expected: the device session or its control channel was already closed)", ex); }
         catch (GenApiException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
         catch (GevException ex) { WriteLog(CvLogLevel.Warning, $"failed to execute {name}", ex); }
     }

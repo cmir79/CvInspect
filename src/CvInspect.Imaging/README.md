@@ -163,7 +163,15 @@ If the adapter will be wrapped in `ReconnectingCam`, two things must already be 
 `Open` must not return until `IsConnected` is true, because the wrapper checks it right after `Open` and treats
 false as a failed open. And a `StartContinuous` that started must have `IsGrabbing` true, because the wrapper
 checks that before it reports live. When the connection is lost, lower `IsConnected` (and `IsGrabbing`) before
-raising the events.
+raising the events. Raise `GrabbingChanged` only on a transition, and catch your subscribers' exceptions on threads
+you own.
+
+**Subscribers: `GrabbingChanged` is a cue, not the state.** It can arrive on a thread other than the one that called
+`StartContinuous` / `StopContinuous` — a control loss, a receive loop that ended on its own, the reconnect loop — and
+notifications raised on different threads can reach you out of order. If you marshal them to the UI asynchronously,
+the work they trigger can also land after other threads have already moved on (stopped the camera, started it again, or
+released whatever they held while acquiring). Re-read `IsGrabbing` where you decide; do not store the notification's value
+as your state.
 
 Proprietary SDK assemblies stay out of this package by design.
 
