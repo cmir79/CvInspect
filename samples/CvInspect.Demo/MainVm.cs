@@ -213,10 +213,12 @@ public sealed partial class MainVm : ObservableObject, IDisposable
             if (ReferenceEquals(_cam, cam) && t.Result is not null) Status = $"grab failed: {t.Result}";
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
-    /// <summary>라이브 시작 — 실패는 상태줄에 낸다. 단발 그랩이 장을 기다리는 동안의 시작은 던지고(ICam.StartContinuous), 소스를 여는
-    /// 중이면 "열려 있지 않다" 로 던진다. 둘 다 버튼 한 번에 나는 일이라, 커맨드 밖으로 새면 창이 통째로 닫힌다.
-    /// 그랩과 달리 UI 스레드에서 그대로 부른다 — 이 소스들의 시작은 붙잡지 않고(영상 소스는 진행 중인 한 장 읽기만큼 락에서 기다린다),
-    /// 다른 스레드로 넘기면 뒤이어 누른 Stop 이 먼저 돌아 멈춘 뒤에 라이브가 켜질 수 있다.</summary>
+    /// <summary>라이브 시작 — 실패는 상태줄에 낸다. 단발 그랩이 장을 기다리는 동안의 시작은 던지고(ICam.StartContinuous), 소스 열기가
+    /// 실패한 뒤면 "열려 있지 않다" 로 던진다. 둘 다 버튼 한 번에 나는 일이라, 커맨드 밖으로 새면 창이 통째로 닫힌다.
+    /// 그랩과 달리 UI 스레드에서 그대로 부른다 — 다른 스레드로 넘기면 뒤이어 누른 Stop 이 먼저 돌아 멈춘 뒤에 라이브가 켜질 수 있다.
+    /// 대가: 시작이 카메라 락에서 기다리는 동안 화면이 굳는다. 영상 소스는 진행 중인 한 장 읽기만큼이고, 배경에서 <b>여는 중</b>이면 열기가
+    /// 끝날 때까지다(열기가 락을 쥐고 장치를 연다 — 웹캠 첫 열기는 1 s 안팎). 그때는 던지지 않고, 열기가 끝난 뒤 시작한다(이미 돌고 있으면
+    /// 그대로 돌아온다).</summary>
     [RelayCommand]
     private void Live()
     {

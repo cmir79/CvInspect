@@ -320,6 +320,39 @@ public class GevCamNotifyTests : IDisposable
         if (!dispose) cam.Dispose();
     }
 
+    /// <summary>10-G-26) 제어 상실 때 꺼짐 구독자가 던져도 끊김은 나간다. 상실이 두 통지를 감싸지 않고 차례로 내서, 꺼짐 구독자 하나가 던지면
+    /// 끊김이 아예 안 나갔다. 전에는 뒤이은 닫기가 끊김을 무조건 내서 한 번은 나갔지만, 닫기가 "이미 끊김" 이면 내지 않게 되자(10-G-24)
+    /// 그 받침이 사라져 끊김이 끝내 0번이 됐다 — 통지로 연결 표시를 거울질하는 화면은 다시 열 때까지 "연결됨" 에 머문다.</summary>
+    [Fact]
+    public void GevCamControlLossReportsTheDisconnectEvenIfAStopSubscriberThrows()
+    {
+        var cam = OpenWithoutDevice(grabbing: true);
+        var dev = DevField.GetValue(cam);
+        var log = Record(cam);
+        var thrown = 0;
+        cam.GrabbingChanged += (_, on) =>
+        {
+            if (on) return;
+            Interlocked.Increment(ref thrown);
+            throw new InvalidOperationException("fake: a GrabbingChanged subscriber failed");
+        };
+        Exception? escaped = null;
+        try { OnControlLost.Invoke(cam, new object?[] { dev, null }); }
+        catch (TargetInvocationException tie) { escaped = tie.InnerException; }
+        var afterLoss = Snap(log);
+        Check(thrown == 1 && Stops(afterLoss) == 1 && !cam.IsConnected,
+            $"liveness: the loss was taken and the throwing stop subscriber ran once (thrown={thrown}, notifications: {Show(afterLoss)})");
+        Check(escaped is null,
+            $"a subscriber's exception does not escape the control-loss notification (escaped {escaped?.GetType().Name ?? "nothing"})");
+        Check(Disconnects(afterLoss) == 1,
+            "the disconnect is reported even if a stop subscriber throws — the close no longer repeats it, so skipping it here leaves " +
+            $"mirrors showing 'connected' until the next open ({Show(afterLoss)})");
+        cam.Close();
+        Check(Disconnects(log) == 1 && DevField.GetValue(cam) is null,
+            $"the close after the loss tears down the dead session and does not report the disconnect again ({Show(log)})");
+        cam.Dispose();
+    }
+
     /// <summary>10-G-25) 제어를 잃은 뒤 다시 열 때 접는 죽은 세션에 펌프가 돌고 있으면 꺼짐을 낸다. 접기가 "펌프는 제어 상실이 이미
     /// 접었다" 고 보고 꺼짐을 버렸는데, 상실 뒤에 불린 시작이 펌프를 새로 세우는 갈래가 있다 — 앞 절이 그 갈래를 실제로 돌린다
     /// (AcquisitionMode 노드가 없어 모드 쓰기가 장치에 안 닿고, AcquisitionStart 의 제어 상실 예외는 명령 자리가 삼킨다).

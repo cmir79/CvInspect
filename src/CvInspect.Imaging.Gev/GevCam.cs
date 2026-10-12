@@ -215,9 +215,12 @@ public sealed class GevCam : ICam, ICamGrabAsync
                 // 떨어졌다가 올라온 것처럼 보인다(연결 표시가 이미 내려가 있어 CloseWhileLocked 가 끊김 대상으로 세지 않는다).
                 // ⚠ **꺼짐은 낸다 — 접을 때 펌프가 돌고 있을 수 있다.** 제어 상실(OnControlLost)은 그때 돌던 펌프를 접고 꺼짐을
                 // 알렸지만, 상실 뒤 다시 열기 전에 불린 StartContinuous 가 펌프를 새로 세우는 갈래가 있다: 부를 때부터 끊겨 있던 시작은
-                // 장치 명령의 예외로 던지게 두었는데, AcquisitionMode 노드나 그 Continuous 항목이 없는 기종에서는 모드 쓰기가 장치에
-                // 닿지 않고(TrySetEnumAsync), AcquisitionStart 의 제어 상실 예외는 TryExecuteAsync 가 Debug 로 삼켜, 시작이 던지지
-                // 않고 켜짐을 알린다(회귀 10-G-25 의 앞 절이 그 갈래를 실행으로 돌린다). 그 펌프를 여기서 접으며 꺼짐을 버리던 때는
+                // 장치 명령의 예외로 던지게 두었는데, 모드 쓰기가 장치에 닿지 않으면 그 예외가 안 난다 — AcquisitionMode 노드나 그
+                // Continuous 항목이 없는 기종, 그리고 모드 잠금을 취득 계층이 쓴 값을 기억하는 캐시로 판정하는 기종에서 상실 순간 라이브가
+                // 돌고 있던 경우(상실은 AcquisitionStop 을 보내지 않아 캐시가 잠김으로 남고 모드 쓰기가 호스트에서 거절된다 — GrabOnceAsync 의
+                // 잠금 주석, 검토가 가짜 장치로 재현). "라이브 중 케이블이 빠짐 → 라이브 버튼" 이 바로 그 순서다. 그러면 AcquisitionStart 의
+                // 제어 상실 예외는 TryExecuteAsync 가 Debug 로 삼켜, 시작이 던지지 않고 켜짐을 알린다(회귀 10-G-25 의 앞 절은 노드가 없는
+                // 쪽으로 그 갈래를 실행으로 돌린다). 그 펌프를 여기서 접으며 꺼짐을 버리던 때는
                 // IsGrabbing=false 인데 마지막 통지가 true 로 남았다. 열기가 실패해도 펌프는 이미 접혔으므로 finally 에서 낸다 — 연결
                 // 통지보다 먼저, 락 밖에서.
                 if (_dev != null && !IsConnected)
@@ -540,8 +543,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
     /// 프레임을 시한이 다 될 때까지 기다린다.
     ///
     /// 접고 나면 <see cref="IsGrabbing"/> 이 방금 낸 <see cref="GrabbingChanged"/> 와 같은 말을 하고,
-    /// 그 뒤의 그랩은 대개 장치가 던지는 제어 상실 예외로 <b>시끄럽게</b> 실패한다. ⚠ 다 그렇지는 않다 — AcquisitionMode 노드나 그
-    /// Continuous 항목이 없는 기종에서는 그 뒤의 <see cref="StartContinuous"/> 가 던지지 않고 죽은 세션에 펌프를 세운다(그쪽 주석).
+    /// 그 뒤의 그랩은 대개 장치가 던지는 제어 상실 예외로 <b>시끄럽게</b> 실패한다. ⚠ 다 그렇지는 않다 — 모드 쓰기가 장치에 닿지 않는 경우
+    /// (AcquisitionMode 노드나 그 Continuous 항목이 없는 기종, 또는 잠금을 쓴 값 캐시로 판정하는 기종에서 상실 순간 라이브가 돌던 경우 —
+    /// 여기서는 AcquisitionStop 을 보내지 않아 캐시가 잠김으로 남는다) 그 뒤의 <see cref="StartContinuous"/> 가 던지지 않고 죽은 세션에
+    /// 펌프를 세운다(그쪽 주석).
     ///
     /// 이 통지는 취득 계층이 스레드 풀에서 올린다 — 수신 펌프 자신이 아니므로 여기서 펌프를 기다려도
     /// 자기 자신을 기다리지 않는다(그 경우도 <see cref="StopPumpCore"/> 가 따로 막는다).
@@ -561,8 +566,16 @@ public sealed class GevCam : ICam, ICamGrabAsync
             wasGrabbing = StopPumpCore();
         }
         WriteLog(CvLogLevel.Warning, "control lost", ex);
-        if (wasGrabbing) GrabbingChanged?.Invoke(this, false);
-        ConnectionChanged?.Invoke(this, new ConnArgs(false));
+        // 구독자 예외를 통지마다 따로 받는다 — 꺼짐 구독자 하나가 던지면 끊김이 아예 안 나갔다. 전에는 뒤이은 닫기가 끊김을 무조건 내서
+        // 결국 한 번은 나갔지만, 닫기가 "이미 끊김" 이면 끊김을 안 내게 된 뒤로는 다시 열 때까지 한 번도 안 나간다(통지로 연결 표시를
+        // 거울질하는 화면은 "연결됨" 에 머문다 — 검토가 재현, 회귀 10-G-26). 펌프 자멸과 같이 남의 결함을 사유까지 우리 로그에 남긴다.
+        if (wasGrabbing)
+        {
+            try { GrabbingChanged?.Invoke(this, false); }
+            catch (Exception sx) { WriteLog(CvLogLevel.Error, "a GrabbingChanged subscriber threw.", sx); }
+        }
+        try { ConnectionChanged?.Invoke(this, new ConnArgs(false)); }
+        catch (Exception sx) { WriteLog(CvLogLevel.Error, "a ConnectionChanged subscriber threw.", sx); }
     }
 
     /// <summary>버려진 프레임 진단. 수신 스레드에서 오므로 세는 것 말고는 하지 않는다 —
@@ -973,9 +986,10 @@ public sealed class GevCam : ICam, ICamGrabAsync
             // 부를 때는 연결돼 있었는데 기다리는 사이 제어를 잃었다 — 죽은 장치에 시작을 걸면 제어 상실 예외가 올라가, 감싼 쪽은 그것을
             // "시작 거부" 로 읽고 라이브 의도를 거둔다(재연결이 라이브를 안 되살린다). 상실은 이미 통지됐으니 조용히 접는다.
             // 부를 때부터 끊겨 있던 것은 이 갈래가 아니다 — 그때는 종전대로 아래 장치 명령에 맡긴다. 대개 모드 쓰기가 제어 상실 예외로
-            // 던지지만, ⚠ AcquisitionMode 노드나 그 Continuous 항목이 없는 기종에서는 모드 쓰기가 장치에 안 닿고 AcquisitionStart 의 상실
-            // 예외는 TryExecuteAsync 가 삼켜, **던지지 않고 죽은 세션에 펌프가 선다**(켜짐도 알린다. 회귀 10-G-25 앞 절). 그 펌프는 다시
-            // 열 때 접기가 꺼짐과 함께 접는다(Open 주석).
+            // 던지지만, ⚠ 모드 쓰기가 장치에 안 닿으면(AcquisitionMode 노드나 그 Continuous 항목이 없는 기종, 또는 잠금을 쓴 값 캐시로
+            // 판정하는 기종에서 상실 순간 라이브가 돌던 경우 — 캐시가 잠김으로 남아 호스트에서 거절된다) AcquisitionStart 의 상실 예외는
+            // TryExecuteAsync 가 삼켜, **던지지 않고 죽은 세션에 펌프가 선다**(켜짐도 알린다. 회귀 10-G-25 앞 절). 그 펌프는 다시 열 때
+            // 접기가 꺼짐과 함께 접는다(Open 주석).
             else if (connectedAtCall && !IsConnected)
                 notStarted = "control of the camera was lost after this start was requested";
             else
