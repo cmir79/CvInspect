@@ -169,8 +169,9 @@ you own.
 **Subscribers: `GrabbingChanged` is a cue, not the state.** It can arrive on a thread other than the one that called
 `StartContinuous` / `StopContinuous` — a control loss, a receive loop that ended on its own, the reconnect loop — and
 notifications raised on different threads can reach you out of order. If you marshal them to the UI asynchronously,
-the work they trigger can also land after other commands have already run (another thread's stop, a light or lease
-handed back). Re-read `IsGrabbing` where you decide; do not store the notification's value as your state.
+the work they trigger can also land after other threads have already moved on (stopped the camera, started it again, or
+released whatever they held while acquiring). Re-read `IsGrabbing` where you decide; do not store the notification's value
+as your state.
 
 Proprietary SDK assemblies stay out of this package by design.
 
