@@ -99,7 +99,8 @@ completes (`GevCam` does).
 **If `GrabOne` throws, the call throws — even when a frame came in meanwhile.** On the local cameras
 that means `GrabOne` refused at entry (continuous acquisition running, another grab waiting), so the
 frame the subscription picked up belonged to the live stream or to the other grab. Returning it would
-hide the refusal behind what looks like a normal answer.
+hide the refusal behind what looks like a normal answer. For the same reason a frame that arrives
+before this call's `GrabOne` has started is never taken — it cannot be this grab's answer.
 
 The `timeout` argument wins over whatever the implementation has configured, because the call site
 knows more than the configuration did. Pass `Timeout.InfiniteTimeSpan` to defer to the
@@ -110,7 +111,7 @@ grace and then the call returns `null`.
 Implement **`ICamGrabAsync`** when your camera knows something the generic path cannot, and the
 extension will call you instead. There are two such things:
 
-- **Which frame is *this* grab's.** The generic path takes whatever arrives while it is subscribed;
+- **Which frame is *this* grab's.** The generic path takes whatever arrives once its `GrabOne` has started;
   only the implementation, holding the device's own pairing evidence (frame id, ticket), can tell that
   from a frame that merely showed up at the same moment. `GevCam` does this with a start line latched
   from the device clock just before it starts acquisition, and falls back to the frame id on a camera

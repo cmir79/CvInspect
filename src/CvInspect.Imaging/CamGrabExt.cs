@@ -39,8 +39,10 @@ public static class CamGrabExt
     ///
     /// <b>기본 절차가 못 하는 것</b>(그래서 콜백으로 프레임을 받는 구현은 <see cref="ICamGrabAsync"/> 를 단다):
     /// <list type="bullet">
-    /// <item><b>짝을 구조적으로 보장하지 못한다.</b> 구독이 걸려 있는 동안 도착한 <b>아무 장</b>이나 집는다 —
-    /// 이 호출이 부른 그랩의 장인지는 모른다. 가릴 수 있는 것은 장치 쪽 짝짓기 근거를 쥔 구현 자신뿐이다.</item>
+    /// <item><b>짝을 구조적으로 보장하지 못한다.</b> 이 호출의 GrabOne 이 시작된 뒤 도착한 <b>아무 장</b>이나 집는다 —
+    /// 이 호출이 부른 그랩의 장인지는 모른다(시작 전에 온 장은 버린다 — 이 호출 뒤에 온 장이 아니다). 가릴 수 있는 것은 장치 쪽 짝짓기
+    /// 근거를 쥔 구현 자신뿐이다. 남는 자리: 시한 안에 안 끝난 그랩의 장(시한에 그대로 돌려준다), GrabOne 이 시작된 뒤 진입 검사 전에
+    /// 남의 그랩이 장을 내고 표식까지 내린 경우(이 그랩은 받아들여지고 남의 장을 돌려준다 — 짧은 창이다).</item>
     /// <item><b>"영영 안 온다" 를 알지 못한다.</b> 그래서 장이 없으면 시한을 끝까지 기다린다(시한이
     /// <see cref="Timeout.InfiniteTimeSpan"/> 이면 기다릴 시한이 없으므로 GrabOne 이 돌아온 뒤 1초 유예만) —
     /// 그 답을 즉시 아는 구현은 <see cref="ICamGrabAsync"/> 를 달아 스스로 답한다.</item>
@@ -62,7 +64,14 @@ public static class CamGrabExt
         // 발행 스레드에서 이어달리기가 돌지 않게 한다 — 그 스레드는 취득 계층의 것이고, 거기서 호출자
         // 코드를 태우면 다음 프레임이 밀린다.
         var tcs = new TaskCompletionSource<CamFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnFrame(object? _, CamFrame f) => tcs.TrySetResult(f);
+        // 이 호출의 GrabOne 이 시작되기 전에 온 장은 집지 않는다 — GrabOne 은 "이 호출 뒤에 오는 프레임" 을 내므로 그 장은 답일 수 없다.
+        // 구독과 그랩 시작 사이(풀 스레드가 본문을 집기까지)에 라이브 틱이나 앞 그랩의 장이 들어와 답으로 나갔다(검토 실측: 시작 전에
+        // 취소된 호출이 GrabOne 을 한 번도 안 부르고 그 장을 돌려줬다 20/20).
+        var started = 0;
+        void OnFrame(object? _, CamFrame f)
+        {
+            if (Volatile.Read(ref started) != 0) tcs.TrySetResult(f);
+        }
 
         // 시한은 그랩을 띄우기 **전에** 다듬는다. 뒤에 Task.Delay 가 범위 밖 값(음수·아주 큰 값)으로 던지면 그랩만
         // 고아로 돌아, 그 장은 다른 구독자에게 가고 GrabOne 의 예외는 아무도 안 본다.
@@ -80,7 +89,11 @@ public static class CamGrabExt
             // GrabOne 은 부른 쪽을 붙잡는다(ICam 계약: 프레임이 오거나 시한이 다할 때까지 안 돌아온다).
             // 그대로 부르면 이 메서드가 비동기인 의미가 없으므로 풀 스레드로 옮긴다. 옮기는 김에
             // "UI 스레드에서 부르면 동기 마샬링이 영영 안 돌아온다" 는 그쪽 주의도 함께 비켜간다.
-            var grab = Task.Run(cam.GrabOne, ct);
+            var grab = Task.Run(() =>
+            {
+                Volatile.Write(ref started, 1);
+                cam.GrabOne();
+            }, ct);
             // 시한 시계는 **여기서** 출발한다. 그랩이 끝난 뒤부터 다시 세면 부른 쪽이 준 상한이 실제로는
             // "그랩 시간 + 시한" 이 되어 약속을 말없이 넘는다 — 아래 둘째 대기도 이 같은 객체를 다시 쓴다.
             var deadline = Task.Delay(wait, waits.Token);
@@ -119,9 +132,7 @@ public static class CamGrabExt
                 // ⚠ 그랩이 던졌으면 장이 와 있어도 그 사유를 올린다. 로컬 카메라는 발행 중 구독자 예외를 삼키므로 여기 오는 것은 진입 거절이고
                 // (연속 취득 중·다른 그랩 대기 중), 그때 우리 구독이 집은 장은 라이브의 틱이나 남의 그랩의 장이다. 종전에는 그 장을 답으로 내
                 // 거절이 정상 답으로 덮였다(재현: 라이브 중 부른 그랩이 라이브 장을 받아 왔다 — 장치처럼 읽기에 락을 오래 쥐는 소스에서는 대부분).
-                // 시작 전에 취소된 그랩(본문이 안 돈 Task.Run)도 같다 — 그 장은 우리 그랩의 것일 수 없다.
-                // 시한 안에 안 끝난 그랩은 종전처럼 고아로 돈다 — 그 끝(나중의 거절 포함)은 아무도 보지 않으니, 진입 락을 시한 넘게 기다린
-                // 그랩이면 돌려준 장이 이 그랩의 것이 아닐 수 있다(기본 절차가 짝을 못 가리는 한계 — 위 summary 의 첫 항목).
+                // 시한 안에 안 끝난 그랩은 종전처럼 고아로 돈다 — 그 끝(나중의 거절 포함)은 아무도 보지 않는다. 그 밖에 남는 틈은 summary 첫 항목.
                 if (grab.IsFaulted || grab.IsCanceled) await grab.ConfigureAwait(false);
                 return await tcs.Task.ConfigureAwait(false);
             }
