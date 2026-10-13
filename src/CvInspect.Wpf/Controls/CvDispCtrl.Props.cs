@@ -98,9 +98,12 @@ public sealed partial class CvDispCtrl
     /// 빠뜨려도 그 화면이 예외도 경고도 없이 원래 크기로 그려진다.
     ///
     /// 바뀌는 것은 <b>글자 크기뿐</b>이다 — 기준점(X·Y)과 정렬은 그대로이고, 배경 상자는 글자의 잉크 경계를 따라 함께 커진다.
-    /// 그대로인 것: 요약 HUD(<c>ViOverlayLabel.IsHud</c> — 이미지 모서리를 차지하는 블록이라 키우면 이미지를 그만큼 더 가린다),
-    /// 도형·선, 편집 도형(<see cref="Shapes"/>)의 이름표.
-    /// 0 이하·NaN·무한대는 거절한다(<see cref="ArgumentException"/>).
+    /// 그대로인 것: 모서리 요약 HUD(<c>ViOverlayLabel.IsHud</c> 이고 모서리 정렬 — <see cref="ClipOverlayToImage"/>·<c>ViOverlay.CropTo</c> 와
+    /// 같은 판정. 이미지 모서리를 차지하는 블록이라 키우면 이미지를 그만큼 더 가린다), 도형·선, 편집 도형(<see cref="Shapes"/>)의 이름표.
+    /// 키운 라벨은 <see cref="ClipOverlayToImage"/> 를 켠 화면에서 가장자리가 그만큼 더 잘리고, 아래 정렬 라벨은 글자 아래 여백(하강부)도
+    /// 함께 커져 기준점과 잉크 사이가 벌어진다.
+    /// 0 이하·NaN·무한대는 거절한다 — 코드로 넣으면 <see cref="ArgumentException"/>, 바인딩이 그런 값을 내면 예외 없이 기본값 1.0 으로
+    /// 남는다(WPF 바인딩 추적에만 적힌다). 거절하지 않는 아주 큰·작은 값은 그리는 자리에서 그릴 수 있는 글자 크기 범위로 잘린다.
     /// </summary>
     public double OverlayLabelScale
     {

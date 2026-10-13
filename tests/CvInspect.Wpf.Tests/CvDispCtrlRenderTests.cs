@@ -424,6 +424,20 @@ public class CvDispCtrlRenderTests
         return (x0, y0, x1, y1);
     }
 
+    /// <summary>라벨 배경 상자(회색 128 위에 반투명 검정 → 세 채널 모두 어두움)의 외접 사각. 글자(초록·빨강)는 한 채널이 밝아 섞이지 않는다.</summary>
+    private static (int X0, int Y0, int X1, int Y1) DarkBox(byte[] px, byte[] bare)
+    {
+        int x0 = ClipBox, y0 = ClipBox, x1 = -1, y1 = -1;
+        for (int y = 0; y < ClipBox; y++)
+            for (int x = 0; x < ClipBox; x++)
+            {
+                int i = (y * ClipBox + x) * 4;
+                if (bare[i] < 100 || px[i] >= 45 || px[i + 1] >= 45 || px[i + 2] >= 45) continue;
+                x0 = Math.Min(x0, x); y0 = Math.Min(y0, y); x1 = Math.Max(x1, x); y1 = Math.Max(y1, y);
+            }
+        return (x0, y0, x1, y1);
+    }
+
     [Fact]
     public void OverlayLabelScaleGrowsOnlyTheNonHudLabelText() => RunSta(() =>
     {
@@ -453,11 +467,39 @@ public class CvDispCtrlRenderTests
             var rh = Ratio(one, big, false);
             Check(rw is > 1.35 and < 1.7 && rh is > 1.35 and < 1.7,
                 $"{path}: at 1.5 the drawn label grows about 1.5x — width {rw:F2}, height {rh:F2} ({one} -> {big})");
-            Check(Math.Abs(big.X0 - one.X0) <= 3 && Math.Abs(big.Y0 - one.Y0) <= 3,
+            // 위쪽은 잉크 윗선이라 글자가 커지면 행간만큼 내려온다(1.5 배에서 2~3 px) — 기준점이 같이 커지면 28 px 넘게 움직인다
+            Check(Math.Abs(big.X0 - one.X0) <= 3 && Math.Abs(big.Y0 - one.Y0) <= 8,
                 $"{path}: the anchor stays put — a top-left label grows to the right and down ({one} -> {big})");
+            if (background)
+            {
+                // 상자만 따로 잰다 — 위 외접 사각은 상자와 글자의 합이라, 상자가 옛 크기로 남고 글자만 커져도 ≈1.5 가 나왔다(검토 변이)
+                var boxOne = DarkBox(Render(ScaleCtrl(frame, overlay, 1.0), ClipBox, ClipBox), bare);
+                var boxBig = DarkBox(Render(ScaleCtrl(frame, overlay, 1.5), ClipBox, ClipBox), bare);
+                var bw = Ratio(boxOne, boxBig, true);
+                var bh = Ratio(boxOne, boxBig, false);
+                Check(boxOne.X1 > boxOne.X0 && bw is > 1.35 and < 1.7 && bh is > 1.35 and < 1.7,
+                    $"{path}: the background box itself follows the text — width {bw:F2}, height {bh:F2} ({boxOne} -> {boxBig})");
+            }
         }
 
-        // 그대로인 것 — 요약 HUD, 도형·선, 편집 도형의 이름표. 바이트까지 같아야 한다.
+        // 기준점은 정렬마다 다른 변이다 — 오른쪽 정렬은 오른쪽 끝, 가운데 정렬은 가운데, 아래 정렬은 아래쪽이 기준점에 붙어 있어야 한다.
+        // 왼쪽 위만 보면 오른쪽·아래 오프셋(글자 폭·높이를 빼는 자리)이 배율을 잘못 써도 초록이다(검토 변이).
+        foreach (var align in new[] { ViOverlayAlign.TopRight, ViOverlayAlign.BottomCenter, ViOverlayAlign.BottomRight })
+        {
+            var overlay = new ViOverlay();
+            overlay.Add(new ViOverlayLabel { Text = "OK 12.3", X = 200, Y = 200, FontSize = 14, Align = align, HasBackground = false });
+            var one = ChangedBox(Render(ScaleCtrl(frame, overlay, 1.0), ClipBox, ClipBox), bare);
+            var big = ChangedBox(Render(ScaleCtrl(frame, overlay, 1.5), ClipBox, ClipBox), bare);
+            Check(Ratio(one, big, true) is > 1.35 and < 1.7, $"{align}: premise — the label grows ({one} -> {big})");
+            var anchorX = align == ViOverlayAlign.BottomCenter
+                ? Math.Abs((big.X0 + big.X1) / 2.0 - (one.X0 + one.X1) / 2.0) <= 3
+                : Math.Abs(big.X1 - one.X1) <= 4;
+            // 아래 정렬은 잉크 아랫선과 기준점 사이 하강부가 글자와 함께 커진다(문서화) — 그만큼은 허용한다
+            var anchorY = align == ViOverlayAlign.TopRight ? Math.Abs(big.Y0 - one.Y0) <= 8 : Math.Abs(big.Y1 - one.Y1) <= 8;
+            Check(anchorX && anchorY, $"{align}: the edge on the anchor side stays at the anchor ({one} -> {big})");
+        }
+
+        // 그대로인 것 — 모서리 요약 HUD, 도형·선, 편집 도형의 이름표. 바이트까지 같아야 한다.
         var hud = new ViOverlay();
         hud.AddSummary(false, "PatternFind", "line 1", "line 2");
         var shapes = new ViOverlay();
@@ -472,6 +514,34 @@ public class CvDispCtrlRenderTests
         Check(ChangedBox(Render(ScaleCtrl(frame, hud, 1.0), ClipBox, ClipBox), bare).X1 >= 0, "premise: the HUD is drawn");
         Check(hudDiff == 0, $"the summary HUD keeps its size — it covers an image corner and would hide more of the image ({hudDiff} bytes differ)");
         Check(shapeDiff == 0, $"shapes, lines and edit-shape name tags are not scaled ({shapeDiff} bytes differ)");
+        // HUD 표식이 있어도 모서리 정렬이 아니면 붙은 모서리가 없다 — 자르기·CropTo 와 같이 다른 라벨처럼 다룬다(판정을 못 박는다)
+        var centredHud = new ViOverlay();
+        centredHud.Add(new ViOverlayLabel { Text = "[NG] centred", X = 200, Y = 120, FontSize = 14, Align = ViOverlayAlign.TopCenter, IsHud = true });
+        var chOne = ChangedBox(Render(ScaleCtrl(frame, centredHud, 1.0), ClipBox, ClipBox), bare);
+        var chBig = ChangedBox(Render(ScaleCtrl(frame, centredHud, 1.5), ClipBox, ClipBox), bare);
+        Check(Ratio(chOne, chBig, true) is > 1.35 and < 1.7,
+            $"a HUD-marked label that is not corner-aligned scales like any label — the same corner-HUD test as clipping and CropTo ({chOne} -> {chBig})");
+
+        // 이미 떠 있는 화면에서 배율을 바꾸면 다시 그린다 — 멈춘 라인(새 프레임·오버레이가 안 오는 화면)에서도 바로 바뀌어야 한다
+        var live = new ViOverlay();
+        live.Add(new ViOverlayLabel { Text = "OK 12.3", X = 60, Y = 80, FontSize = 14, Align = ViOverlayAlign.TopLeft });
+        var shown = ScaleCtrl(frame, live, 1.0);
+        Render(shown, ClipBox, ClipBox);
+        shown.OverlayLabelScale = 1.5;
+        var redrawn = Diff(Render(shown, ClipBox, ClipBox), Render(ScaleCtrl(frame, live, 1.5), ClipBox, ClipBox));
+        Check(redrawn == 0, $"changing the scale on a control already on screen redraws it at once ({redrawn} bytes differ from a fresh control at 1.5)");
+
+        // 거절하지 않는 극단 값과 글자 크기 0 은 그리는 자리에서 잘려 예외 없이 그려진다 — FormattedText 의 예외는 OnRender 안이라 앱의
+        // 처리되지 않은 예외로 올라간다(검토 실측: 20 pt 라벨이 배율 1500 에서, 아주 작은 배율은 float 0 으로 던졌다)
+        foreach (var (scale, size) in new[] { (5000.0, 20f), (1e-300, 20f), (1.0, 0f) })
+        {
+            var extreme = new ViOverlay();
+            extreme.Add(new ViOverlayLabel { Text = "x\ny", X = 60, Y = 80, FontSize = size, LineColors = new ViOverlayColor?[] { null, ViOverlayColor.Red } });
+            extreme.Add(new ViOverlayLabel { Text = "x", X = 60, Y = 200, FontSize = size });
+            Exception? err = null;
+            try { Render(ScaleCtrl(frame, extreme, scale), ClipBox, ClipBox); } catch (Exception ex) { err = ex; }
+            Check(err is null, $"scale {scale}, font size {size}: renders without throwing (got {err?.GetType().Name}: {err?.Message})");
+        }
 
         // 기본값은 종전 동작이고, 쓸 수 없는 값은 거절한다
         Check(new CvDispCtrl().OverlayLabelScale == 1.0, "the default is 1.0 — unchanged rendering unless a host opts in");
