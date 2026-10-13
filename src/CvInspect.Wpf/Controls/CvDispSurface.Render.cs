@@ -141,7 +141,10 @@ internal sealed partial class CvDispSurface
                 }
                 case ViOverlayLabel label:
                 {
-                    var ft = Format(label.Text, label.FontSize, brush, ppd);
+                    // 글자 크기만 키운다 — 기준점·정렬은 그대로, 배경 상자는 아래에서 글자의 잉크 경계를 따라간다. 모서리 요약 HUD 는 그대로다
+                    // (자르기와 같은 판정 — HUD 표식이 있어도 모서리 정렬이 아니면 붙은 모서리가 없으므로 다른 라벨처럼 다룬다).
+                    var sizePt = IsCornerHud(label) ? label.FontSize : (float)(label.FontSize * _overlayLabelScale);
+                    var ft = Format(label.Text, sizePt, brush, ppd);
                     var anchor = ToScreen(label.X, label.Y);
                     var x = label.Align switch
                     {
@@ -178,7 +181,7 @@ internal sealed partial class CvDispSurface
                         for (var li = 0; li < textLines.Length; li++)
                         {
                             var lc = li < label.LineColors.Count ? label.LineColors[li] : null;
-                            var lineFt = Format(textLines[li], label.FontSize, lc is null ? brush : MapBrush(lc.Value), ppd);
+                            var lineFt = Format(textLines[li], sizePt, lc is null ? brush : MapBrush(lc.Value), ppd);
                             dc.DrawText(lineFt, new System.Windows.Point(x, y + li * lineH));
                         }
                     }
@@ -460,10 +463,16 @@ internal sealed partial class CvDispSurface
         dc.DrawGeometry(brush, null, geo);
     }
 
+    // 글자 크기(포인트)의 그릴 수 있는 범위 — FormattedText 는 0 이하나 35791 DIP(≈ 26843 pt) 넘는 크기를 던지는데, 그 예외는 OnRender
+    // 안이라 레이아웃 패스를 타고 앱의 처리되지 않은 예외로 올라간다. 라벨 글자 크기는 검사 코드가 정하고(검사하지 않는다) 화면 배율이
+    // 곱해지므로(검토 실측: 20 pt 라벨이 배율 1500 에서, 아주 작은 배율은 float 로 0 이 되어 던졌다) 그리는 자리에서 잡는다.
+    private const float MinLabelPt = 0.5f;
+    private const float MaxLabelPt = 26000f;
+
     private static FormattedText Format(string text, float sizePt, Brush brush, double ppd)
         => new(text, CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
             new Typeface(new System.Windows.Media.FontFamily("Consolas"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
-            sizePt * 96.0 / 72.0, brush, ppd);
+            (float.IsNaN(sizePt) ? MinLabelPt : Math.Clamp(sizePt, MinLabelPt, MaxLabelPt)) * 96.0 / 72.0, brush, ppd);
 
     private static Brush MapBrush(ViOverlayColor color) => color switch
     {

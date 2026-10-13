@@ -17,6 +17,9 @@ namespace CvInspect.Tests;
 ///
 /// 끝의 (5) 는 같은 로컬 소스의 연속 취득 쪽이다 — <see cref="VideoCaptureCam"/> 의 라이브 루프가 정지 요청 없이 끝나면
 /// <see cref="ICam.IsGrabbing"/> 이 참으로 굳고 꺼짐 통지가 안 나가, 감싼 <see cref="ReconnectingCam"/> 도 세션을 다시 세우지 않았다.
+///
+/// (6) 은 위 계약이 기본 절차(<see cref="CamGrabExt.GrabFrameAsync"/>)와 만나는 자리다 — 그 절차가 장을 받자마자 돌아가면, 아직 안 돌아온
+/// GrabOne 의 표식에 부른 쪽의 바로 다음 조작이 걸린다.
 /// </summary>
 public class LocalCamGrabContractTests
 {
@@ -301,7 +304,7 @@ public class LocalCamGrabContractTests
 
     /// <summary>(4) 예외로 끝난 그랩도 표식을 내린다. 정지된 라이브의 마지막 틱을 기다리는 그랩을 닫기가 앞지르면 그 그랩은
     /// "열려 있지 않다" 로 던진다 — 그 길에서 표식이 남으면 다시 열어도 이 카메라의 시작과 그랩이 전부 "그랩이 기다리는 중" 으로 던진다.
-    /// (VideoCaptureCam 은 표식을 세운 뒤 오프라인으로 던지게 할 길이 없다 — 같은 try/finally 모양을 독해로만 확인한다.)</summary>
+    /// VideoCaptureCam 은 아래 따로 본다(표식을 읽기 락보다 먼저 세우므로 열기 전 그랩도 그 길을 탄다).</summary>
     [Fact]
     public void VirtualCamGrabThatEndsInAnExceptionLowersItsMark()
     {
@@ -326,6 +329,33 @@ public class LocalCamGrabContractTests
         try { held.Cam.GrabOne(); } catch (Exception ex) { grabEx = ex; }
         Check(grabEx is null && held.Frames >= 1,
             $"and a later GrabOne is not refused as 'already waiting' (got {grabEx?.GetType().Name}: {grabEx?.Message}, {held})");
+    }
+
+    /// <summary>(4) VideoCaptureCam 판 — 표식을 읽기 락보다 <b>먼저</b> 세우므로, 열기 전·닫힌 뒤·해제 뒤의 그랩은 전부 표식을 세운 다음
+    /// "열려 있지 않다" 로 던진다. 그 길에서 표식을 안 내리면 그 한 번으로 이 인스턴스가 굳는다 — 다시 열어도 시작과 그랩이 "기다리는 중" 으로
+    /// 던진다(검토의 변이: 정상 완료 때만 내리게 바꿔도 스위트 전체가 초록이었다).</summary>
+    [Fact]
+    public void VideoCaptureCamGrabBeforeOpenLowersItsMark()
+    {
+        var clip = ClipOrSkip();
+        if (clip is null) return;
+        using var cam = MakeVideoCam(clip);
+        Exception? early = null;
+        try { cam.GrabOne(); } catch (Exception ex) { early = ex; }
+        Check(early is InvalidOperationException && early.Message.Contains("not opened"),
+            $"premise: GrabOne before Open fails as not opened (got {early?.GetType().Name}: {early?.Message})");
+        cam.Open();
+        Exception? startEx = null;
+        try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; }
+        Check(startEx is null && cam.IsGrabbing,
+            $"a grab that threw after setting its mark must lower it — otherwise StartContinuous on the opened camera throws 'a single grab is waiting' " +
+            $"(got {startEx?.GetType().Name}: {startEx?.Message})");
+        cam.StopContinuous();
+        var frames = 0;
+        cam.FrameAcquired += (_, _) => Interlocked.Increment(ref frames);
+        Exception? grabEx = null;
+        try { cam.GrabOne(); } catch (Exception ex) { grabEx = ex; }
+        Check(grabEx is null && frames == 1, $"and GrabOne is not refused as 'already waiting' (got {grabEx?.GetType().Name}: {grabEx?.Message}, frames={frames})");
     }
 
     // ---- (5) VideoCaptureCam 의 라이브 루프가 스스로 끝날 때 ----
@@ -475,5 +505,394 @@ public class LocalCamGrabContractTests
         Check(log.Count("ReconnectingCam|Warning|", "stopped grabbing without being asked") == 1,
             $"the rebuild is logged as an unrequested stop ({State()})");
         cam.StopContinuous();
+    }
+
+    // ---- (6)~(8) 기본 절차(CamGrabExt.GrabFrameAsync)가 돌아오는 때와 답 ----
+
+    /// <summary>시험 대상 카메라와 그랩을 실제로 도는 카메라 — 데코레이터면 연 세션(안쪽)이다.</summary>
+    private static (ICam Cam, Func<ICam> Target) MakeGrabCam(string source, string? clip, int frameRate = 1)
+    {
+        ICam? inner = null;
+        ICam cam = source switch
+        {
+            "virtual" => new VirtualCam(new CamOpt { FrameRate = frameRate }),
+            "video" => MakeVideoCam(clip!),
+            _ => new ReconnectingCam(() => inner = new VirtualCam(new CamOpt { FrameRate = frameRate }), new CamReconnectOpt { ShutdownWaitMs = 1000 }),
+        };
+        return (cam, () => inner ?? cam);
+    }
+
+    private static object SyncOf(ICam target) => target.GetType().GetField("_sync", Hidden)!.GetValue(target)!;
+
+    /// <summary>기본 절차의 호출 하나를 "장은 받았는데 GrabOne 이 아직 안 돌아온" 자리에 붙잡는다 — 카메라의 락을 쥐어 GrabOne 을 진입에서 세워 두고,
+    /// 그동안 <b>호출의 구독 뒤에</b> 붙잡는 구독자를 건다. 그러면 호출의 구독자는 장을 받았는데 GrabOne 은 그 뒤 구독자에서 서 있다.
+    /// 붙잡는 구독자는 그랩을 실제로 도는 카메라(데코레이터면 안쪽)에 건다: 데코레이터의 구독자는 데코레이터가 안쪽에 먼저 건 전달 핸들러 안에서
+    /// 불려 호출의 구독자보다 <b>앞에</b> 서므로, 거기서 붙잡으면 호출이 장을 받기도 전에 선다(틈이 안 열린다).
+    /// 게이트는 해제하지 않는다 — 시한으로 끝나는 행에서는 붙잡힌 구독자가 아직 그 위에서 기다린다.</summary>
+    private sealed class TailHold : IDisposable
+    {
+        private readonly ICam _target;
+        private readonly ManualResetEventSlim _gate = new();
+        private readonly int _holdMs;
+        private int _entered;
+        private int _left;
+        public readonly Task<CamFrame?> Call;
+
+        /// <param name="entryHoldMs">락을 놓기 전에 더 쥐고 있을 시간 — 장이 호출보다 그만큼 늦게 온다.</param>
+        public TailHold(ICam cam, ICam target, TimeSpan timeout, CancellationToken ct = default, int holdMs = 5000, int entryHoldMs = 0)
+        {
+            _target = target;
+            _holdMs = holdMs;
+            var sync = SyncOf(target);
+            Monitor.Enter(sync);
+            try
+            {
+                Call = cam.GrabFrameAsync(timeout, ct);   // 구독을 걸고 그랩을 띄운다 — GrabOne 은 이 락에서 선다
+                target.FrameAcquired += Late;             // 그래서 이 구독자는 호출의 구독 뒤에 선다
+                if (entryHoldMs > 0) Thread.Sleep(entryHoldMs);
+            }
+            finally { Monitor.Exit(sync); }
+        }
+
+        private void Late(object? _, CamFrame f)
+        {
+            if (Interlocked.Exchange(ref _entered, 1) != 0) return;
+            _gate.Wait(_holdMs);
+            Volatile.Write(ref _left, 1);
+        }
+
+        /// <summary>그랩이 장을 냈고 호출 뒤의 구독자에서 붙잡혀 있다 — 호출의 구독자는 그 앞이라 이미 장을 받았다.</summary>
+        public bool WaitHeld() => WaitFor(() => Volatile.Read(ref _entered) == 1);
+        public bool StillHeld => Volatile.Read(ref _entered) == 1 && Volatile.Read(ref _left) == 0;
+        public void Release() => _gate.Set();
+
+        public void Dispose()
+        {
+            _gate.Set();
+            _target.FrameAcquired -= Late;
+        }
+    }
+
+    /// <summary>(6) <see cref="CamGrabExt.GrabFrameAsync"/> 의 기본 절차는 <b>GrabOne 이 돌아온 뒤에</b> 돌아온다. 장은 GrabOne 안에서 발행되므로
+    /// 호출의 구독자가 장을 받은 순간에도 GrabOne 은 아직 남은 구독자에게 장을 넘기거나 표식을 내리는 중이다. 종전에는 그 순간 돌아가서,
+    /// 부른 쪽이 곧바로 건 그랩·연속 시작이 "이미 기다리는 그랩이 있다" 로 거절됐다(형제 저장소 실측, 가상 카메라: 반환 0 ms 뒤 19/20, 1 ms 뒤 0/20.
+    /// 이쪽 재현도 큰 폴더 영상에서만 19/20 이었고 테스트 패턴·동영상은 0/20 — 발행 뒤 디코드한 영상을 놓는 0.4 ms 가 그 틈으로 보인다, 추정).
+    /// 틈은 시간이 아니라 게이트로 연다(<see cref="TailHold"/>). 감싼 <see cref="ReconnectingCam"/> 은 안쪽의 기본 절차로 넘기므로 같은 행으로 본다.</summary>
+    [Theory]
+    [InlineData("virtual")]
+    [InlineData("video")]
+    [InlineData("reconnecting-virtual")]
+    public async Task GrabFrameAsyncReturnsOnlyAfterItsGrabReturned(string source)
+    {
+        string? clip = null;
+        if (source == "video" && (clip = ClipOrSkip()) is null) return;
+        var (made, targetOf) = MakeGrabCam(source, clip);
+        using var cam = made;
+        var frames = 0;   // 호출 전에 건 구독자 — 장이 발행됐는가
+        cam.FrameAcquired += (_, _) => Interlocked.Increment(ref frames);
+        cam.Open();
+
+        bool returnedWhileHeld;
+        bool heldThroughout;
+        string grabAtThatMoment = "not tried";
+        Task<CamFrame?> call;
+        using (var hold = new TailHold(cam, targetOf(), TimeSpan.FromSeconds(5)))
+        {
+            call = hold.Call;
+            Check(hold.WaitHeld(),
+                $"{source}: premise — the grab published and is held in the subscriber after the call's own (frames={Volatile.Read(ref frames)})");
+            // 여기서 끝나 있으면 GrabOne 이 안 돌아왔는데 돌아간 것이다
+            returnedWhileHeld = await Task.WhenAny(call, Task.Delay(300)) == call;
+            heldThroughout = hold.StillHeld;
+            if (returnedWhileHeld)
+            {
+                // 진단 — 고치기 전 판에서 부른 쪽이 이 순간 건 그랩이 무엇을 받았는지(거절 사유)를 싣는다
+                try { cam.GrabOne(); grabAtThatMoment = "accepted"; }
+                catch (Exception ex) { grabAtThatMoment = $"{ex.GetType().Name}: {ex.Message}"; }
+            }
+            hold.Release();
+            Check(heldThroughout, $"{source}: premise — the late subscriber was still held when the check ended (otherwise the window was missed)");
+            Check(Volatile.Read(ref frames) >= 1, $"{source}: premise — the frame was published while the call was pending (frames={Volatile.Read(ref frames)})");
+            Check(!returnedWhileHeld,
+                $"{source}: GrabFrameAsync must not return while the camera's GrabOne is still delivering its frame — the caller's next grab or " +
+                $"StartContinuous meets the camera's one-grab mark and is refused as 'already waiting' (a GrabOne at that moment: {grabAtThatMoment})");
+            var done = await Task.WhenAny(call, Task.Delay(5000)) == call;
+            Check(done, $"{source}: the call returns once the held subscriber lets go");
+        }
+        var frame = await call;
+        Check(frame is not null, $"{source}: and it returns the frame it took");
+
+        // 돌아온 즉시 건 다음 조작은 거절되지 않는다 — 부른 쪽이 기대는 것은 이것이다
+        Exception? grabEx = null;
+        try { cam.GrabOne(); } catch (Exception ex) { grabEx = ex; }
+        Check(grabEx is null, $"{source}: a GrabOne right after the call returned is accepted (got {grabEx?.GetType().Name}: {grabEx?.Message})");
+        Exception? startEx = null;
+        try { cam.StartContinuous(); } catch (Exception ex) { startEx = ex; }
+        Check(startEx is null && cam.IsGrabbing,
+            $"{source}: StartContinuous right after the call returned starts (got {startEx?.GetType().Name}: {startEx?.Message})");
+        cam.StopContinuous();
+    }
+
+    /// <summary>(7) GrabOne 이 진입에서 거절됐으면 그 사이 구독에 장이 들어왔어도 <b>던진다</b>. 라이브가 도는 중이면 그 장은 라이브의 틱이다 —
+    /// 종전에는 그 장을 답으로 돌려줘, 거절(ICam: 연속 취득 중의 단발 그랩은 던진다)이 정상 답으로 덮였다. 예외도 경고도 없이 흐르던 장이
+    /// 이 그랩의 장으로 판정에 쓰인다. 장치처럼 읽기에 락을 오래 쥐는 소스일수록 잦다(검토 실측: 라이브 중 200회 부른 그랩 중 동영상 소스를
+    /// 쉬지 않고 읽게 하면 167~174회가 라이브 장을 받아 왔다).
+    /// 겹침은 게이트로 만든다: 락을 쥐어 GrabOne 을 진입에서 세우고, 라이브 틱이 호출의 구독에 닿은 것(뒤에 건 구독자가 받은 것)을 본 뒤 놓는다.</summary>
+    [Theory]
+    [InlineData("virtual")]
+    [InlineData("reconnecting-virtual")]
+    public async Task GrabFrameAsyncThrowsWhenItsGrabIsRefusedEvenIfAFrameCameIn(string source)
+    {
+        var (made, targetOf) = MakeGrabCam(source, null, frameRate: 50);
+        using var cam = made;
+        cam.Open();
+        cam.StartContinuous();
+        var target = targetOf();
+        var sync = SyncOf(target);
+        var after = 0;
+        void After(object? _, CamFrame f) => Interlocked.Increment(ref after);
+        Task<CamFrame?> call;
+        bool tickReached;
+        Monitor.Enter(sync);
+        try
+        {
+            call = cam.GrabFrameAsync(TimeSpan.FromSeconds(3));   // GrabOne 은 이 락에서 선다 — 놓으면 "연속 취득 중" 으로 거절된다
+            target.FrameAcquired += After;                       // 호출의 구독 뒤 — 이것이 받았으면 호출의 구독도 받았다
+            tickReached = WaitFor(() => Volatile.Read(ref after) >= 1);
+        }
+        finally { Monitor.Exit(sync); }
+        string outcome;
+        try { var f = await call; outcome = f is null ? "null" : "a frame"; }
+        catch (InvalidOperationException ex) { outcome = $"InvalidOperationException: {ex.Message}"; }
+        catch (Exception ex) { outcome = $"{ex.GetType().Name}: {ex.Message}"; }
+        target.FrameAcquired -= After;
+        cam.StopContinuous();
+        Check(tickReached, $"{source}: premise — a live frame reached the call's subscription while its GrabOne was held at entry");
+        Check(outcome.StartsWith("InvalidOperationException: Continuous acquisition is running", StringComparison.Ordinal),
+            $"{source}: a grab refused because live acquisition is running must surface that refusal, not return the live frame its subscription " +
+            $"happened to pick up — a free-running frame would be judged as this grab's (got {outcome})");
+    }
+
+    /// <summary>(8) (6) 의 기다림은 <b>시한까지만</b>이고 답을 바꾸지 않는다 — 뒤의 구독자가 장을 시한 넘게 붙잡아도 장은 시한에 돌아오고
+    /// (무한 시한이면 1초 유예), 그 사이 취소돼도 받은 장이 돌아온다(종전과 같다). (6) 은 "너무 일찍 돌아온다" 쪽만 본다 — 시한 없이 기다리게
+    /// 바꿔도 (6) 은 초록이고 호출은 붙잡힌 구독자를 따라 영영 선다(검토의 변이로 확인).</summary>
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("infinite")]
+    [InlineData("cancel")]
+    public async Task GrabFrameAsyncTailWaitIsBoundedAndKeepsTheFrame(string row)
+    {
+        var (made, targetOf) = MakeGrabCam("virtual", null);
+        using var cam = made;
+        cam.Open();
+        using var cts = new CancellationTokenSource();
+        var timeout = row switch { "timeout" => TimeSpan.FromMilliseconds(400), "infinite" => Timeout.InfiniteTimeSpan, _ => TimeSpan.FromSeconds(10) };
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        // 시한 행은 장을 200 ms 늦게 들인다 — 장이 곧바로 오면 "부른 순간부터 센 시한" 과 "장이 온 뒤 새로 센 시한" 이 같은 자리(≈400 ms)에
+        // 떨어져 갈리지 않는다(검토의 변이: 꼬리를 새 시한으로 기다리게 바꿔도 초록이었다). 늦추면 앞은 ≈400, 뒤는 ≈600 이다.
+        using var hold = new TailHold(cam, targetOf(), timeout, cts.Token, holdMs: 8000, entryHoldMs: row == "timeout" ? 200 : 0);
+        Check(hold.WaitHeld(), $"{row}: premise — the call's subscriber has the frame and GrabOne is held behind it");
+        var heldAtMs = sw.ElapsedMilliseconds;
+        if (row == "cancel") cts.Cancel();
+        var cancelAtMs = sw.ElapsedMilliseconds;
+        var returned = await Task.WhenAny(hold.Call, Task.Delay(4000)) == hold.Call;
+        var tookMs = sw.ElapsedMilliseconds;
+        var stillHeld = hold.StillHeld;
+        CamFrame? frame = null;
+        Exception? err = null;
+        if (returned)
+        {
+            try { frame = await hold.Call; } catch (Exception ex) { err = ex; }
+        }
+        var when = $"held at {heldAtMs} ms, returned at {(returned ? tookMs.ToString() : "never (4 s)")} ms";
+        Check(returned, $"{row}: the call comes back while a later subscriber still holds the frame — the wait for GrabOne is bounded ({when})");
+        Check(stillHeld, $"{row}: premise — the later subscriber was still holding the frame when the call returned ({when})");
+        Check(frame is not null && err is null,
+            $"{row}: and it returns the frame it took, without an exception — the bound or a cancellation never turns a delivered frame into " +
+            $"null or a throw (got {(frame is null ? "null" : "a frame")}, {err?.GetType().Name}: {err?.Message})");
+        switch (row)
+        {
+            case "timeout":
+                // 시한은 부른 순간부터 센다 — 하한은 타이머 한 눈금(15.6 ms) 넉넉히, 상한은 "장이 온 뒤(≈200 ms) 새로 센 400 ms" 보다 앞
+                Check(heldAtMs >= 180, $"{row}: premise — the frame came about 200 ms after the call ({when})");
+                Check(tookMs is >= 370 and < 560,
+                    $"{row}: it returns at the 400 ms deadline counted from the call, not 400 ms after the frame came ({when})");
+                break;
+            case "infinite":
+                Check(tookMs - heldAtMs >= CamGrabExt.LatePublishGraceMs - 50 && tookMs - heldAtMs < CamGrabExt.LatePublishGraceMs + 1500,
+                    $"{row}: with InfiniteTimeSpan it waits the one-second grace for GrabOne, not forever and not zero ({when})");
+                break;
+            case "cancel":
+                Check(tookMs - cancelAtMs < 1000, $"{row}: a cancellation during the wait returns the frame promptly ({when}, cancelled at {cancelAtMs} ms)");
+                break;
+        }
+    }
+
+    /// <summary>(9) <see cref="VideoCaptureCam"/> 는 읽는 동안 카메라 락을 쥔다 — 그 동안 온 두 번째 그랩과 라이브 중 그랩은 그 락 뒤에 줄 서지 않고
+    /// <b>그 자리에서</b> 던진다. 종전에는 겹침 검사가 그 락 안에 있어 두 번째 그랩이 앞 그랩의 읽기를 기다렸다가, 앞 그랩이 표식을 내린 뒤
+    /// 받아들여졌다 — 그 호출자의 구독에는 이미 앞 그랩의 장이 들어 있어 남의 장을 예외 없이 제 답으로 받았다(검토 실측: 겹친 GrabFrameAsync
+    /// 두 개가 같은 장을 받은 쌍 200 중 196~200, 기본 절차를 안 쓴 손 대기도 같다). 라이브 중 그랩도 라이브 루프의 읽기 뒤에 줄 서, 짧은 시한이면
+    /// 거절이 나기 전에 시한이 다해 라이브 장이 답으로 나갔다.
+    /// 읽기는 시험이 카메라 락을 쥐어 흉내낸다 — 그 동안 건 그랩이 300 ms 안에 거절로 돌아오는지 본다(줄 서면 락을 놓을 때까지 안 돌아온다).</summary>
+    [Theory]
+    [InlineData("second-grab")]
+    [InlineData("live")]
+    public void VideoCaptureCamRefusesAtOnceInsteadOfQueuingBehindTheRead(string row)
+    {
+        var clip = ClipOrSkip();
+        if (clip is null) return;
+        using var cam = (VideoCaptureCam)MakeVideoCam(clip);
+        var frames = 0;
+        cam.FrameAcquired += (_, _) => Interlocked.Increment(ref frames);
+        cam.Open();
+        if (row == "live")
+        {
+            cam.StartContinuous();
+            Check(WaitFor(() => Volatile.Read(ref frames) >= 1), $"{row}: premise — live frames flow");
+        }
+        var sync = SyncOf(cam);
+        Thread? first = null;
+        Exception? firstErr = null;
+        var firstReturned = false;
+        Exception? err = null;
+        var returnedAtOnce = false;
+        var held = true;
+        Monitor.Enter(sync);
+        try
+        {
+            if (row == "second-grab")
+            {
+                // 앞 그랩 — 표식을 세우고 읽기 락에서 선다(시험이 쥔 락이 "읽는 중" 이다)
+                first = new Thread(() =>
+                {
+                    try { cam.GrabOne(); firstReturned = true; }
+                    catch (Exception ex) { firstErr = ex; }
+                }) { IsBackground = true, Name = "first-grab" };
+                first.Start();
+                Check(WaitFor(() => IsParked(first)), $"{row}: premise — the first grab is waiting on the read lock");
+            }
+            var second = new Thread(() =>
+            {
+                try { cam.GrabOne(); }
+                catch (Exception ex) { err = ex; }
+            }) { IsBackground = true, Name = "second-grab" };
+            second.Start();
+            returnedAtOnce = second.Join(300);
+            // 락을 놓는다 — 줄 선 그랩(고치기 전 판)과 앞 그랩이 마저 돌게. 아래 단언은 이미 정해졌다.
+            Monitor.Exit(sync);
+            held = false;
+            second.Join(5000);
+        }
+        finally { if (held) Monitor.Exit(sync); }
+        var expected = row == "live" ? "Continuous acquisition is running" : "A single grab is already waiting";
+        Check(returnedAtOnce && err is InvalidOperationException && err.Message.StartsWith(expected, StringComparison.Ordinal),
+            $"{row}: a grab that cannot answer must be refused at once ('{expected}…'), not queued behind the read lock — queued, it is accepted " +
+            $"after the other grab lowers its mark and returns that grab's frame as its own (returned within 300 ms={returnedAtOnce}, " +
+            $"got {err?.GetType().Name}: {err?.Message})");
+        if (first is not null)
+        {
+            Check(first.Join(5000) && firstReturned && firstErr is null, $"{row}: the first grab still completes with its frame ({firstErr?.Message})");
+        }
+        if (row == "live") cam.StopContinuous();
+    }
+
+    /// <summary>(9) 같은 갈래의 나머지 반 — VideoCaptureCam 의 라이브 검사는 두 번이다: 짧은 락에서 대략 한 번, 읽기 락 안에서 다시 한 번.
+    /// 뒤의 것이 막는 순서: 연속 시작이 표식을 아직 안 섰을 때 보고 지나간 뒤, 그랩의 앞 검사(라이브 없음)가 지나고 나서 라이브를 세운다 — 그러면
+    /// 그랩은 받아들여지고 라이브의 장이 그 구독으로 흘러 남의 장을 예외 없이 돌려준다(검토의 변이: 뒤 검사를 지우면 스위트 전체가 초록이고,
+    /// 시작·그랩 경합 2000회 중 541~665회가 라이브 장을 받았다). 앞 검사 옆에 있어 중복처럼 보이는 줄이라 못 박는다.
+    /// 순서는 게이트로 만든다: 읽기 락을 쥐어 표식을 세운 그랩을 그 락에서 세우고, 그 사이 라이브가 선 상태를 넣은 뒤 놓는다.</summary>
+    [Fact]
+    public void VideoCaptureCamRechecksLiveUnderTheReadLock()
+    {
+        var clip = ClipOrSkip();
+        if (clip is null) return;
+        using var cam = (VideoCaptureCam)MakeVideoCam(clip);
+        var frames = 0;
+        cam.FrameAcquired += (_, _) => Interlocked.Increment(ref frames);
+        cam.Open();
+        var sync = SyncOf(cam);
+        var liveField = typeof(VideoCaptureCam).GetField("_liveThread", Hidden)!;
+        Exception? err = null;
+        var returned = false;
+        var grab = new Thread(() =>
+        {
+            try { cam.GrabOne(); returned = true; }
+            catch (Exception ex) { err = ex; }
+        }) { IsBackground = true, Name = "grab-after-mark" };
+        Monitor.Enter(sync);
+        try
+        {
+            grab.Start();
+            Check(WaitFor(() => IsParked(grab)), "premise: the grab set its mark and waits on the read lock");
+            liveField.SetValue(cam, new Thread(() => { }));   // 그 사이 연속 시작이 선 것 — 표식을 보기 전에 지나간 시작이다
+        }
+        finally { Monitor.Exit(sync); }
+        Check(grab.Join(5000), "the grab returns once the read lock is free");
+        lock (sync) liveField.SetValue(cam, null);
+        Check(!returned && err is InvalidOperationException && err.Message.StartsWith("Continuous acquisition is running", StringComparison.Ordinal) && frames == 0,
+            $"a grab whose early check saw no live stream must look again under the read lock and refuse once live started — otherwise it is accepted " +
+            $"and live frames flow into its subscription as its answer (returned={returned}, got {err?.GetType().Name}: {err?.Message}, frames={frames})");
+        Exception? later = null;
+        try { cam.GrabOne(); } catch (Exception ex) { later = ex; }
+        Check(later is null && frames == 1, $"and the refused grab lowered its mark — the next GrabOne runs (got {later?.GetType().Name}: {later?.Message})");
+    }
+
+    /// <summary>구독되는 순간 남의 장(라이브 틱·앞 그랩의 장)이 들어오는 카메라 — 구독과 그랩 시작 사이의 틈을 결정적으로 연다.</summary>
+    private sealed class EagerCam : ICam
+    {
+        public readonly CamFrame Foreign = new(new byte[4], 2, 2, 2, CamPixelFormat.Mono8);
+        public readonly CamFrame Own = new(new byte[4], 2, 2, 2, CamPixelFormat.Mono8);
+        private EventHandler<CamFrame>? _frames;
+        public int GrabCalls;
+        public string Name => "eager";
+        public string ComType => "Fake";
+        public bool IsConnected => true;
+        public bool IsGrabbing => false;
+        public event EventHandler<CamFrame>? FrameAcquired
+        {
+            add { _frames += value; value?.Invoke(this, Foreign); }
+            remove { _frames -= value; }
+        }
+        public event EventHandler<ConnArgs>? ConnectionChanged { add { } remove { } }
+        public event EventHandler<bool>? GrabbingChanged { add { } remove { } }
+        public void Open() { }
+        public void Close() { }
+        public void GrabOne()
+        {
+            Interlocked.Increment(ref GrabCalls);
+            _frames?.Invoke(this, Own);
+        }
+        public void StartContinuous() { }
+        public void StopContinuous() { }
+        public void SetExposureTimeUs(double timeUs) { }
+        public void Dispose() { }
+    }
+
+    /// <summary>(10) 기본 절차는 이 호출의 GrabOne 이 <b>시작되기 전에</b> 온 장을 집지 않는다 — GrabOne 은 "이 호출 뒤에 오는 프레임" 을 내므로 그 장은
+    /// 답일 수 없다. 종전에는 구독과 그랩 시작 사이(풀 스레드가 본문을 집기까지)에 들어온 장을 답으로 냈다 — 시작 전에 취소된 호출은 GrabOne 을
+    /// 한 번도 안 부르고 그 장을 돌려줬다(검토 실측 20/20).
+    /// 0.30.1 에서는 두 행 모두 늘 빨갛다(검토 실측 41/41 — 구독 순간 장이 들어와 tcs 가 이미 끝나 있으면 WhenAny 가 배열 순서로 그것을 고른다).
+    /// 개발 중 거절 검사(IsCanceled)만 먼저 들어간 판에서는 <c>pre-cancelled</c> 행이 19/20 이었다 — 취소된 토큰의 Task.Run 이 돌아오는 순간
+    /// 이미 취소로 끝나 있으면 그 판도 취소로 던졌다. 시점에 기대지 않고 못 박는 것은 <c>plain</c> 행이다.</summary>
+    [Theory]
+    [InlineData("plain")]
+    [InlineData("pre-cancelled")]
+    public async Task GrabFrameAsyncIgnoresFramesFromBeforeItsGrabStarted(string row)
+    {
+        using var cam = new EagerCam();
+        using var cts = new CancellationTokenSource();
+        if (row == "pre-cancelled") cts.Cancel();
+        CamFrame? got = null;
+        Exception? err = null;
+        try { got = await cam.GrabFrameAsync(TimeSpan.FromSeconds(2), cts.Token); }
+        catch (Exception ex) { err = ex; }
+        var what = got is null ? $"{err?.GetType().Name ?? "null"}" : ReferenceEquals(got, cam.Foreign) ? "the foreign frame" : ReferenceEquals(got, cam.Own) ? "its own frame" : "some other frame";
+        if (row == "plain")
+            Check(ReferenceEquals(got, cam.Own) && cam.GrabCalls == 1,
+                $"{row}: the call returns the frame its GrabOne published, not the one that arrived when it subscribed (got {what}, GrabOne calls={cam.GrabCalls})");
+        else
+            Check(err is OperationCanceledException && cam.GrabCalls == 0,
+                $"{row}: a call cancelled before its GrabOne ran ends as cancelled — it never ran a grab, so no frame can be its answer " +
+                $"(got {what}, GrabOne calls={cam.GrabCalls})");
     }
 }

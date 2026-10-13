@@ -31,10 +31,16 @@ public sealed class VideoCaptureCam : ICam
     private bool _disposed;
     private double? _setExposureUs;   // SetExposureTimeUs 로 받은 마지막 값 — 열 때 다시 넣는다(ICam 계약)
 
-    // 단발 그랩이 진행 중이다(_sync 아래에서 읽고 쓴다) — GrabOne 의 진입 검사에서 세우고, 읽기·발행이 끝나 돌아갈 때(예외로 끝나도)
-    // 내린다. 서 있는 동안 연속 시작과 두 번째 그랩은 던진다(ICam 계약). 읽기는 락 아래라 그동안 온 시작·그랩은 락에서 기다리지만,
-    // 발행은 락 밖이라 표식이 없을 때는 그 사이에 시작이 서고 두 번째 그랩이 돌아, 그랩을 부른 쪽의 구독에 라이브나 남의 그랩의 장이
-    // 섞여 들어왔다(LocalCamGrabContractTests: 발행 중인 그랩을 붙잡아 두고 시작·그랩을 걸면 매번 섰다).
+    // 단발 그랩이 진행 중이다(_markSync 아래에서 읽고 쓴다) — GrabOne 의 첫 검사에서 세우고, 읽기·발행이 끝나 돌아갈 때(예외로 끝나도)
+    // 내린다. 서 있는 동안 연속 시작과 두 번째 그랩은 던진다(ICam 계약). 표식이 없을 때는 발행(락 밖) 사이에 시작이 서고 두 번째 그랩이
+    // 돌아, 그랩을 부른 쪽의 구독에 라이브나 남의 그랩의 장이 섞여 들어왔다(LocalCamGrabContractTests: 발행 중인 그랩을 붙잡아 두고
+    // 시작·그랩을 걸면 매번 섰다).
+    // ⚠ 표식은 읽기 락(_sync)과 따로 짧은 락으로 지킨다. 읽기 락 아래에서 세우면, 앞 그랩이 읽는 동안 온 두 번째 그랩은 거절되지 않고
+    // 그 락에서 기다리다가 앞 그랩이 표식을 내린 뒤 받아들여졌다 — 그 호출자의 구독에는 이미 앞 그랩의 장이 들어 있어, 남의 장을 예외 없이
+    // 제 답으로 받고 제 장은 아무도 안 받았다(검토 실측: 겹친 GrabFrameAsync 두 개가 같은 장을 받은 쌍 200 중 196~200). 라이브 중 그랩도
+    // 같은 락에서 라이브 루프의 읽기 뒤에 줄 서, 짧은 시한이면 거절이 나기 전에 시한이 다했다. 짧은 락으로 옮기면 둘 다 그 자리에서 던진다.
+    // 락 순서: _sync → _markSync 만 쓴다(연속 시작이 읽기 락 안에서 이 표식을 본다). 반대로 쥐는 자리는 없다.
+    private readonly object _markSync = new();
     private bool _grabPending;
 
     public VideoCaptureCam(CamOpt opt)
@@ -118,21 +124,27 @@ public sealed class VideoCaptureCam : ICam
         try
         {
             CamFrame? frame;
-            lock (_sync)
+            // 겹침 검사는 읽기 락보다 먼저, 짧은 락에서 한다(_markSync 주석) — 앞 그랩의 읽기나 라이브 루프의 읽기 뒤에 줄 서지 않고 그 자리에서 던진다.
+            lock (_markSync)
             {
-                ThrowIfDisposed();
-                EnsureConnected();
                 // 연속 취득 중에는 답할 수 없다 — 여기서 한 장 더 내도 부른 쪽은 그것과 흐르던 장을 가릴 수 없다.
-                if (_liveThread != null)
-                    throw new InvalidOperationException(
-                        "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
-                        "stream's. Call StopContinuous() first.");
-                // 그랩은 한 번에 하나다 — 앞 그랩이 아직 발행 중이면(락 밖) 둘이 서로의 구독에 장을 넣는다. 이 그랩이 낸 장의
+                // (라이브 참조는 _sync 아래에서 바뀐다 — 여기서는 대략 보고, 아래 읽기 락에서 다시 본다.)
+                if (Volatile.Read(ref _liveThread) != null) ThrowLiveRunning();
+                // 그랩은 한 번에 하나다 — 앞 그랩이 읽거나 발행 중이면 둘이 서로의 구독에 장을 넣는다. 이 그랩이 낸 장의
                 // 핸들러가 같은 카메라를 되불러도 여기서 걸린다(ICam.FrameAcquired).
                 if (_grabPending)
                     throw new InvalidOperationException(
                         "A single grab is already waiting for its frame on this camera. Wait for that GrabOne() to return first.");
                 _grabPending = marked = true;
+            }
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                EnsureConnected();
+                // ⚠ 위의 라이브 검사와 중복이 아니다 — 지우지 않는다. 연속 시작이 표식이 서기 전에 보고 지나간 뒤 위 검사(라이브 없음)가
+                // 지나고 나서 라이브를 세우면, 여기서만 걸린다. 없으면 이 그랩은 받아들여지고 라이브의 장이 그 구독으로 흘러 남의 장을 예외 없이
+                // 돌려준다(검토 변이: 이 줄을 지우면 시작·그랩 경합 2000회 중 541~665회). 회귀: VideoCaptureCamRechecksLiveUnderTheReadLock.
+                if (_liveThread != null) ThrowLiveRunning();
                 // 읽기 실패를 삼키지 않는다 — 사람이 부른 한 장이다. 종전에는 프레임도 예외도 로그도 없이
                 // 돌아와서, 부른 쪽에서 성공과 구분되지 않았다(구독자가 아무것도 못 받은 것이 유일한 단서인데
                 // 그것을 이유와 함께 설명해 주는 곳이 없었다). 연속 취득 루프는 같은 실패를 이미 남긴다.
@@ -143,9 +155,14 @@ public sealed class VideoCaptureCam : ICam
         }
         finally
         {
-            if (marked) lock (_sync) _grabPending = false;
+            if (marked) lock (_markSync) _grabPending = false;
         }
     }
+
+    private static void ThrowLiveRunning()
+        => throw new InvalidOperationException(
+            "Continuous acquisition is running, so a single grab cannot tell its own frame from the " +
+            "stream's. Call StopContinuous() first.");
 
     /// <summary>구독자에게 프레임을 넘긴다 — <b>구독자가 던져도 우리가 하는 일은 달라지지 않는다</b>(ICam 계약).
     /// 감싸지 않으면 라이브 루프에서는 예외가 루프 테두리까지 올라가 <b>취득이 통째로 끝난다</b>. 로그에는
@@ -167,7 +184,10 @@ public sealed class VideoCaptureCam : ICam
             if (_liveThread != null) return;
             // 단발 그랩이 장을 읽거나 내는 중이면 켜지 않는다 — 켜면 라이브의 장이 그 그랩을 부른 쪽의 구독(구독 → 그랩 → 반환)으로
             // 들어가 제 답과 가릴 수 없다. 그랩이 읽는 동안 온 시작은 위 락에서 기다렸다가, 그랩이 아직 발행 중이면 여기서 던진다.
-            if (_grabPending)
+            // (표식은 _markSync 가 지킨다 — 이 자리가 _sync → _markSync 순서로 쥐는 유일한 곳이다.)
+            bool grabPending;
+            lock (_markSync) grabPending = _grabPending;
+            if (grabPending)
                 throw new InvalidOperationException(
                     "A single grab is waiting for its frame; continuous acquisition cannot start until it returns. " +
                     "Wait for GrabOne() to return first.");

@@ -40,21 +40,9 @@ public sealed class ViOverlay
                     Align: ViOverlayAlign.TopLeft or ViOverlayAlign.TopRight or ViOverlayAlign.BottomLeft or ViOverlayAlign.BottomRight,
                 } hud => ViHud.Reanchor(hud, width, height),
                 ViOverlayLabel l => l.MovedTo(l.X - x, l.Y - y),
-                ViOverlaySeg s => new ViOverlaySeg
-                {
-                    X1 = s.X1 - x, Y1 = s.Y1 - y, X2 = s.X2 - x, Y2 = s.Y2 - y, HasEndArrow = s.HasEndArrow,
-                    Color = s.Color, IsDashed = s.IsDashed,
-                },
-                ViOverlayRect r => new ViOverlayRect
-                {
-                    CenterX = r.CenterX - x, CenterY = r.CenterY - y, Width = r.Width, Height = r.Height, AngleDeg = r.AngleDeg,
-                    Color = r.Color, IsDashed = r.IsDashed,
-                },
-                ViOverlayPoly p => new ViOverlayPoly
-                {
-                    Points = p.Points.Select(q => (q.X - x, q.Y - y)).ToList(), IsClosed = p.IsClosed,
-                    Color = p.Color, IsDashed = p.IsDashed,
-                },
+                ViOverlaySeg s => new ViOverlaySeg(s) { X1 = s.X1 - x, Y1 = s.Y1 - y, X2 = s.X2 - x, Y2 = s.Y2 - y },
+                ViOverlayRect r => new ViOverlayRect(r) { CenterX = r.CenterX - x, CenterY = r.CenterY - y },
+                ViOverlayPoly p => new ViOverlayPoly(p) { Points = p.Points.Select(q => (q.X - x, q.Y - y)).ToList() },
                 _ => item,
             });
         return cut;
@@ -85,8 +73,21 @@ public enum ViOverlayAlign
     BottomRight,
 }
 
+/// <summary>오버레이 항목의 바탕. 항목은 init 전용이라 고친 사본은 새로 만든다 — 파생 형마다 <b>복사 생성자</b>가 있어
+/// 바꿀 것만 초기화자로 덮는다(<c>new ViOverlayLabel(l) { FontSize = l.FontSize * 1.5f }</c>). 속성을 손으로 옮겨 만든 사본은
+/// 이 형에 속성이 늘 때 그것을 조용히 빠뜨린다 — 복사 생성자는 이 파일과 같이 고쳐진다.</summary>
 public abstract class ViOverlayItem
 {
+    protected ViOverlayItem() { }
+
+    /// <summary>공통 속성(색·점선)을 <paramref name="source"/> 에서 잇는다 — 파생 형의 복사 생성자가 부른다.</summary>
+    protected ViOverlayItem(ViOverlayItem source)
+    {
+        if (source is null) throw new ArgumentNullException(nameof(source));
+        Color = source.Color;
+        IsDashed = source.IsDashed;
+    }
+
     public ViOverlayColor Color { get; init; }
 
     /// <summary>점선 렌더 — 보조 기하(검색 창 등)를 실선 결과 기하와 구분.</summary>
@@ -96,6 +97,18 @@ public abstract class ViOverlayItem
 /// <summary>선분 — HasEndArrow 면 끝점에 채운 화살촉(라인 방향/각도 부호 혼동 방지).</summary>
 public sealed class ViOverlaySeg : ViOverlayItem
 {
+    public ViOverlaySeg() { }
+
+    /// <summary>사본 — <paramref name="source"/> 의 속성을 빠짐없이 잇는다. 바꿀 것만 초기화자로 덮는다.</summary>
+    public ViOverlaySeg(ViOverlaySeg source) : base(source)
+    {
+        X1 = source.X1;
+        Y1 = source.Y1;
+        X2 = source.X2;
+        Y2 = source.Y2;
+        HasEndArrow = source.HasEndArrow;
+    }
+
     public double X1 { get; init; }
     public double Y1 { get; init; }
     public double X2 { get; init; }
@@ -106,6 +119,24 @@ public sealed class ViOverlaySeg : ViOverlayItem
 /// <summary>텍스트 라벨 — FontSize 는 포인트 단위. 픽셀이 아니라서 이미지 줌과 무관한 화면 크기다.</summary>
 public sealed class ViOverlayLabel : ViOverlayItem
 {
+    public ViOverlayLabel() { }
+
+    /// <summary>사본 — <paramref name="source"/> 의 속성을 빠짐없이 잇는다. 바꿀 것만 초기화자로 덮는다:
+    /// 한 화면에서만 글자를 키우려면 <c>new ViOverlayLabel(l) { FontSize = l.FontSize * k }</c>.
+    /// 줄별 색(<see cref="LineColors"/>)과 HUD 내용(<see cref="Hud"/>)은 참조를 그대로 잇는다 — 둘 다 만든 뒤 고치지 않는 값이다.</summary>
+    public ViOverlayLabel(ViOverlayLabel source) : base(source)
+    {
+        Text = source.Text;
+        X = source.X;
+        Y = source.Y;
+        FontSize = source.FontSize;
+        Align = source.Align;
+        HasBackground = source.HasBackground;
+        LineColors = source.LineColors;
+        IsHud = source.IsHud;
+        Hud = source.Hud;
+    }
+
     public string Text { get; init; } = "";
     public double X { get; init; }
     public double Y { get; init; }
@@ -137,26 +168,25 @@ public sealed class ViOverlayLabel : ViOverlayItem
     /// ViHud 가 만든 라벨은 둘 다 있고, 손으로 IsHud 만 켠 라벨은 이것이 null 이다(그때는 Text 뿐이다).</summary>
     public ViHudSummary? Hud { get; init; }
 
-    /// <summary>앵커만 옮긴 사본 — 나머지 속성을 빠짐없이 잇는다(속성이 늘면 여기 한 곳만 고친다).</summary>
-    internal ViOverlayLabel MovedTo(double x, double y) => new()
-    {
-        Text = Text,
-        X = x,
-        Y = y,
-        FontSize = FontSize,
-        Align = Align,
-        HasBackground = HasBackground,
-        LineColors = LineColors,
-        IsHud = IsHud,
-        Hud = Hud,
-        Color = Color,
-        IsDashed = IsDashed,
-    };
+    /// <summary>앵커만 옮긴 사본 — 나머지는 복사 생성자가 잇는다.</summary>
+    internal ViOverlayLabel MovedTo(double x, double y) => new(this) { X = x, Y = y };
 }
 
 /// <summary>회전 사각 외곽선 — 패턴 발견 위치 표시 등.</summary>
 public sealed class ViOverlayRect : ViOverlayItem
 {
+    public ViOverlayRect() { }
+
+    /// <summary>사본 — <paramref name="source"/> 의 속성을 빠짐없이 잇는다. 바꿀 것만 초기화자로 덮는다.</summary>
+    public ViOverlayRect(ViOverlayRect source) : base(source)
+    {
+        CenterX = source.CenterX;
+        CenterY = source.CenterY;
+        Width = source.Width;
+        Height = source.Height;
+        AngleDeg = source.AngleDeg;
+    }
+
     public double CenterX { get; init; }
     public double CenterY { get; init; }
     public double Width { get; init; }
@@ -167,6 +197,15 @@ public sealed class ViOverlayRect : ViOverlayItem
 /// <summary>폴리라인 — 블랍 경계 등. IsClosed 면 시작점으로 닫아 그림.</summary>
 public sealed class ViOverlayPoly : ViOverlayItem
 {
+    public ViOverlayPoly() { }
+
+    /// <summary>사본 — <paramref name="source"/> 의 속성을 빠짐없이 잇는다(점 목록은 참조를 그대로). 바꿀 것만 초기화자로 덮는다.</summary>
+    public ViOverlayPoly(ViOverlayPoly source) : base(source)
+    {
+        Points = source.Points;
+        IsClosed = source.IsClosed;
+    }
+
     public IReadOnlyList<(double X, double Y)> Points { get; init; } = [];
     public bool IsClosed { get; init; } = true;
 }
