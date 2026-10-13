@@ -871,8 +871,9 @@ public class LocalCamGrabContractTests
     /// <summary>(10) 기본 절차는 이 호출의 GrabOne 이 <b>시작되기 전에</b> 온 장을 집지 않는다 — GrabOne 은 "이 호출 뒤에 오는 프레임" 을 내므로 그 장은
     /// 답일 수 없다. 종전에는 구독과 그랩 시작 사이(풀 스레드가 본문을 집기까지)에 들어온 장을 답으로 냈다 — 시작 전에 취소된 호출은 GrabOne 을
     /// 한 번도 안 부르고 그 장을 돌려줬다(검토 실측 20/20).
-    /// 결정적으로 못 박는 것은 <c>plain</c> 행이다. <c>pre-cancelled</c> 행은 고치기 전 판에서 대개 빨갛지만(검토 19/20) 늘은 아니다 — 취소된 토큰의
-    /// Task.Run 이 돌아오는 순간 이미 취소로 끝나 있으면 옛 판도 취소로 던졌다.</summary>
+    /// 0.30.1 에서는 두 행 모두 늘 빨갛다(검토 실측 41/41 — 구독 순간 장이 들어와 tcs 가 이미 끝나 있으면 WhenAny 가 배열 순서로 그것을 고른다).
+    /// 개발 중 거절 검사(IsCanceled)만 먼저 들어간 판에서는 <c>pre-cancelled</c> 행이 19/20 이었다 — 취소된 토큰의 Task.Run 이 돌아오는 순간
+    /// 이미 취소로 끝나 있으면 그 판도 취소로 던졌다. 시점에 기대지 않고 못 박는 것은 <c>plain</c> 행이다.</summary>
     [Theory]
     [InlineData("plain")]
     [InlineData("pre-cancelled")]

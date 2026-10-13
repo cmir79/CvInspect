@@ -92,9 +92,10 @@ frame is published from inside `GrabOne`, so the call waits for `GrabOne` to ret
 returns. It waits only up to the same timeout (a one-second grace with `Timeout.InfiniteTimeSpan`):
 if another `FrameAcquired` subscriber holds the frame longer than that, you get the frame at the
 timeout and the camera may still be finishing that grab. After a `null` or a cancellation the generic
-path cannot stop `GrabOne` either, so the next call can still be refused there. An `ICamGrabAsync`
-implementation keeps the promise on every outcome — it lowers its one-grab mark before its task
-completes (`GevCam` does).
+path cannot stop `GrabOne` either, so the next call can still be refused there. A camera that
+implements the grab itself keeps the promise on every outcome — it lowers its one-grab mark before
+its task completes (`GevCam` does). `ReconnectingCam` hands the call to its inner camera, so it keeps
+whatever that camera's path keeps: over `VirtualCam` or `VideoCaptureCam`, the generic path's.
 
 **If `GrabOne` throws, the call throws — even when a frame came in meanwhile.** On the local cameras
 that means `GrabOne` refused at entry (continuous acquisition running, another grab waiting), so the

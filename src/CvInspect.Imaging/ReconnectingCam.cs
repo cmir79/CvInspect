@@ -370,6 +370,8 @@ public sealed class ReconnectingCam : ICam, ICamGrabAsync
 
     /// <summary>한 장을 찍어 돌려준다 — <see cref="ICamGrabAsync"/>. <b>안쪽으로 그대로 넘긴다</b>:
     /// 안쪽이 표식을 단 구현이면 그쪽 짝짓기 보장이 살아야 하고, 아니면 확장의 기본 절차가 돈다.
+    /// 그래서 "작업이 끝났으면 그 그랩도 끝" 이라는 <see cref="ICamGrabAsync.GrabFrameAsync"/> 의 약속도 안쪽 경로의 것을 그대로 따른다 —
+    /// 로컬 카메라를 감쌌으면 기본 절차의 범위(장을 들고 돌아올 때만)이고, 시한 만료·취소 뒤의 다음 호출은 거절될 수 있다.
     /// 미연결 구간의 경계는 <see cref="GrabOne"/> 과 같다 — 즉시 결과가 필요한 호출이라 <b>던진다</b>.
     /// null 로 접으면 상위가 오지 않을 프레임을 계속 기다린다.</summary>
     public Task<CamFrame?> GrabFrameAsync(TimeSpan timeout, CancellationToken ct = default)
