@@ -141,7 +141,9 @@ public sealed class VideoCaptureCam : ICam
             {
                 ThrowIfDisposed();
                 EnsureConnected();
-                // 표식을 세운 뒤 읽기 락을 잡기 전에 시작이 섰을 수 있다 — 그 시작은 표식을 못 본 것이므로 이 그랩이 물러난다.
+                // ⚠ 위의 라이브 검사와 중복이 아니다 — 지우지 않는다. 연속 시작이 표식이 서기 전에 보고 지나간 뒤 위 검사(라이브 없음)가
+                // 지나고 나서 라이브를 세우면, 여기서만 걸린다. 없으면 이 그랩은 받아들여지고 라이브의 장이 그 구독으로 흘러 남의 장을 예외 없이
+                // 돌려준다(검토 변이: 이 줄을 지우면 시작·그랩 경합 2000회 중 541~665회). 회귀: VideoCaptureCamRechecksLiveUnderTheReadLock.
                 if (_liveThread != null) ThrowLiveRunning();
                 // 읽기 실패를 삼키지 않는다 — 사람이 부른 한 장이다. 종전에는 프레임도 예외도 로그도 없이
                 // 돌아와서, 부른 쪽에서 성공과 구분되지 않았다(구독자가 아무것도 못 받은 것이 유일한 단서인데
