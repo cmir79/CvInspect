@@ -86,6 +86,14 @@ the same body `GrabOne` runs. Code
 that must work on any backend treats `null` and `TimeoutException` alike as "no frame"; cancellation
 through the token comes out as `OperationCanceledException`, so it stays distinguishable from both.
 
+**When the call comes back with a frame, the grab is over** — a `GrabOne()` or `StartContinuous()`
+issued right after it is not refused as "a single grab is already waiting". On the generic path the
+frame is published from inside `GrabOne`, so the call waits for `GrabOne` to return before it
+returns. It waits only up to the same timeout (a one-second grace with `Timeout.InfiniteTimeSpan`):
+if another `FrameAcquired` subscriber holds the frame longer than that, you get the frame at the
+timeout and the camera may still be finishing that grab. An `ICamGrabAsync` implementation keeps the
+same promise — it lowers its one-grab mark before its task completes (`GevCam` does).
+
 The `timeout` argument wins over whatever the implementation has configured, because the call site
 knows more than the configuration did. Pass `Timeout.InfiniteTimeSpan` to defer to the
 implementation's own deadline — `GevCam` then uses its `GrabTimeoutMs`. On the generic path that

@@ -3,13 +3,16 @@ namespace CvInspect.Imaging;
 /// <summary>단발 그랩을 프레임으로 받는 확장 — 어느 <see cref="ICam"/> 에나 붙는다.</summary>
 public static class CamGrabExt
 {
-    /// <summary>시한을 <see cref="Timeout.InfiniteTimeSpan"/> 으로 준 기본 절차에서, <see cref="ICam.GrabOne"/> 이
-    /// 장 없이 돌아온 뒤 늦은 발행을 기다리는 유예(ms).
+    /// <summary>시한을 <see cref="Timeout.InfiniteTimeSpan"/> 으로 준 기본 절차에서 기다릴 시한 대신 쓰는 유예(ms). 두 자리에 쓴다 —
+    /// <see cref="ICam.GrabOne"/> 이 장 없이 돌아온 뒤 <b>늦은 발행</b>을 기다릴 때, 그리고 장을 받은 뒤 아직 안 돌아온
+    /// <b>GrabOne 의 꼬리</b>(우리 뒤의 구독자·그랩의 뒷정리)를 기다릴 때.
     ///
     /// 늦은 발행은 프레임이 벤더 콜백으로 들어오는 구현에서 반환 직후에 온다. 이 툴킷의 구현은 돌아오기 전에 발행하거나
     /// 이 절차를 타지 않으므로(VirtualCam·VideoCaptureCam 은 동기 발행, DeadCam·GevCam 은 자기 구현, ReconnectingCam 은
     /// 안쪽으로 넘긴다) 이 유예는 <b>밖의 구현을 위한 여유값</b>이다 —
     /// 잰 지연이 아니다(회귀가 흉내내는 지연은 120ms). 넉넉히 잡은 대가는 "장이 끝내 안 오는" 그랩에서만 이만큼 늦는 것뿐이다.
+    /// 꼬리 쪽은 보통 마이크로초로 끝나고(동기 발행 구현의 뒷정리), 이 값까지 가는 것은 우리 뒤의 구독자가 장을 붙잡을 때뿐이다 — 그때도
+    /// 받은 장은 그대로 돌려주고, 카메라는 아직 그 그랩을 쥐고 있을 수 있다.
     /// 시한을 값으로 준 호출은 이 유예가 아니라 남은 시한을 기다린다.</summary>
     internal const int LatePublishGraceMs = 1000;
 
@@ -22,6 +25,11 @@ public static class CamGrabExt
     /// <c>null</c> 은 "이 호출의 장이 없었고 던질 사유도 없다" 이고, 답해야 하는데 못 하는 상태는 던진다.
     /// <b>기본 절차의 시한 만료는 <c>null</c> 이지만, 표식을 단 구현은 시한 만료를 사유와 함께
     /// <see cref="TimeoutException"/> 으로 던질 수 있다</b>(<c>GevCam</c>) — 백엔드를 가리지 않는 호출자는 둘 다 받는다.
+    ///
+    /// <b>장을 들고 돌아올 때는 기본 절차의 <see cref="ICam.GrabOne"/> 도 돌아와 있다</b> — 그래서 곧바로 건 다음 그랩·연속 시작이
+    /// "이미 기다리는 그랩이 있다" 로 거절되지 않는다. 장은 GrabOne 안에서 발행되므로 받은 순간에는 GrabOne 이 아직 남은 구독자에게
+    /// 넘기거나 뒷정리하는 중이고, 그것을 기다린 뒤에 돌아온다. 단 같은 시한까지만 기다린다(무한 시한이면 1초 유예) — 우리 뒤의 구독자가
+    /// 장을 그보다 오래 붙잡으면 장을 시한에 돌려주고, 그때는 카메라가 아직 그 그랩을 쥐고 있을 수 있다.
     ///
     /// <b>기본 절차가 못 하는 것</b>(그래서 콜백으로 프레임을 받는 구현은 <see cref="ICamGrabAsync"/> 를 단다):
     /// <list type="bullet">
@@ -90,7 +98,25 @@ public static class CamGrabExt
                 first = await Task.WhenAny(tcs.Task, rest).ConfigureAwait(false);
             }
 
-            if (ReferenceEquals(first, tcs.Task)) return await tcs.Task.ConfigureAwait(false);
+            if (ReferenceEquals(first, tcs.Task))
+            {
+                // ⚠ 장을 받았다고 곧장 돌아가지 않는다 — GrabOne 이 아직 안 돌아왔을 수 있다. 발행은 GrabOne 안에서 일어나서, 우리 구독자가
+                // 장을 받은 뒤에도 그 뒤의 구독자와 그랩의 뒷정리(로컬 카메라의 "단발 그랩 진행 중" 표식 내리기)가 남아 있다. 그때 돌아가면
+                // 부른 쪽이 곧바로 건 그랩·연속 시작이 "이미 기다리는 그랩이 있다" 로 거절된다(가상 카메라 실측: 반환 0 ms 뒤 19/20, 1 ms 뒤 0/20).
+                // 그래서 그랩이 돌아오기를 기다린다 — 단 같은 시한까지만(무한 시한이면 유예까지만): 우리 뒤의 구독자가 장을 오래 붙잡으면
+                // 시한 약속이 깨진다. 이 기다림은 답을 바꾸지 않는다 — 시한이 다하거나 취소돼도, 그랩이 발행 뒤에 던져도 받은 장을 돌려준다.
+                if (!grab.IsCompleted)
+                {
+                    var tail = wait == Timeout.InfiniteTimeSpan ? Task.Delay(LatePublishGraceMs, waits.Token) : deadline;
+                    await Task.WhenAny(grab, tail).ConfigureAwait(false);
+                }
+                // 발행 뒤의 실패 — 장은 이미 받았으니 답은 장이다. 삼키지는 않고 흔적을 남긴다(구현의 결함이고, 부른 쪽은 장을 받아 모른다).
+                // 시한 안에 안 끝난 그랩은 종전처럼 고아로 돈다 — 그 끝은 아무도 보지 않는다.
+                if (grab.IsFaulted)
+                    CvLog.Publish(CvLogLevel.Warning, nameof(CamGrabExt),
+                        $"[{cam.Name}] GrabOne threw after it had delivered its frame; the frame is returned.", grab.Exception!.GetBaseException());
+                return await tcs.Task.ConfigureAwait(false);
+            }
             ct.ThrowIfCancellationRequested();   // 취소는 시한 만료가 아니다 — 부른 쪽이 갈라 알아야 한다
             return null;                         // 시한 만료
         }

@@ -26,6 +26,10 @@ public interface ICamGrabAsync
     /// <paramref name="timeout"/> 이 <b>구현의 설정값보다 우선한다</b>(호출 자리의 사정이 더 최신이다).
     /// 구현 자신의 시한에 맡기려면 <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> 을 준다.
     ///
+    /// <b>돌려준 작업이 끝났으면 그 그랩도 끝나 있어야 한다</b> — 부른 쪽은 돌아오자마자 다음 그랩이나 연속 시작을 걸고, 그것이
+    /// "이미 기다리는 그랩이 있다" 로 거절되면 안 된다. 그래서 단발 그랩 표식은 작업을 끝내기 <b>전에</b> 내린다(<c>GevCam</c>: 그랩
+    /// 몸통의 finally 에서 내린 뒤 작업이 끝난다). 기본 절차(<see cref="CamGrabExt.GrabFrameAsync"/>)도 같은 약속을 지킨다.
+    ///
     /// <b>돌려주는 값과 던지는 것의 경계</b> — 이것이 이 API 의 핵심이다.
     /// <list type="bullet">
     /// <item><c>null</c> 은 <b>이 호출의 장이 없었고, 던질 사유도 없다</b>는 뜻이다: 기본 절차
