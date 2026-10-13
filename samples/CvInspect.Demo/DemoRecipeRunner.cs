@@ -62,20 +62,20 @@ public sealed class DemoRunResult : IDisposable
             {
                 var a = f(s.X1, s.Y1);
                 var b = f(s.X2, s.Y2);
-                return new ViOverlaySeg { X1 = a.X, Y1 = a.Y, X2 = b.X, Y2 = b.Y, HasEndArrow = s.HasEndArrow, Color = s.Color, IsDashed = s.IsDashed };
+                return new ViOverlaySeg(s) { X1 = a.X, Y1 = a.Y, X2 = b.X, Y2 = b.Y };
             }
             case ViOverlayLabel l:
             {
                 var p = f(l.X, l.Y);
-                return new ViOverlayLabel { Text = l.Text, X = p.X, Y = p.Y, FontSize = l.FontSize, Align = l.Align, HasBackground = l.HasBackground, LineColors = l.LineColors, IsHud = l.IsHud, Hud = l.Hud, Color = l.Color, IsDashed = l.IsDashed };
+                return new ViOverlayLabel(l) { X = p.X, Y = p.Y };
             }
             case ViOverlayRect r:
             {
                 var c = f(r.CenterX, r.CenterY);
-                return new ViOverlayRect { CenterX = c.X, CenterY = c.Y, Width = r.Width * scale, Height = r.Height * scale, AngleDeg = r.AngleDeg, Color = r.Color, IsDashed = r.IsDashed };
+                return new ViOverlayRect(r) { CenterX = c.X, CenterY = c.Y, Width = r.Width * scale, Height = r.Height * scale };
             }
             case ViOverlayPoly p:
-                return new ViOverlayPoly { Points = p.Points.Select(q => f(q.X, q.Y)).ToList(), IsClosed = p.IsClosed, Color = p.Color, IsDashed = p.IsDashed };
+                return new ViOverlayPoly(p) { Points = p.Points.Select(q => f(q.X, q.Y)).ToList() };
             default:
                 return item;
         }
