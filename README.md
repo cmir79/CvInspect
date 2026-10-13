@@ -74,7 +74,9 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   (segments, labels, rects, polylines) that any display layer can draw. `ViOverlay.CropTo` gives a copy
   for showing a result on the cropped region, with the summary HUD (`ViOverlayLabel.IsHud`; its verdict, title
   and lines as data in `ViOverlayLabel.Hud`) put back in its corner
-  (on `CvDispCtrl`, turn on `ClipOverlayToImage` for that view)
+  (on `CvDispCtrl`, turn on `ClipOverlayToImage` for that view). Items are init-only; each type has a
+  copy constructor, so a changed copy names only what changes —
+  `new ViOverlayLabel(label) { FontSize = label.FontSize * 1.5f }` — and keeps up when a property is added
 
 Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display control,
 shape dragging, property editor), **CvInspect.Imaging** (camera acquisition contract with virtual /
