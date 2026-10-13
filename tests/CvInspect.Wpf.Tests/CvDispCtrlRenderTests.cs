@@ -405,6 +405,84 @@ public class CvDispCtrlRenderTests
         Check(shOn.Margin > 0 && shOn == shOff, $"edit shapes are not clipped to the image — edge handles stay grabbable ({shOn} on vs {shOff} off)");
     });
 
+    // === 라벨 글자 배율(OverlayLabelScale) ===
+
+    private static CvDispCtrl ScaleCtrl(CamFrame frame, ViOverlay? overlay, double scale, IReadOnlyList<CvEditShape>? shapes = null)
+        => new() { IsToolbarVisible = false, Frame = frame, Overlay = overlay, Shapes = shapes, OverlayLabelScale = scale };
+
+    /// <summary>오버레이 없는 화면과 달라진 화소의 외접 사각. 없으면 X1 &lt; X0.</summary>
+    private static (int X0, int Y0, int X1, int Y1) ChangedBox(byte[] px, byte[] bare)
+    {
+        int x0 = ClipBox, y0 = ClipBox, x1 = -1, y1 = -1;
+        for (int y = 0; y < ClipBox; y++)
+            for (int x = 0; x < ClipBox; x++)
+            {
+                int i = (y * ClipBox + x) * 4;
+                if (px[i] == bare[i] && px[i + 1] == bare[i + 1] && px[i + 2] == bare[i + 2] && px[i + 3] == bare[i + 3]) continue;
+                x0 = Math.Min(x0, x); y0 = Math.Min(y0, y); x1 = Math.Max(x1, x); y1 = Math.Max(y1, y);
+            }
+        return (x0, y0, x1, y1);
+    }
+
+    [Fact]
+    public void OverlayLabelScaleGrowsOnlyTheNonHudLabelText() => RunSta(() =>
+    {
+        // 한 창에서만 검사 라벨 글자를 키우는 속성 — 소비자는 그동안 매 프레임 라벨 사본을 손으로 만들어 넣었다(라벨에 속성이 늘면 그 사본이
+        // 조용히 빠뜨린다). 바라는 동작: 글자만 × 배율, 기준점·정렬 그대로, 배경 상자가 글자를 따라감, HUD·도형은 그대로(소비자 사본
+        // 실측: 1.5배에서 상자 비율 ≈1.53, HUD 1.0). 라벨은 두 갈래로 그려진다 — 한 색 블록과 줄별 색 블록. 둘 다 본다.
+        var frame = GrayFrame(400, 400);
+        var bare = Render(ScaleCtrl(frame, null, 1.0), ClipBox, ClipBox);
+        double Ratio((int X0, int Y0, int X1, int Y1) a, (int X0, int Y0, int X1, int Y1) b, bool horizontal)
+            => horizontal ? (b.X1 - b.X0 + 1.0) / (a.X1 - a.X0 + 1.0) : (b.Y1 - b.Y0 + 1.0) / (a.Y1 - a.Y0 + 1.0);
+
+        // 배경 없는 행은 글자 잉크만 잰다 — 배경 상자는 블록 전체 크기에서 잡혀, 줄별 색 갈래가 글자를 안 키우고 상자만 키워도 배경 있는
+        // 행은 1.5 로 나온다(변이로 확인: 그 갈래만 옛 크기로 두어도 배경 있는 행만으로는 초록이었다).
+        foreach (var (lineColors, background) in new[] { (false, false), (true, false), (false, true), (true, true) })
+        {
+            var overlay = new ViOverlay();
+            overlay.Add(new ViOverlayLabel
+            {
+                Text = "OK 12.3\nA 45", X = 60, Y = 80, FontSize = 14, Align = ViOverlayAlign.TopLeft, Color = ViOverlayColor.Green,
+                LineColors = lineColors ? new ViOverlayColor?[] { ViOverlayColor.Red, null } : null, HasBackground = background,
+            });
+            var one = ChangedBox(Render(ScaleCtrl(frame, overlay, 1.0), ClipBox, ClipBox), bare);
+            var big = ChangedBox(Render(ScaleCtrl(frame, overlay, 1.5), ClipBox, ClipBox), bare);
+            var path = (lineColors ? "per-line colours" : "single colour") + (background ? ", text and background" : ", text only");
+            Check(one.X1 > one.X0 && one.Y1 > one.Y0, $"{path}: premise — the label is drawn at scale 1.0 ({one})");
+            var rw = Ratio(one, big, true);
+            var rh = Ratio(one, big, false);
+            Check(rw is > 1.35 and < 1.7 && rh is > 1.35 and < 1.7,
+                $"{path}: at 1.5 the drawn label grows about 1.5x — width {rw:F2}, height {rh:F2} ({one} -> {big})");
+            Check(Math.Abs(big.X0 - one.X0) <= 3 && Math.Abs(big.Y0 - one.Y0) <= 3,
+                $"{path}: the anchor stays put — a top-left label grows to the right and down ({one} -> {big})");
+        }
+
+        // 그대로인 것 — 요약 HUD, 도형·선, 편집 도형의 이름표. 바이트까지 같아야 한다.
+        var hud = new ViOverlay();
+        hud.AddSummary(false, "PatternFind", "line 1", "line 2");
+        var shapes = new ViOverlay();
+        shapes.Add(new ViOverlaySeg { X1 = 20, Y1 = 300, X2 = 380, Y2 = 320, HasEndArrow = true });
+        shapes.Add(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 120, Height = 60, AngleDeg = 15 });
+        shapes.Add(new ViOverlayPoly { Points = [(30, 30), (90, 40), (60, 90)] });
+        var rect = new CvEditRect { Label = "Search" };
+        rect.Set(150, 250, 100, 60);
+        IReadOnlyList<CvEditShape> edit = [rect];
+        var hudDiff = Diff(Render(ScaleCtrl(frame, hud, 1.0), ClipBox, ClipBox), Render(ScaleCtrl(frame, hud, 1.5), ClipBox, ClipBox));
+        var shapeDiff = Diff(Render(ScaleCtrl(frame, shapes, 1.0, edit), ClipBox, ClipBox), Render(ScaleCtrl(frame, shapes, 1.5, edit), ClipBox, ClipBox));
+        Check(ChangedBox(Render(ScaleCtrl(frame, hud, 1.0), ClipBox, ClipBox), bare).X1 >= 0, "premise: the HUD is drawn");
+        Check(hudDiff == 0, $"the summary HUD keeps its size — it covers an image corner and would hide more of the image ({hudDiff} bytes differ)");
+        Check(shapeDiff == 0, $"shapes, lines and edit-shape name tags are not scaled ({shapeDiff} bytes differ)");
+
+        // 기본값은 종전 동작이고, 쓸 수 없는 값은 거절한다
+        Check(new CvDispCtrl().OverlayLabelScale == 1.0, "the default is 1.0 — unchanged rendering unless a host opts in");
+        foreach (var bad in new[] { 0.0, -1.0, double.NaN, double.PositiveInfinity })
+        {
+            var threw = false;
+            try { new CvDispCtrl().OverlayLabelScale = bad; } catch (ArgumentException) { threw = true; }
+            Check(threw, $"OverlayLabelScale rejects {bad} with ArgumentException");
+        }
+    });
+
     // === 테마 색 — 툴바·상태 줄 바탕, 상태 줄 글자, 구분선, ⏯·✋ 강조 ===
     // 앞의 넷은 코드가 고정 브러시를 직접 넣어(값 출처 Local) 호스트가 리소스로 덮을 길이 없었다 — 다크 테마에서도 흰 띠로
     // 남았다(소비자 실측, 0.29.4). 호스트는 키(색 사전 한 곳에서 모든 인스턴스)나 속성(인스턴스마다)으로 넣고, 실행 중 사전

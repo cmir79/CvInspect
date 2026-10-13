@@ -141,7 +141,9 @@ internal sealed partial class CvDispSurface
                 }
                 case ViOverlayLabel label:
                 {
-                    var ft = Format(label.Text, label.FontSize, brush, ppd);
+                    // 글자 크기만 키운다 — 기준점·정렬은 그대로, 배경 상자는 아래에서 글자의 잉크 경계를 따라간다. 요약 HUD 는 그대로다.
+                    var sizePt = label.IsHud ? label.FontSize : (float)(label.FontSize * _overlayLabelScale);
+                    var ft = Format(label.Text, sizePt, brush, ppd);
                     var anchor = ToScreen(label.X, label.Y);
                     var x = label.Align switch
                     {
@@ -178,7 +180,7 @@ internal sealed partial class CvDispSurface
                         for (var li = 0; li < textLines.Length; li++)
                         {
                             var lc = li < label.LineColors.Count ? label.LineColors[li] : null;
-                            var lineFt = Format(textLines[li], label.FontSize, lc is null ? brush : MapBrush(lc.Value), ppd);
+                            var lineFt = Format(textLines[li], sizePt, lc is null ? brush : MapBrush(lc.Value), ppd);
                             dc.DrawText(lineFt, new System.Windows.Point(x, y + li * lineH));
                         }
                     }

@@ -86,6 +86,28 @@ public sealed partial class CvDispCtrl
         set => SetValue(ClipOverlayToImageProperty, value);
     }
 
+    public static readonly DependencyProperty OverlayLabelScaleProperty = DependencyProperty.Register(
+        nameof(OverlayLabelScale), typeof(double), typeof(CvDispCtrl),
+        new PropertyMetadata(1.0, (d, e) => ((CvDispCtrl)d)._surface.OverlayLabelScale = (double)e.NewValue),
+        v => v is double s && double.IsFinite(s) && s > 0);
+
+    /// <summary>
+    /// 결과 오버레이 라벨의 글자 배율 — <b>이 컨트롤에서만</b>. 기본 1.0(종전 동작).
+    /// 한 화면(멀리서 보는 운영 창 등)에서만 검사 데이터 글자를 키울 때 쓴다. 같은 <see cref="Overlay"/> 를 이력·다른 화면이 함께 쥐고
+    /// 있으므로 오버레이를 고쳐 쓰지 않고 그리는 쪽에서 키운다. 호스트가 매 프레임 라벨 사본을 만들어 넣는 방식은 넣는 자리를 하나만
+    /// 빠뜨려도 그 화면이 예외도 경고도 없이 원래 크기로 그려진다.
+    ///
+    /// 바뀌는 것은 <b>글자 크기뿐</b>이다 — 기준점(X·Y)과 정렬은 그대로이고, 배경 상자는 글자의 잉크 경계를 따라 함께 커진다.
+    /// 그대로인 것: 요약 HUD(<c>ViOverlayLabel.IsHud</c> — 이미지 모서리를 차지하는 블록이라 키우면 이미지를 그만큼 더 가린다),
+    /// 도형·선, 편집 도형(<see cref="Shapes"/>)의 이름표.
+    /// 0 이하·NaN·무한대는 거절한다(<see cref="ArgumentException"/>).
+    /// </summary>
+    public double OverlayLabelScale
+    {
+        get => (double)GetValue(OverlayLabelScaleProperty);
+        set => SetValue(OverlayLabelScaleProperty, value);
+    }
+
     public static readonly DependencyProperty ShapesProperty = DependencyProperty.Register(
         nameof(Shapes), typeof(object), typeof(CvDispCtrl),
         new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d)._surface.SetShapes(e.NewValue as IReadOnlyList<CvEditShape>)));

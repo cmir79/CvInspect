@@ -50,6 +50,20 @@ internal sealed partial class CvDispSurface : FrameworkElement
         }
     }
 
+    private double _overlayLabelScale = 1.0;
+
+    /// <summary>요약 HUD 가 아닌 오버레이 라벨의 글자 배율 — 컨트롤의 같은 이름 속성이 설명을 갖는다(값 검사도 그쪽).</summary>
+    public double OverlayLabelScale
+    {
+        get => _overlayLabelScale;
+        set
+        {
+            if (_overlayLabelScale == value) return;
+            _overlayLabelScale = value;
+            if (_overlay is not null) InvalidateVisual();
+        }
+    }
+
     private bool _showLoadHint = true;
 
     /// <summary>무이미지 안내에 "우클릭 → 불러오기" 한 줄을 붙일지. 불러오기가 없는 화면에서는
