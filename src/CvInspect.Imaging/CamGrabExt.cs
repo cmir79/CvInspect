@@ -29,7 +29,13 @@ public static class CamGrabExt
     /// <b>장을 들고 돌아올 때는 기본 절차의 <see cref="ICam.GrabOne"/> 도 돌아와 있다</b> — 그래서 곧바로 건 다음 그랩·연속 시작이
     /// "이미 기다리는 그랩이 있다" 로 거절되지 않는다. 장은 GrabOne 안에서 발행되므로 받은 순간에는 GrabOne 이 아직 남은 구독자에게
     /// 넘기거나 뒷정리하는 중이고, 그것을 기다린 뒤에 돌아온다. 단 같은 시한까지만 기다린다(무한 시한이면 1초 유예) — 우리 뒤의 구독자가
-    /// 장을 그보다 오래 붙잡으면 장을 시한에 돌려주고, 그때는 카메라가 아직 그 그랩을 쥐고 있을 수 있다.
+    /// 장을 그보다 오래 붙잡으면 장을 시한에 돌려주고, 그때는 카메라가 아직 그 그랩을 쥐고 있을 수 있다. 그 대가로 우리 뒤의 느린 구독자는
+    /// 이 호출을 그만큼 늦춘다 — UI 스레드에서 이 작업을 동기로 기다리는데(<c>.Result</c>) 그 구독자가 UI 스레드로 동기 마샬링하면 시한
+    /// 내내 선다(그 뒤 장은 돌아온다).
+    ///
+    /// <b><see cref="ICam.GrabOne"/> 이 던졌으면 그 사이 장이 와 있어도 던진다.</b> 로컬 카메라는 발행 중 구독자 예외를 삼키므로 이 갈래는
+    /// 진입 거절(연속 취득 중·다른 그랩 대기 중)이다 — 그때 구독에 든 장은 라이브나 남의 그랩의 장이고, 그것을 답으로 내면 거절이
+    /// 정상 답으로 덮인다. 발행한 뒤에 던지는 밖의 구현도 같다 — 던진 GrabOne 은 실패다.
     ///
     /// <b>기본 절차가 못 하는 것</b>(그래서 콜백으로 프레임을 받는 구현은 <see cref="ICamGrabAsync"/> 를 단다):
     /// <list type="bullet">
@@ -104,17 +110,19 @@ public static class CamGrabExt
                 // 장을 받은 뒤에도 그 뒤의 구독자와 그랩의 뒷정리(로컬 카메라의 "단발 그랩 진행 중" 표식 내리기)가 남아 있다. 그때 돌아가면
                 // 부른 쪽이 곧바로 건 그랩·연속 시작이 "이미 기다리는 그랩이 있다" 로 거절된다(가상 카메라 실측: 반환 0 ms 뒤 19/20, 1 ms 뒤 0/20).
                 // 그래서 그랩이 돌아오기를 기다린다 — 단 같은 시한까지만(무한 시한이면 유예까지만): 우리 뒤의 구독자가 장을 오래 붙잡으면
-                // 시한 약속이 깨진다. 이 기다림은 답을 바꾸지 않는다 — 시한이 다하거나 취소돼도, 그랩이 발행 뒤에 던져도 받은 장을 돌려준다.
+                // 시한 약속이 깨진다. 시한이 다하거나 취소되면 받은 장을 돌려준다(종전과 같다).
                 if (!grab.IsCompleted)
                 {
                     var tail = wait == Timeout.InfiniteTimeSpan ? Task.Delay(LatePublishGraceMs, waits.Token) : deadline;
                     await Task.WhenAny(grab, tail).ConfigureAwait(false);
                 }
-                // 발행 뒤의 실패 — 장은 이미 받았으니 답은 장이다. 삼키지는 않고 흔적을 남긴다(구현의 결함이고, 부른 쪽은 장을 받아 모른다).
-                // 시한 안에 안 끝난 그랩은 종전처럼 고아로 돈다 — 그 끝은 아무도 보지 않는다.
-                if (grab.IsFaulted)
-                    CvLog.Publish(CvLogLevel.Warning, nameof(CamGrabExt),
-                        $"[{cam.Name}] GrabOne threw after it had delivered its frame; the frame is returned.", grab.Exception!.GetBaseException());
+                // ⚠ 그랩이 던졌으면 장이 와 있어도 그 사유를 올린다. 로컬 카메라는 발행 중 구독자 예외를 삼키므로 여기 오는 것은 진입 거절이고
+                // (연속 취득 중·다른 그랩 대기 중), 그때 우리 구독이 집은 장은 라이브의 틱이나 남의 그랩의 장이다. 종전에는 그 장을 답으로 내
+                // 거절이 정상 답으로 덮였다(재현: 라이브 중 부른 그랩이 라이브 장을 받아 왔다 — 장치처럼 읽기에 락을 오래 쥐는 소스에서는 대부분).
+                // 시작 전에 취소된 그랩(본문이 안 돈 Task.Run)도 같다 — 그 장은 우리 그랩의 것일 수 없다.
+                // 시한 안에 안 끝난 그랩은 종전처럼 고아로 돈다 — 그 끝(나중의 거절 포함)은 아무도 보지 않으니, 진입 락을 시한 넘게 기다린
+                // 그랩이면 돌려준 장이 이 그랩의 것이 아닐 수 있다(기본 절차가 짝을 못 가리는 한계 — 위 summary 의 첫 항목).
+                if (grab.IsFaulted || grab.IsCanceled) await grab.ConfigureAwait(false);
                 return await tcs.Task.ConfigureAwait(false);
             }
             ct.ThrowIfCancellationRequested();   // 취소는 시한 만료가 아니다 — 부른 쪽이 갈라 알아야 한다
