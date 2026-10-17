@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
 
@@ -14,19 +15,28 @@ namespace CvInspect.Vision.Opts;
 /// 그대로 역직렬화해도 값이 들어온다. 다만 옛 파일을 계속 쓰는 호스트는 전처리 쪽 크롭도 꺼야 하므로
 /// (켜진 채 남으면 <c>Preprocess</c> 가 던진다) <see cref="FromLegacy"/> 로 옮긴다.
 /// </summary>
-public sealed class CvCropOpt : ICvShapeSource
+public sealed class CvCropOpt : INotifyPropertyChanged, ICvShapeSource
 {
+    /// <summary>그립이 쓰는 자르기 좌표(<c>Crop*</c>)만 통지한다 — 이 값을 보여 주는 편집기가 드래그를 따라오게
+    /// 하려는 것이다. 나머지는 편집기에서 고치는 값이라 편집기가 이미 안다.</summary>
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private double _cropX;
+    private double _cropY;
+    private double _cropW = 640;
+    private double _cropH = 480;
+
     /// <summary>잘라낼지. 바꾸면 이후 툴 좌표의 원점이 옮겨가 재티칭 대상이다.</summary>
     [CvCategory("cv:CatCrop", 1)]
     [CvName("cv:UseCrop")]
     [CvDesc("cv:UseCropDesc")]
     public bool UseCrop { get; set; }
 
-    // 잘라낼 자리 — 원본 이미지 공간. 표시 위에서 끌어 편집한다(PG 미노출 — 정적 스냅샷이라 실시간 미반영).
-    [Browsable(false)] public double CropX { get; set; }
-    [Browsable(false)] public double CropY { get; set; }
-    [Browsable(false)] public double CropW { get; set; } = 640;
-    [Browsable(false)] public double CropH { get; set; } = 480;
+    // 잘라낼 자리 — 원본 이미지 공간. 표시 위에서 끌어 편집한다(PG 미노출).
+    [Browsable(false)] public double CropX { get => _cropX; set => Notify(Put(ref _cropX, value)); }
+    [Browsable(false)] public double CropY { get => _cropY; set => Notify(Put(ref _cropY, value)); }
+    [Browsable(false)] public double CropW { get => _cropW; set => Notify(Put(ref _cropW, value)); }
+    [Browsable(false)] public double CropH { get => _cropH; set => Notify(Put(ref _cropH, value)); }
 
     /// <summary>편집 도형 — 잘라내기 사각(UseCrop 일 때만).</summary>
     public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
@@ -36,10 +46,8 @@ public sealed class CvCropOpt : ICvShapeSource
         crop.Set(CropX, CropY, CropW, CropH);
         crop.Changed += (_, _) =>
         {
-            CropX = crop.X;
-            CropY = crop.Y;
-            CropW = crop.W;
-            CropH = crop.H;
+            Notify(Put(ref _cropX, crop.X, nameof(CropX)), Put(ref _cropY, crop.Y, nameof(CropY)),
+                Put(ref _cropW, crop.W, nameof(CropW)), Put(ref _cropH, crop.H, nameof(CropH)));
             onEdited();
         };
         return [crop];
@@ -72,5 +80,21 @@ public sealed class CvCropOpt : ICvShapeSource
         CvLog.Publish(CvLogLevel.Info, nameof(CvCropOpt),
             $"Moved the crop saved in CvImageProcessOpt ({c.X:F0},{c.Y:F0} {c.W:F0}x{c.H:F0}) to CvCropOpt — save the image-process file again so it is not moved twice.");
         return new CvCropOpt { UseCrop = true, CropX = c.X, CropY = c.Y, CropW = c.W, CropH = c.H };
+    }
+
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
+    {
+        var same = field.Equals(value);
+        field = value;
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

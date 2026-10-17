@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
@@ -10,8 +11,17 @@ namespace CvInspect.Vision.Opts;
 /// 위치 선탐지·존재 확인 등 범용 (검사가 용도를 조립). 좌표는 대상 이미지 픽셀 공간.
 /// ⚠ 존재 확인·면적 판정에는 자동 문턱을 끈다 — <see cref="UseOtsu"/> 참조(제품이 없는 영역에서 큰 블랍을 만든다).
 /// </summary>
-public sealed class CvBlobOpt : ICvShapeSource
+public sealed class CvBlobOpt : INotifyPropertyChanged, ICvShapeSource
 {
+    /// <summary>그립이 쓰는 탐색 영역 좌표(<c>Search*</c>)만 통지한다 — 이 값을 보여 주는 편집기가 드래그를 따라오게
+    /// 하려는 것이다. 나머지는 편집기에서 고치는 값이라 편집기가 이미 안다.</summary>
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private double _searchX;
+    private double _searchY;
+    private double _searchW = 200;
+    private double _searchH = 200;
+
     [CvCategory("cv:CatBlob", 1)]
     [CvName("cv:BlobPolarity")]
     [CvDesc("cv:BlobPolarityDesc")]
@@ -61,11 +71,11 @@ public sealed class CvBlobOpt : ICvShapeSource
     [CvDesc("cv:UseSearchRegionDesc")]
     public bool UseSearchRegion { get; set; }
 
-    // 탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
-    [Browsable(false)] public double SearchX { get; set; }
-    [Browsable(false)] public double SearchY { get; set; }
-    [Browsable(false)] public double SearchW { get; set; } = 200;
-    [Browsable(false)] public double SearchH { get; set; } = 200;
+    // 탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출).
+    [Browsable(false)] public double SearchX { get => _searchX; set => Notify(Put(ref _searchX, value)); }
+    [Browsable(false)] public double SearchY { get => _searchY; set => Notify(Put(ref _searchY, value)); }
+    [Browsable(false)] public double SearchW { get => _searchW; set => Notify(Put(ref _searchW, value)); }
+    [Browsable(false)] public double SearchH { get => _searchH; set => Notify(Put(ref _searchH, value)); }
 
     /// <summary>편집 도형 — 탐색 영역 사각(UseSearchRegion 일 때만). 티칭 도형은 Teal — 검사 결과 기하(Cyan)와 색으로 구분.</summary>
     public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
@@ -75,13 +85,27 @@ public sealed class CvBlobOpt : ICvShapeSource
         search.Set(SearchX, SearchY, SearchW, SearchH);
         search.Changed += (_, _) =>
         {
-            SearchX = search.X;
-            SearchY = search.Y;
-            SearchW = search.W;
-            SearchH = search.H;
+            Notify(Put(ref _searchX, search.X, nameof(SearchX)), Put(ref _searchY, search.Y, nameof(SearchY)),
+                Put(ref _searchW, search.W, nameof(SearchW)), Put(ref _searchH, search.H, nameof(SearchH)));
             onEdited();
         };
         return [search];
+    }
+
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
+    {
+        var same = field.Equals(value);
+        field = value;
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }
 

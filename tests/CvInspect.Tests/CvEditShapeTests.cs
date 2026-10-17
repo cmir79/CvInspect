@@ -1,6 +1,8 @@
 // 편집 도형 — 각 Opt 가 ICvShapeSource 로 자기 도형을 내고, 도형을 움직이면 Opt 에 즉시 되쓰이며 onEdited 가 불리는지.
 // 토글(UseCrop·UseSearchRegion·UseRegion)이 꺼져 있으면 도형이 없다. 코어에 있으니 어느 OS 에서든 같은 회귀가 돈다.
 // 전처리(CvImageProcessOpt)는 0.27 부터 기하가 없다 — 자르기 사각은 CvCropOpt 가 낸다.
+using System.ComponentModel;
+using System.Reflection;
 using CvInspect.Vision;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Opts;
@@ -131,5 +133,142 @@ public class CvEditShapeTests
         var ring = Assert.IsType<CvEditRing>(Assert.Single(CvShapeBinder.For(rf, () => { })!));
         ring.RMax = 70;
         Assert.Equal(70, rf.RMaxPx);
+    }
+
+    /// <summary>그립 편집이 opt 에 쓴 값은 전부 PropertyChanged 로 나간다 — 속성 편집기의 숫자 칸은 그 통지로만 다시 그린다.
+    /// 통지가 없던 판(0.31.0)에서는 밴드 그립을 끌어도 RMinPx 칸이 그대로였다(소비자 현장 보고). 어느 프로퍼티를 쓰는지 손으로
+    /// 나열하지 않고 그립 전후 값을 비교한다 — 새 그립 좌표가 통지 없이 들어오면 여기서 빨개진다.</summary>
+    [Fact]
+    public void GripEditsNotifyEveryPropertyTheyWrite()
+    {
+        object[] opts =
+        [
+            new CvCropOpt { UseCrop = true }, new CvEdgeFilterOpt { UseRegion = true },
+            new CvPatternOpt { UseSearchRegion = true }, new CvPatternOpt { UseSearchRegion = true, TrainShape = CvTrainShape.Circle },
+            new CvBlobOpt { UseSearchRegion = true }, new CvHoughCircleOpt { UseSearchRegion = true },
+            new CvColorSegmentOpt(), new CvColorSegmentOpt { Shape = CvRegionShape.Ring },
+            new CvFindLineOpt(), new CvFindCircleOpt { AngleSpanDeg = 180 }, new CvUnwrapOpt(), new CvRingFillOpt(),
+            new CvRegionOpt(), new CvRegionOpt { Shape = CvRegionShape.Ring },
+        ];
+        // 타입 목록은 손으로 적었지만(토글을 켜야 도형이 나온다) 빠뜨림은 여기서 잡는다 — 새 도형 공급자가 생기면 위에 더할 때까지 빨갛다.
+        var all = typeof(ICvShapeSource).Assembly.GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract && typeof(ICvShapeSource).IsAssignableFrom(t)).Select(t => t.Name).OrderBy(n => n).ToList();
+        var covered = opts.Select(o => o.GetType().Name).Distinct().OrderBy(n => n).ToList();
+        Assert.True(all.SequenceEqual(covered), $"every core ICvShapeSource is checked here: missing [{string.Join(", ", all.Except(covered))}]");
+
+        foreach (var opt in opts)
+        {
+            var name = opt.GetType().Name;
+            // 그립이 쓰는 자리 — 영역을 품은 툴(컬러 세그먼트)은 품은 영역 객체에 쓴다. 편집기는 그 객체를 따로 구독한다.
+            var targets = new List<object> { opt };
+            targets.AddRange(opt.GetType().GetProperties()
+                .Where(p => p.GetIndexParameters().Length == 0 && typeof(INotifyPropertyChanged).IsAssignableFrom(p.PropertyType))
+                .Select(p => p.GetValue(opt)).OfType<object>());
+
+            var shapes = CvShapeBinder.For(opt, () => { });
+            Assert.True(shapes is { Count: > 0 }, $"{name} offers grips in this setup — else nothing below is tested");
+            foreach (var shape in shapes!)
+            {
+                // 한 번의 그립 쓰기(도형 Changed 한 번) 안에서 나간 통지들은 모두 같은 기하를 봐야 한다 — 축마다 쓰면서 바로 알리면
+                // 첫 통지는 X 만 바뀐 사각을 본다. 도형 Changed 에 opt 핸들러 뒤로 붙어 한 번의 쓰기가 끝난 자리를 잰다.
+                var seen = targets.Select(_ => new List<Dictionary<string, object?>>()).ToList();
+                var torn = new List<string>();
+                var multiNotifyWrites = 0;
+                void EndOfWrite(object? s, EventArgs e)
+                {
+                    for (int i = 0; i < targets.Count; i++)
+                    {
+                        if (seen[i].Count >= 2) multiNotifyWrites++;
+                        if (seen[i].Skip(1).Any(snap => !snap.SequenceEqual(seen[i][0])))
+                            torn.Add(targets[i].GetType().Name);
+                        seen[i].Clear();
+                    }
+                }
+                shape.Changed += EndOfWrite;
+
+                var notified = targets.Select(_ => new HashSet<string>()).ToList();
+                var handlers = targets.Select((t, i) => (PropertyChangedEventHandler)((_, e) =>
+                {
+                    notified[i].Add(e.PropertyName ?? "");
+                    seen[i].Add(Snap(targets[i]));
+                })).ToList();
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    var inpc = Assert.IsAssignableFrom<INotifyPropertyChanged>(targets[i]);
+                    inpc.PropertyChanged += handlers[i];
+                }
+                var before = targets.Select(Snap).ToList();
+
+                Nudge(shape);
+                shape.Changed -= EndOfWrite;
+                Assert.True(torn.Count == 0,
+                    $"{name} {shape.Label}: subscribers saw half-written geometry ({string.Join(", ", torn.Distinct())}) — every axis of one grip write must be stored before the first PropertyChanged");
+                Assert.True(multiNotifyWrites > 0, $"{name} {shape.Label}: one write moved two or more axes — else the torn-write check above proves nothing");
+
+                var changedTotal = 0;
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    ((INotifyPropertyChanged)targets[i]).PropertyChanged -= handlers[i];
+                    var after = Snap(targets[i]);
+                    var changed = after.Where(kv => !Equals(kv.Value, before[i][kv.Key])).Select(kv => kv.Key).ToList();
+                    changedTotal += changed.Count;
+                    var silent = changed.Where(p => !notified[i].Contains(p)).ToList();
+                    Assert.True(silent.Count == 0,
+                        $"{name} {shape.Label} grip wrote {targets[i].GetType().Name}.{string.Join(", ", silent)} without PropertyChanged — the property editor row stays stale while dragging");
+                }
+                Assert.True(changedTotal > 0, $"{name} {shape.Label}: the nudge moved something — else the check above proves nothing");
+            }
+        }
+
+        // 코드 경로도 같다 — 스팬 전환 버튼이 바꾼 값이 편집기에 보인다.
+        var fc = new CvFindCircleOpt();
+        var names = new List<string?>();
+        fc.PropertyChanged += (_, e) => names.Add(e.PropertyName);
+        fc.ToggleSpan();
+        Assert.Contains(nameof(CvFindCircleOpt.AngleSpanDeg), names);
+
+        // 같은 값 대입은 통지하지 않는다 — 드래그 중 안 움직인 축까지 편집기가 다시 그리지 않게.
+        var uw = new CvUnwrapOpt();
+        var count = 0;
+        uw.PropertyChanged += (_, _) => count++;
+        uw.RMin = uw.RMin;
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void ResyncingTheShapeInsidePropertyChangedKeepsEveryAxis()
+    {
+        // 통지 안에서 도형을 다시 맞추는 호스트(EditShapeSync 를 PropertyChanged 에 건다) — 축마다 알리던 판에서는 첫 통지의
+        // 재동기화가 아직 안 쓴 Y 를 옛 값으로 도형에 되돌려, 대각선 드래그의 Y 가 조용히 사라졌다(독립 검토 지적, 이 판에서 재현).
+        var synced = new CvFindCircleOpt { CenterX = 100, CenterY = 100, Radius = 40 };
+        var arcShape = Assert.IsType<CvEditArc>(Assert.Single(CvShapeBinder.For(synced, () => { })!));
+        synced.PropertyChanged += (_, _) => synced.EditShapeSync!();
+        arcShape.Set(130, 160, 40, 0, 360);   // 한 번의 Changed 로 X·Y 를 함께 옮긴다(대각선 드래그)
+        Assert.True((synced.CenterX, synced.CenterY) == (130.0, 160.0) && (arcShape.CenterX, arcShape.CenterY) == (130.0, 160.0),
+            $"a host that resyncs the shape inside PropertyChanged keeps both axes of a diagonal drag (opt {synced.CenterX},{synced.CenterY}; arc {arcShape.CenterX},{arcShape.CenterY})");
+    }
+
+    /// <summary>값 형식·문자열 프로퍼티의 현재 값 — 델리게이트·배열·참조 객체는 비교 대상이 아니다.</summary>
+    private static Dictionary<string, object?> Snap(object o)
+        => o.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.CanRead && p.GetIndexParameters().Length == 0 && (p.PropertyType.IsValueType || p.PropertyType == typeof(string)))
+            .ToDictionary(p => p.Name, p => p.GetValue(o));
+
+    /// <summary>그립을 사람이 끄는 것처럼 움직인다 — 먼저 Set 으로 여러 축을 한 번의 Changed 에 옮기고(대각선 드래그·모서리 리사이즈),
+    /// 이어 쓰기 가능한 수치 축을 하나씩 민다(Set 이 안 받는 회전각 등도 빠지지 않게).</summary>
+    private static void Nudge(CvEditShape shape)
+    {
+        switch (shape)
+        {
+            case CvEditRect r: r.Set(r.X - 7, r.Y - 7, r.W - 7, r.H - 7); break;
+            case CvEditSeg s: s.Set(s.X1 - 7, s.Y1 - 7, s.X2 - 7, s.Y2 - 7); break;
+            case CvEditRing g: g.Set(g.CenterX - 7, g.CenterY - 7, g.RMin - 7, g.RMax - 7); break;
+            case CvEditCircle c: c.Set(c.CenterX - 7, c.CenterY - 7, c.Radius - 7); break;
+            case CvEditArc a: a.Set(a.CenterX - 7, a.CenterY - 7, a.Radius - 7, a.StartDeg - 7, a.SpanDeg - 7); break;
+            default: throw new InvalidOperationException($"no multi-axis move for {shape.GetType().Name} — add one so the torn-write check covers it");
+        }
+        foreach (var p in shape.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .Where(p => p.PropertyType == typeof(double) && p.CanWrite && p.SetMethod!.IsPublic))
+            p.SetValue(shape, (double)p.GetValue(shape)! - 7);
     }
 }

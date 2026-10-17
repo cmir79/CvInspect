@@ -1,6 +1,6 @@
 // 프로퍼티 편집기 행 VM 계층 — typed POCO 를 리플렉션으로 펼쳐 카테고리 그룹/행으로 만든다(빌드는 CvPropRowBldr).
 // 편집은 backing 인스턴스의 PropertyInfo.SetValue 직행 — 커밋마다 OnCommitted(프로퍼티명) 통지가 호스트 dirty
-// 마킹의 유일한 채널이다(대상 POCO 대부분이 INotifyPropertyChanged 미구현).
+// 마킹의 채널이다. 소스의 INotifyPropertyChanged 는 표시 갱신에만 쓴다(코어 Opt 도 일부 값만 통지하고 호스트 POCO 는 없을 수 있다).
 // 이 계층은 MVVM 라이브러리를 참조하지 않는다 — 통지와 커맨드는 이 파일 안에서 자족한다.
 
 using System.Collections;

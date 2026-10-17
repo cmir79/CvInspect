@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
@@ -22,8 +23,8 @@ public enum CvTrainShape
 /// 학습: 학습 이미지 체인의 해당 슬롯에서 학습영역(사각 또는 원)을 잘라 템플릿으로 저장.
 /// 탐색: 코스(축소·굵은 스텝) → 파인(원본·가는 스텝) 2 단계 + 파라볼라 각도 보간.
 /// 매칭 코어가 마스크 기반이라 원형 학습영역은 원 마스크로 그대로 지원된다.
-/// INotifyPropertyChanged 는 PropertyGrid 표시 갱신용 — Trained 처럼 코드 경로(학습 버튼/로드)로
-/// 바뀌는 표시 값만 통지한다 (드래그 편집 좌표는 PG 미노출이라 통지 불요).
+/// INotifyPropertyChanged 는 편집기 표시 갱신용 — Trained 처럼 코드 경로(학습 버튼/로드)로 바뀌는 값과
+/// 그립이 쓰는 영역 좌표(<c>Train*</c>·<c>Search*</c>)를 통지한다. 나머지는 편집기에서 고치는 값이라 편집기가 이미 안다.
 /// </summary>
 public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
 {
@@ -36,18 +37,31 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     [CvDesc("cv:TrainShapeDesc")]
     public CvTrainShape TrainShape { get; set; } = CvTrainShape.Rect;
 
-    // 학습/탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
+    private double _trainX;
+    private double _trainY;
+    private double _trainW = 100;
+    private double _trainH = 100;
+    private double _trainAngleDeg;
+    private double _trainCircleX = 200;
+    private double _trainCircleY = 200;
+    private double _trainCircleR = 60;
+    private double _searchX;
+    private double _searchY;
+    private double _searchW = 200;
+    private double _searchH = 200;
+
+    // 학습/탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출).
     // TrainAngleDeg 는 학습 영역 회전 (대각 피처를 딱 맞게 감싸는 용도 — 회전 그립).
-    [Browsable(false)] public double TrainX { get; set; }
-    [Browsable(false)] public double TrainY { get; set; }
-    [Browsable(false)] public double TrainW { get; set; } = 100;
-    [Browsable(false)] public double TrainH { get; set; } = 100;
-    [Browsable(false)] public double TrainAngleDeg { get; set; }
+    [Browsable(false)] public double TrainX { get => _trainX; set => Notify(Put(ref _trainX, value)); }
+    [Browsable(false)] public double TrainY { get => _trainY; set => Notify(Put(ref _trainY, value)); }
+    [Browsable(false)] public double TrainW { get => _trainW; set => Notify(Put(ref _trainW, value)); }
+    [Browsable(false)] public double TrainH { get => _trainH; set => Notify(Put(ref _trainH, value)); }
+    [Browsable(false)] public double TrainAngleDeg { get => _trainAngleDeg; set => Notify(Put(ref _trainAngleDeg, value)); }
 
     // 원형 학습영역 (TrainShape=Circle) — 중심/반경, 도형 드래그로 편집.
-    [Browsable(false)] public double TrainCircleX { get; set; } = 200;
-    [Browsable(false)] public double TrainCircleY { get; set; } = 200;
-    [Browsable(false)] public double TrainCircleR { get; set; } = 60;
+    [Browsable(false)] public double TrainCircleX { get => _trainCircleX; set => Notify(Put(ref _trainCircleX, value)); }
+    [Browsable(false)] public double TrainCircleY { get => _trainCircleY; set => Notify(Put(ref _trainCircleY, value)); }
+    [Browsable(false)] public double TrainCircleR { get => _trainCircleR; set => Notify(Put(ref _trainCircleR, value)); }
 
     [CvCategory("cv:CatTrain", 1)]
     [CvName("cv:Train")]
@@ -86,10 +100,10 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     [CvDesc("cv:UseSearchRegionDesc")]
     public bool UseSearchRegion { get; set; }
 
-    [Browsable(false)] public double SearchX { get; set; }
-    [Browsable(false)] public double SearchY { get; set; }
-    [Browsable(false)] public double SearchW { get; set; } = 200;
-    [Browsable(false)] public double SearchH { get; set; } = 200;
+    [Browsable(false)] public double SearchX { get => _searchX; set => Notify(Put(ref _searchX, value)); }
+    [Browsable(false)] public double SearchY { get => _searchY; set => Notify(Put(ref _searchY, value)); }
+    [Browsable(false)] public double SearchW { get => _searchW; set => Notify(Put(ref _searchW, value)); }
+    [Browsable(false)] public double SearchH { get => _searchH; set => Notify(Put(ref _searchH, value)); }
 
     // === 존 설정 (탐색 공통) — 코스 축소 배율 + 앵글/스케일 탐색 유무 ===
     [CvCategory("cv:CatZone", 3)]
@@ -251,9 +265,8 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
             circle.Set(TrainCircleX, TrainCircleY, TrainCircleR);
             circle.Changed += (_, _) =>
             {
-                TrainCircleX = circle.CenterX;
-                TrainCircleY = circle.CenterY;
-                TrainCircleR = circle.Radius;
+                Notify(Put(ref _trainCircleX, circle.CenterX, nameof(TrainCircleX)), Put(ref _trainCircleY, circle.CenterY, nameof(TrainCircleY)),
+                    Put(ref _trainCircleR, circle.Radius, nameof(TrainCircleR)));
                 onEdited();
             };
             shapes.Add(circle);
@@ -265,11 +278,9 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
             train.AngleDeg = TrainAngleDeg;
             train.Changed += (_, _) =>
             {
-                TrainX = train.X;
-                TrainY = train.Y;
-                TrainW = train.W;
-                TrainH = train.H;
-                TrainAngleDeg = train.AngleDeg;
+                Notify(Put(ref _trainX, train.X, nameof(TrainX)), Put(ref _trainY, train.Y, nameof(TrainY)),
+                    Put(ref _trainW, train.W, nameof(TrainW)), Put(ref _trainH, train.H, nameof(TrainH)),
+                    Put(ref _trainAngleDeg, train.AngleDeg, nameof(TrainAngleDeg)));
                 if (search is not null) search.AngleDeg = train.AngleDeg;
                 onEdited();
             };
@@ -284,14 +295,28 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
             search.AngleDeg = TrainShape == CvTrainShape.Circle ? 0 : TrainAngleDeg;
             search.Changed += (_, _) =>
             {
-                SearchX = search.X;
-                SearchY = search.Y;
-                SearchW = search.W;
-                SearchH = search.H;
+                Notify(Put(ref _searchX, search.X, nameof(SearchX)), Put(ref _searchY, search.Y, nameof(SearchY)),
+                    Put(ref _searchW, search.W, nameof(SearchW)), Put(ref _searchH, search.H, nameof(SearchH)));
                 onEdited();
             };
             shapes.Add(search);
         }
         return shapes;
+    }
+
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
+    {
+        var same = field.Equals(value);
+        field = value;
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

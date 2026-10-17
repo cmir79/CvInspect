@@ -287,6 +287,66 @@ public class CvDispCtrlRenderTests
         Check(reshown == fitMid, $"a size change while hidden refits on show: drew {reshown}px, a control born at that size draws {fitMid}px");
     });
 
+    [Fact]
+    public void FitToViewRestoresTheFitEvenWhileHidden() => RunSta(() =>
+    {
+        // 숨겼다 보이는 것은 줌을 남긴다(앞 절). 페이지를 오갈 때 첫 화면으로 돌아오고 싶은 호스트는 그 계약을 깰 수 없어
+        // 프레임을 비웠다 다시 넣는 우회를 썼다(소비자 보고 — 맞춤이 내부에만 있었다). FitToView 가 그 자리다.
+        var gray = new byte[1000 * 500];
+        Array.Fill(gray, (byte)128);
+        CamFrame Frame() => new(gray, 1000, 500, 1000, CamPixelFormat.Mono8);
+        void ZoomOut(CvDispCtrl c) => FindButton(c, "Zoom Out")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+
+        var ctrl = new CvDispCtrl { Frame = Frame() };
+        var page = new System.Windows.Controls.Grid();
+        page.Children.Add(ctrl);
+        var fit = GrayWidth(Render(page, 800, 600), 800, 600);
+
+        // 보이는 채로 — 줌을 준 뒤 부르면 맞춤으로 돌아온다. 줌이 실제로 먹었는지부터 본다(아니면 아래 판정이 빈말이다).
+        ZoomOut(ctrl);
+        var zoomed = GrayWidth(Render(page, 800, 600), 800, 600);
+        Check(fit > 0 && zoomed < fit - 50, $"the zoom took effect (fit {fit}px, zoomed {zoomed}px)");
+        ctrl.FitToView();
+        var back = GrayWidth(Render(page, 800, 600), 800, 600);
+        Check(back == fit, $"FitToView on a visible control returns to the fit: drew {back}px, fit is {fit}px");
+
+        // 숨긴 채로 — 줌 → 숨김 → FitToView → 보임. 같은 순서에서 FitToView 만 빼면 줌이 남는다(대조군, 앞 절의 계약).
+        // 숨김은 두 가지 다 본다: Collapsed(배치에서 빠진다)와 Hidden(자리는 남고 그리지만 않는다).
+        foreach (var hidden in new[] { Visibility.Collapsed, Visibility.Hidden })
+        {
+            ZoomOut(ctrl);
+            Render(page, 800, 600);
+            page.Visibility = hidden;
+            Render(page, 800, 600);
+            ctrl.FitToView();
+            Render(page, 800, 600);
+            page.Visibility = Visibility.Visible;
+            var shown = GrayWidth(Render(page, 800, 600), 800, 600);
+            Check(shown == fit, $"FitToView called while {hidden} shows the fit on return: drew {shown}px, fit is {fit}px");
+
+            ZoomOut(ctrl);
+            var zoomedAgain = GrayWidth(Render(page, 800, 600), 800, 600);
+            page.Visibility = hidden;
+            Render(page, 800, 600);
+            page.Visibility = Visibility.Visible;
+            var kept = GrayWidth(Render(page, 800, 600), 800, 600);
+            Check(kept == zoomedAgain && kept != fit, $"control: without FitToView the same {hidden}/show keeps the zoom ({kept}px, zoomed {zoomedAgain}px, fit {fit}px)");
+            ctrl.FitToView();
+            Render(page, 800, 600);
+        }
+
+        // 프레임이 오기 전에 불러도 던지지 않는다. 첫 프레임이 맞춰 나오는 것은 FitToView 덕이 아니다(첫 프레임은 늘 맞춘다) —
+        // 이 절은 "부르면 안 되는 때" 가 없음만 못 박는다.
+        var empty = new CvDispCtrl();
+        var emptyPage = new System.Windows.Controls.Grid();
+        emptyPage.Children.Add(empty);
+        Render(emptyPage, 800, 600);
+        empty.FitToView();
+        empty.Frame = Frame();
+        var first = GrayWidth(Render(emptyPage, 800, 600), 800, 600);
+        Check(first == fit, $"FitToView before any frame is harmless and the first frame is fitted: drew {first}px, fit is {fit}px");
+    });
+
     private const int ClipBox = 400;   // 맞춤 여백 절의 칸 크기(정사각)
 
     private static CamFrame GrayFrame(int w, int h)

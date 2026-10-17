@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
@@ -11,11 +12,18 @@ namespace CvInspect.Vision.Opts;
 /// 선행 원 검출 툴에서 파생 — 표시용 중심은 CenterHook 으로 공급받는다 (런타임은 검출 중심 사용).
 /// 오버랩: 이음새(0°)에 걸친 타겟 잘림 방지 — 앞쪽 OverlapDeg 만큼을 뒤에 이어붙임.
 /// </summary>
-public sealed class CvUnwrapOpt : ICvShapeSource
+public sealed class CvUnwrapOpt : INotifyPropertyChanged, ICvShapeSource
 {
-    // 반경 밴드 — 디스플레이 도형(동심원 그립) 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
-    [Browsable(false)] public double RMin { get; set; } = 40;
-    [Browsable(false)] public double RMax { get; set; } = 120;
+    /// <summary>그립이 쓰는 반경 밴드(<see cref="RMin"/>·<see cref="RMax"/>)만 통지한다 — 이 값을 보여 주는 편집기가
+    /// 드래그를 따라오게 하려는 것이다. 나머지는 편집기에서 고치는 값이라 편집기가 이미 안다.</summary>
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private double _rMin = 40;
+    private double _rMax = 120;
+
+    // 반경 밴드 — 디스플레이 도형(동심원 그립) 드래그로 편집 (PG 미노출).
+    [Browsable(false)] public double RMin { get => _rMin; set => Notify(Put(ref _rMin, value)); }
+    [Browsable(false)] public double RMax { get => _rMax; set => Notify(Put(ref _rMax, value)); }
 
     /// <summary>편집 도형 중심 공급 훅 — 선행 원 툴의 기대 중심 (검사기가 배선). 없으면 (0,0).</summary>
     [Browsable(false)]
@@ -35,10 +43,25 @@ public sealed class CvUnwrapOpt : ICvShapeSource
         ring.Set(cx, cy, RMin, RMax);
         ring.Changed += (_, _) =>
         {
-            RMin = ring.RMin;
-            RMax = ring.RMax;
+            Notify(Put(ref _rMin, ring.RMin, nameof(RMin)), Put(ref _rMax, ring.RMax, nameof(RMax)));
             onEdited();
         };
         return [ring];
+    }
+
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
+    {
+        var same = field.Equals(value);
+        field = value;
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }
