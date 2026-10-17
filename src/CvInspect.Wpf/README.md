@@ -46,7 +46,7 @@ dotnet add package OpenCvSharp4.runtime.win
 
 | Property | Type | Meaning |
 |---|---|---|
-| `Frame` | `Mat` or `ICvPixelSource` | Frame to display — a `Mat` is copied on assignment, an `ICvPixelSource` (e.g. `CamFrame` from CvInspect.Imaging) is held by reference. `null` shows a placeholder. Auto-fits when the frame dimensions change and when the display area is resized — a resize replaces a manual zoom. Hiding and showing the control (a tab switch, a collapsed parent) is not a resize: the zoom is kept unless the size changed while it was hidden. |
+| `Frame` | `Mat` or `ICvPixelSource` | Frame to display — a `Mat` is copied on assignment, an `ICvPixelSource` (e.g. `CamFrame` from CvInspect.Imaging) is held by reference. `null` shows a placeholder. Auto-fits when the frame dimensions change and when the display area is resized — a resize replaces a manual zoom. Hiding and showing the control (a tab switch, a collapsed parent) is not a resize: the zoom is kept unless the size changed while it was hidden — call `FitToView()` to return to the fit. |
 | `Overlay` | `ViOverlay` | Result graphics (segments, labels, rects, polylines); replace the reference to refresh. |
 | `ClipOverlayToImage` | `bool` | Clip `Overlay` to the drawn image (default `false`: graphics run to the edge of the display area, so a label on the image border stays readable where the fit leaves a margin on that side). Turn it on where a cut-out is shown (`ViOverlay.CropTo`) — otherwise geometry crossing the cut and items outside it are drawn in the margin, as if the image went on. With it on, items are cut at the image edge; label text keeps its screen size, so the smaller the image is drawn, the more of an edge label is lost. Two things are not clipped to the image: the corner summary HUD (`ViOverlayLabel.IsHud`), whose lines would otherwise vanish on a small cut-out, and `Shapes`, whose edge handles must stay grabbable. |
 | `OverlayLabelScale` | `double` | Text size multiplier for `Overlay` labels on this control only (default `1.0`). Use it to enlarge result text on one screen (an operator view seen from a distance) without copying the overlay that history and other screens share. Only the text size changes: the anchor and alignment stay, and the label's background box follows the text. The corner summary HUD (`ViOverlayLabel.IsHud` with a corner alignment — the same test `ClipOverlayToImage` and `ViOverlay.CropTo` use), shapes and lines, and the name tags of `Shapes` keep their size. Zero, negative, NaN and infinity are rejected: set from code they throw `ArgumentException`; produced by a binding they leave the default `1.0` (only the WPF binding trace says so). |
@@ -55,6 +55,7 @@ dotnet add package OpenCvSharp4.runtime.win
 | `LoadFrameCommand` | `ICommand` | Receives a `Mat` loaded from a file via the right-click menu. Unset it to hide the load menu entry. `CanExecute` is not consulted — the parameter exists only after the file dialog closes; to refuse a load, reject it inside `Execute` and still dispose the `Mat` you received. |
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (top/bottom/left/right). |
+| `FitToView()` | method | Same as the ⛶ toolbar button: drop the user's zoom and pan and fit the image. The fit is applied at the next draw, so it can be called while the control is hidden (it shows fitted when it comes back) or before the first frame. Call it on the UI thread. |
 | `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` | `Brush` | Per-instance toolbar and status bar colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
 
 ## Property editor
@@ -74,7 +75,7 @@ from. So a core `Cv*Opt` needs nothing extra:
 | `Source` | The POCO to edit; replacing it rebuilds the rows. `null` shows nothing. |
 | `ShowDesc` | Show each row's description as a caption under it (the label tooltip always has it). |
 | `ExecuteText` | Button text for `Action` rows; defaults to the `cv:Execute` translation. |
-| `Committed` | A row wrote a value into the POCO — the host's only dirty-marking signal, since most POCOs do not implement `INotifyPropertyChanged`. |
+| `Committed` | A row wrote a value into the POCO — the host's dirty-marking signal. If the POCO implements `INotifyPropertyChanged`, the editor re-reads the notified rows (a value changed by a teaching-shape drag or a train button shows at once), but that is not a commit: the core options notify only the values a grip or a train button writes, so their notifications cannot stand in for `Committed`. |
 | `ActionExecuting` / `ActionExecuted` / `ActionFailed` | Around an `Action` row's button. Failures are logged through `CvLog` and never escape to the dispatcher. |
 
 Because a list row reads and enumerates a property that nothing read before — a lazy getter that

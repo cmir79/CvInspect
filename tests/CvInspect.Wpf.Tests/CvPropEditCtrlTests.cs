@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Runtime.ExceptionServices;
 using CvInspect.Controls;
 using CvInspect.Demo;
+using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
 using CvInspect.Vision;
 using CvInspect.Vision.Opts;
@@ -174,6 +175,33 @@ public class CvPropEditCtrlTests
         ctrl.Source = new CvFindLineOpt();
         num.Text = "3";
         Check(opt.NumCalipers == 7, "a detached row no longer writes to the old POCO");
+    });
+
+    [Fact]
+    public void GripDragUpdatesTheNumberRowLive() => RunSta(() =>
+    {
+        // 0.31.0 소비자 현장: 밴드 그립을 끌면 opt 값은 바뀌는데 숫자 칸은 그대로였다 — 행은 소스의 PropertyChanged 로만
+        // 다시 그리는데 opt 가 통지하지 않았다. 그립 → 칸, 칸 → opt 두 길을 같이 본다(통지가 setter 에서 나면 칸 입력이
+        // 제 통지로 되돌아 들어온다 — 그래도 커밋은 한 번, 칸은 정규 표기여야 한다).
+        CvLoc.Culture = "en";
+        var opt = new CvRingFillOpt { RMinPx = 20, RMaxPx = 60 };
+        var ctrl = new CvPropEditCtrl { Source = opt };
+        var committed = new List<string>();
+        ctrl.Committed += (_, e) => committed.Add(e.PropertyName);
+        var rows = ctrl.Groups.SelectMany(g => g.Rows).OfType<CvPropNumRowVm>().ToList();
+        var rMin = rows.Single(r => r.Label == CvLoc.T("cv:RingRMin"));
+        var rMax = rows.Single(r => r.Label == CvLoc.T("cv:RingRMax"));
+        Check(rMin.Text == "20" && rMax.Text == "60", $"rows start from the opt (min '{rMin.Text}', max '{rMax.Text}')");
+
+        var ring = Assert.IsType<CvEditRing>(Assert.Single(CvShapeBinder.For(opt, () => { })!));
+        ring.RMax = 75;
+        ring.RMin = 33;
+        Check(rMin.Text == "33" && rMax.Text == "75", $"dragging the band grips updates both number rows at once (min '{rMin.Text}', max '{rMax.Text}')");
+        Check(committed.Count == 0, "a grip drag is not a row commit — the host already hears it through onEdited");
+
+        rMin.Text = "25.0";
+        Check(opt.RMinPx == 25 && rMin.Text == "25", $"typing still writes back and shows the canonical text (value={opt.RMinPx}, text='{rMin.Text}')");
+        Check(committed.SequenceEqual([nameof(opt.RMinPx)]), $"one typed value is one commit even though the opt now notifies (commits={string.Join(",", committed)})");
     });
 
     [Fact]

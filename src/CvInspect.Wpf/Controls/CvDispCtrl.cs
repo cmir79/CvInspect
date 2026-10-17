@@ -91,7 +91,7 @@ public sealed partial class CvDispCtrl : Grid
         var dispPanel = _dispPanel;
         DockPanel.SetDock(dispPanel, Dock.Right);
         var fitBtn = MakeToolButton("⛶", "Fit");
-        fitBtn.Click += (_, _) => _surface.FitToView();
+        fitBtn.Click += (_, _) => FitToView();
         var zoomInBtn = MakeToolButton("➕", "Zoom In");
         zoomInBtn.Click += (_, _) => _surface.ZoomAtCenter(1.25);
         var zoomOutBtn = MakeToolButton("➖", "Zoom Out");
@@ -186,7 +186,7 @@ public sealed partial class CvDispCtrl : Grid
         var zoomOutItem = new MenuItem();
         zoomOutItem.Click += (_, _) => _surface.ZoomAtCenter(1 / 1.25);
         var fitItem = new MenuItem();
-        fitItem.Click += (_, _) => _surface.FitToView();
+        fitItem.Click += (_, _) => FitToView();
         var clearItem = new MenuItem();
         clearItem.Click += (_, _) => _surface.SetOverlay(null);
         var loadItem = new MenuItem();
@@ -383,6 +383,15 @@ public sealed partial class CvDispCtrl : Grid
             return true;
         }
     }
+
+    /// <summary>
+    /// 첫 화면(맞춤)으로 되돌린다 — 툴바 ⛶ 와 같다. 사람이 준 줌·이동을 버린다.
+    /// 숨겼다 다시 보이는 것은 크기 변경이 아니라 줌이 남는다(<see cref="Frame"/> 설명) — 페이지를 오갈 때 첫 화면으로
+    /// 돌아오게 하고 싶은 호스트가 부르는 자리다. 맞춤은 예약만 하고 다음 그리기에서 한다: 숨긴 채 불러도 되고
+    /// (보이는 순간 맞춘 그림이 나온다), 프레임이 아직 없으면 첫 프레임이 맞춰서 나온다.
+    /// UI 스레드에서 부른다.
+    /// </summary>
+    public void FitToView() => _surface.FitToView();
 
     private void LoadImageFromFile()
     {

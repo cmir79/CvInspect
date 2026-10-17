@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using OpenCvSharp;
 using CvInspect.Vision.Opts;
@@ -12,14 +13,24 @@ namespace CvInspect.Vision;
 /// 프로파일 축 = 반경 바깥(+s) 방향 — 극성 기준 (DarkToLight = 안→밖 어두움→밝음).
 /// 좌표는 대상 이미지 픽셀 공간.
 /// </summary>
-public sealed class CvFindCircleOpt : ICvShapeSource
+public sealed class CvFindCircleOpt : INotifyPropertyChanged, ICvShapeSource
 {
-    // 기대 원 — 디스플레이 도형(중심/반경/시작각/스팬 그립) 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
-    [Browsable(false)] public double CenterX { get; set; } = 100;
-    [Browsable(false)] public double CenterY { get; set; } = 100;
-    [Browsable(false)] public double Radius { get; set; } = 50;
-    [Browsable(false)] public double AngleStartDeg { get; set; }
-    [Browsable(false)] public double AngleSpanDeg { get; set; } = 360;
+    /// <summary>그립이 쓰는 기대 원호(<c>Center*</c>·<see cref="Radius"/>·<c>Angle*</c>)만 통지한다 — 이 값을 보여 주는
+    /// 편집기가 드래그와 스팬 전환을 따라오게 하려는 것이다. 나머지는 편집기에서 고치는 값이라 편집기가 이미 안다.</summary>
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private double _centerX = 100;
+    private double _centerY = 100;
+    private double _radius = 50;
+    private double _angleStartDeg;
+    private double _angleSpanDeg = 360;
+
+    // 기대 원 — 디스플레이 도형(중심/반경/시작각/스팬 그립) 드래그로 편집 (PG 미노출).
+    [Browsable(false)] public double CenterX { get => _centerX; set => SetField(ref _centerX, value); }
+    [Browsable(false)] public double CenterY { get => _centerY; set => SetField(ref _centerY, value); }
+    [Browsable(false)] public double Radius { get => _radius; set => SetField(ref _radius, value); }
+    [Browsable(false)] public double AngleStartDeg { get => _angleStartDeg; set => SetField(ref _angleStartDeg, value); }
+    [Browsable(false)] public double AngleSpanDeg { get => _angleSpanDeg; set => SetField(ref _angleSpanDeg, value); }
 
     /// <summary>코드 경로 편집(ToggleSpan 등) → 편집 도형 재동기화 훅 — 표시 계층의 도형 바인더가 배선.
     /// 도형은 바인딩 시점 스냅샷이라 Opt 직접 변경은 이 훅 없이는 화면에 반영되지 않는다.</summary>
@@ -126,6 +137,13 @@ public sealed class CvFindCircleOpt : ICvShapeSource
         };
         EditShapeSync = () => arc.Set(CenterX, CenterY, Radius, AngleStartDeg, AngleSpanDeg);
         return [arc];
+    }
+
+    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    {
+        if (field.Equals(value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
 

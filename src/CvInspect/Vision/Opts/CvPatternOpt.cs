@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
@@ -22,8 +23,8 @@ public enum CvTrainShape
 /// 학습: 학습 이미지 체인의 해당 슬롯에서 학습영역(사각 또는 원)을 잘라 템플릿으로 저장.
 /// 탐색: 코스(축소·굵은 스텝) → 파인(원본·가는 스텝) 2 단계 + 파라볼라 각도 보간.
 /// 매칭 코어가 마스크 기반이라 원형 학습영역은 원 마스크로 그대로 지원된다.
-/// INotifyPropertyChanged 는 PropertyGrid 표시 갱신용 — Trained 처럼 코드 경로(학습 버튼/로드)로
-/// 바뀌는 표시 값만 통지한다 (드래그 편집 좌표는 PG 미노출이라 통지 불요).
+/// INotifyPropertyChanged 는 편집기 표시 갱신용 — Trained 처럼 코드 경로(학습 버튼/로드)로 바뀌는 값과
+/// 그립이 쓰는 영역 좌표(<c>Train*</c>·<c>Search*</c>)를 통지한다. 나머지는 편집기에서 고치는 값이라 편집기가 이미 안다.
 /// </summary>
 public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
 {
@@ -36,18 +37,31 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     [CvDesc("cv:TrainShapeDesc")]
     public CvTrainShape TrainShape { get; set; } = CvTrainShape.Rect;
 
-    // 학습/탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출 — 정적 스냅샷이라 실시간 미반영).
+    private double _trainX;
+    private double _trainY;
+    private double _trainW = 100;
+    private double _trainH = 100;
+    private double _trainAngleDeg;
+    private double _trainCircleX = 200;
+    private double _trainCircleY = 200;
+    private double _trainCircleR = 60;
+    private double _searchX;
+    private double _searchY;
+    private double _searchW = 200;
+    private double _searchH = 200;
+
+    // 학습/탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출).
     // TrainAngleDeg 는 학습 영역 회전 (대각 피처를 딱 맞게 감싸는 용도 — 회전 그립).
-    [Browsable(false)] public double TrainX { get; set; }
-    [Browsable(false)] public double TrainY { get; set; }
-    [Browsable(false)] public double TrainW { get; set; } = 100;
-    [Browsable(false)] public double TrainH { get; set; } = 100;
-    [Browsable(false)] public double TrainAngleDeg { get; set; }
+    [Browsable(false)] public double TrainX { get => _trainX; set => SetField(ref _trainX, value); }
+    [Browsable(false)] public double TrainY { get => _trainY; set => SetField(ref _trainY, value); }
+    [Browsable(false)] public double TrainW { get => _trainW; set => SetField(ref _trainW, value); }
+    [Browsable(false)] public double TrainH { get => _trainH; set => SetField(ref _trainH, value); }
+    [Browsable(false)] public double TrainAngleDeg { get => _trainAngleDeg; set => SetField(ref _trainAngleDeg, value); }
 
     // 원형 학습영역 (TrainShape=Circle) — 중심/반경, 도형 드래그로 편집.
-    [Browsable(false)] public double TrainCircleX { get; set; } = 200;
-    [Browsable(false)] public double TrainCircleY { get; set; } = 200;
-    [Browsable(false)] public double TrainCircleR { get; set; } = 60;
+    [Browsable(false)] public double TrainCircleX { get => _trainCircleX; set => SetField(ref _trainCircleX, value); }
+    [Browsable(false)] public double TrainCircleY { get => _trainCircleY; set => SetField(ref _trainCircleY, value); }
+    [Browsable(false)] public double TrainCircleR { get => _trainCircleR; set => SetField(ref _trainCircleR, value); }
 
     [CvCategory("cv:CatTrain", 1)]
     [CvName("cv:Train")]
@@ -86,10 +100,10 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
     [CvDesc("cv:UseSearchRegionDesc")]
     public bool UseSearchRegion { get; set; }
 
-    [Browsable(false)] public double SearchX { get; set; }
-    [Browsable(false)] public double SearchY { get; set; }
-    [Browsable(false)] public double SearchW { get; set; } = 200;
-    [Browsable(false)] public double SearchH { get; set; } = 200;
+    [Browsable(false)] public double SearchX { get => _searchX; set => SetField(ref _searchX, value); }
+    [Browsable(false)] public double SearchY { get => _searchY; set => SetField(ref _searchY, value); }
+    [Browsable(false)] public double SearchW { get => _searchW; set => SetField(ref _searchW, value); }
+    [Browsable(false)] public double SearchH { get => _searchH; set => SetField(ref _searchH, value); }
 
     // === 존 설정 (탐색 공통) — 코스 축소 배율 + 앵글/스케일 탐색 유무 ===
     [CvCategory("cv:CatZone", 3)]
@@ -293,5 +307,12 @@ public sealed class CvPatternOpt : INotifyPropertyChanged, ICvShapeSource
             shapes.Add(search);
         }
         return shapes;
+    }
+
+    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    {
+        if (field.Equals(value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }

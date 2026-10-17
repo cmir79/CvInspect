@@ -1,6 +1,8 @@
 // 편집 도형 — 각 Opt 가 ICvShapeSource 로 자기 도형을 내고, 도형을 움직이면 Opt 에 즉시 되쓰이며 onEdited 가 불리는지.
 // 토글(UseCrop·UseSearchRegion·UseRegion)이 꺼져 있으면 도형이 없다. 코어에 있으니 어느 OS 에서든 같은 회귀가 돈다.
 // 전처리(CvImageProcessOpt)는 0.27 부터 기하가 없다 — 자르기 사각은 CvCropOpt 가 낸다.
+using System.ComponentModel;
+using System.Reflection;
 using CvInspect.Vision;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Opts;
@@ -131,5 +133,88 @@ public class CvEditShapeTests
         var ring = Assert.IsType<CvEditRing>(Assert.Single(CvShapeBinder.For(rf, () => { })!));
         ring.RMax = 70;
         Assert.Equal(70, rf.RMaxPx);
+    }
+
+    /// <summary>그립 편집이 opt 에 쓴 값은 전부 PropertyChanged 로 나간다 — 속성 편집기의 숫자 칸은 그 통지로만 다시 그린다.
+    /// 통지가 없던 판(0.31.0)에서는 밴드 그립을 끌어도 RMinPx 칸이 그대로였다(소비자 현장 보고). 어느 프로퍼티를 쓰는지 손으로
+    /// 나열하지 않고 그립 전후 값을 비교한다 — 새 그립 좌표가 통지 없이 들어오면 여기서 빨개진다.</summary>
+    [Fact]
+    public void GripEditsNotifyEveryPropertyTheyWrite()
+    {
+        object[] opts =
+        [
+            new CvCropOpt { UseCrop = true }, new CvEdgeFilterOpt { UseRegion = true },
+            new CvPatternOpt { UseSearchRegion = true }, new CvPatternOpt { UseSearchRegion = true, TrainShape = CvTrainShape.Circle },
+            new CvBlobOpt { UseSearchRegion = true }, new CvHoughCircleOpt { UseSearchRegion = true },
+            new CvColorSegmentOpt(), new CvColorSegmentOpt { Shape = CvRegionShape.Ring },
+            new CvFindLineOpt(), new CvFindCircleOpt { AngleSpanDeg = 180 }, new CvUnwrapOpt(), new CvRingFillOpt(),
+            new CvRegionOpt(), new CvRegionOpt { Shape = CvRegionShape.Ring },
+        ];
+        foreach (var opt in opts)
+        {
+            var name = opt.GetType().Name;
+            // 그립이 쓰는 자리 — 영역을 품은 툴(컬러 세그먼트)은 품은 영역 객체에 쓴다. 편집기는 그 객체를 따로 구독한다.
+            var targets = new List<object> { opt };
+            targets.AddRange(opt.GetType().GetProperties()
+                .Where(p => p.GetIndexParameters().Length == 0 && typeof(INotifyPropertyChanged).IsAssignableFrom(p.PropertyType))
+                .Select(p => p.GetValue(opt)).OfType<object>());
+
+            var shapes = CvShapeBinder.For(opt, () => { });
+            Assert.True(shapes is { Count: > 0 }, $"{name} offers grips in this setup — else nothing below is tested");
+            foreach (var shape in shapes!)
+            {
+                var notified = targets.Select(_ => new HashSet<string>()).ToList();
+                var handlers = targets.Select((t, i) => (PropertyChangedEventHandler)((_, e) => notified[i].Add(e.PropertyName ?? ""))).ToList();
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    var inpc = Assert.IsAssignableFrom<INotifyPropertyChanged>(targets[i]);
+                    inpc.PropertyChanged += handlers[i];
+                }
+                var before = targets.Select(Snap).ToList();
+
+                Nudge(shape);
+
+                var changedTotal = 0;
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    ((INotifyPropertyChanged)targets[i]).PropertyChanged -= handlers[i];
+                    var after = Snap(targets[i]);
+                    var changed = after.Where(kv => !Equals(kv.Value, before[i][kv.Key])).Select(kv => kv.Key).ToList();
+                    changedTotal += changed.Count;
+                    var silent = changed.Where(p => !notified[i].Contains(p)).ToList();
+                    Assert.True(silent.Count == 0,
+                        $"{name} {shape.Label} grip wrote {targets[i].GetType().Name}.{string.Join(", ", silent)} without PropertyChanged — the property editor row stays stale while dragging");
+                }
+                Assert.True(changedTotal > 0, $"{name} {shape.Label}: the nudge moved something — else the check above proves nothing");
+            }
+        }
+
+        // 코드 경로도 같다 — 스팬 전환 버튼이 바꾼 값이 편집기에 보인다.
+        var fc = new CvFindCircleOpt();
+        var names = new List<string?>();
+        fc.PropertyChanged += (_, e) => names.Add(e.PropertyName);
+        fc.ToggleSpan();
+        Assert.Contains(nameof(CvFindCircleOpt.AngleSpanDeg), names);
+
+        // 같은 값 대입은 통지하지 않는다 — 드래그 중 안 움직인 축까지 편집기가 다시 그리지 않게.
+        var uw = new CvUnwrapOpt();
+        var count = 0;
+        uw.PropertyChanged += (_, _) => count++;
+        uw.RMin = uw.RMin;
+        Assert.Equal(0, count);
+    }
+
+    /// <summary>값 형식·문자열 프로퍼티의 현재 값 — 델리게이트·배열·참조 객체는 비교 대상이 아니다.</summary>
+    private static Dictionary<string, object?> Snap(object o)
+        => o.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.CanRead && p.GetIndexParameters().Length == 0 && (p.PropertyType.IsValueType || p.PropertyType == typeof(string)))
+            .ToDictionary(p => p.Name, p => p.GetValue(o));
+
+    /// <summary>그립을 사람이 끄는 것처럼 움직인다 — 도형의 쓰기 가능한 수치 축을 전부 조금씩 민다(축마다 Changed 가 난다).</summary>
+    private static void Nudge(CvEditShape shape)
+    {
+        foreach (var p in shape.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .Where(p => p.PropertyType == typeof(double) && p.CanWrite && p.SetMethod!.IsPublic))
+            p.SetValue(shape, (double)p.GetValue(shape)! - 7);
     }
 }
