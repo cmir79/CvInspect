@@ -75,7 +75,7 @@ from. So a core `Cv*Opt` needs nothing extra:
 | `Source` | The POCO to edit; replacing it rebuilds the rows. `null` shows nothing. |
 | `ShowDesc` | Show each row's description as a caption under it (the label tooltip always has it). |
 | `ExecuteText` | Button text for `Action` rows; defaults to the `cv:Execute` translation. |
-| `Committed` | A row wrote a value into the POCO — the host's dirty-marking signal. If the POCO implements `INotifyPropertyChanged`, the editor re-reads the notified rows (a value changed by a teaching-shape drag or a train button shows at once), but that is not a commit: the core options notify only the values a grip or a train button writes, so their notifications cannot stand in for `Committed`. |
+| `Committed` | A row wrote a value into the POCO — the host's dirty-marking signal. If the POCO implements `INotifyPropertyChanged`, the editor re-reads the notified rows, so a value written by a teaching-shape drag or an action button (train, span toggle) shows at once — but that is not a commit. The core options notify only such values (grip geometry, train results; most grip coordinates are hidden from the editor, so only visible ones such as the ring-fill band follow a drag), so their notifications cannot stand in for `Committed`. |
 | `ActionExecuting` / `ActionExecuted` / `ActionFailed` | Around an `Action` row's button. Failures are logged through `CvLog` and never escape to the dispatcher. |
 
 Because a list row reads and enumerates a property that nothing read before — a lazy getter that

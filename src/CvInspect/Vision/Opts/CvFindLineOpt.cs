@@ -21,10 +21,10 @@ public sealed class CvFindLineOpt : INotifyPropertyChanged, ICvShapeSource
     private double _endY = 100;
 
     // 탐색 세그먼트 — 디스플레이 도형(끝점 핸들) 드래그로 편집 (PG 미노출).
-    [Browsable(false)] public double StartX { get => _startX; set => SetField(ref _startX, value); }
-    [Browsable(false)] public double StartY { get => _startY; set => SetField(ref _startY, value); }
-    [Browsable(false)] public double EndX { get => _endX; set => SetField(ref _endX, value); }
-    [Browsable(false)] public double EndY { get => _endY; set => SetField(ref _endY, value); }
+    [Browsable(false)] public double StartX { get => _startX; set => Notify(Put(ref _startX, value)); }
+    [Browsable(false)] public double StartY { get => _startY; set => Notify(Put(ref _startY, value)); }
+    [Browsable(false)] public double EndX { get => _endX; set => Notify(Put(ref _endX, value)); }
+    [Browsable(false)] public double EndY { get => _endY; set => Notify(Put(ref _endY, value)); }
 
     [CvCategory("cv:CatCaliper", 1)]
     [CvName("cv:NumCalipers")]
@@ -108,19 +108,26 @@ public sealed class CvFindLineOpt : INotifyPropertyChanged, ICvShapeSource
         seg.Set(StartX, StartY, EndX, EndY);
         seg.Changed += (_, _) =>
         {
-            StartX = seg.X1;
-            StartY = seg.Y1;
-            EndX = seg.X2;
-            EndY = seg.Y2;
+            Notify(Put(ref _startX, seg.X1, nameof(StartX)), Put(ref _startY, seg.Y1, nameof(StartY)),
+                Put(ref _endX, seg.X2, nameof(EndX)), Put(ref _endY, seg.Y2, nameof(EndY)));
             onEdited();
         };
         return [seg];
     }
 
-    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
     {
-        if (field.Equals(value)) return;
+        var same = field.Equals(value);
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

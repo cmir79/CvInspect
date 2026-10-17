@@ -29,12 +29,12 @@ public sealed class CvRingFillOpt : INotifyPropertyChanged, ICvShapeSource
     [CvCategory("cv:CatRegion", 1)]
     [CvName("cv:RingRMin")]
     [CvDesc("cv:RingRMinDesc")]
-    public double RMinPx { get => _rMinPx; set => SetField(ref _rMinPx, value); }
+    public double RMinPx { get => _rMinPx; set => Notify(Put(ref _rMinPx, value)); }
 
     [CvCategory("cv:CatRegion", 1)]
     [CvName("cv:RingRMax")]
     [CvDesc("cv:RingRMaxDesc")]
-    public double RMaxPx { get => _rMaxPx; set => SetField(ref _rMaxPx, value); }
+    public double RMaxPx { get => _rMaxPx; set => Notify(Put(ref _rMaxPx, value)); }
 
     [CvCategory("cv:CatAccept", 2)]
     [CvName("cv:RingPolarity")]
@@ -59,17 +59,25 @@ public sealed class CvRingFillOpt : INotifyPropertyChanged, ICvShapeSource
         ring.Set(cx, cy, RMinPx, RMaxPx);
         ring.Changed += (_, _) =>
         {
-            RMinPx = ring.RMin;
-            RMaxPx = ring.RMax;
+            Notify(Put(ref _rMinPx, ring.RMin, nameof(RMinPx)), Put(ref _rMaxPx, ring.RMax, nameof(RMaxPx)));
             onEdited();
         };
         return [ring];
     }
 
-    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
     {
-        if (field.Equals(value)) return;
+        var same = field.Equals(value);
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

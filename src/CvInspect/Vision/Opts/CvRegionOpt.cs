@@ -46,17 +46,17 @@ public sealed class CvRegionOpt : INotifyPropertyChanged, ICvShapeSource
     public CvRegionShape Shape { get; set; } = CvRegionShape.Rect;
 
     // 사각 (Shape=Rect) — 회전 그립 포함 도형 드래그로 편집.
-    public double RectX { get => _rectX; set => SetField(ref _rectX, value); }
-    public double RectY { get => _rectY; set => SetField(ref _rectY, value); }
-    public double RectW { get => _rectW; set => SetField(ref _rectW, value); }
-    public double RectH { get => _rectH; set => SetField(ref _rectH, value); }
-    public double RectAngleDeg { get => _rectAngleDeg; set => SetField(ref _rectAngleDeg, value); }
+    public double RectX { get => _rectX; set => Notify(Put(ref _rectX, value)); }
+    public double RectY { get => _rectY; set => Notify(Put(ref _rectY, value)); }
+    public double RectW { get => _rectW; set => Notify(Put(ref _rectW, value)); }
+    public double RectH { get => _rectH; set => Notify(Put(ref _rectH, value)); }
+    public double RectAngleDeg { get => _rectAngleDeg; set => Notify(Put(ref _rectAngleDeg, value)); }
 
     // 링 밴드 (Shape=Ring) — 링 도형 드래그로 편집(중심 이동 포함).
-    public double CenterX { get => _centerX; set => SetField(ref _centerX, value); }
-    public double CenterY { get => _centerY; set => SetField(ref _centerY, value); }
-    public double RMinPx { get => _rMinPx; set => SetField(ref _rMinPx, value); }
-    public double RMaxPx { get => _rMaxPx; set => SetField(ref _rMaxPx, value); }
+    public double CenterX { get => _centerX; set => Notify(Put(ref _centerX, value)); }
+    public double CenterY { get => _centerY; set => Notify(Put(ref _centerY, value)); }
+    public double RMinPx { get => _rMinPx; set => Notify(Put(ref _rMinPx, value)); }
+    public double RMaxPx { get => _rMaxPx; set => Notify(Put(ref _rMaxPx, value)); }
 
     /// <summary>편집 도형 — 모양(사각/링) 분기를 한곳에 모은다. 어느 툴이든 이 영역을 품으면 이걸로 도형을 얻는다(모양별로 따로 만들지 않는다).
     /// 링은 중심 이동을 허용한다 — 밴드 자리를 티칭에서 직접 잡는다(파생 중심을 쓰는 언랩·충전율과 다른 점).</summary>
@@ -68,10 +68,8 @@ public sealed class CvRegionOpt : INotifyPropertyChanged, ICvShapeSource
             ring.Set(CenterX, CenterY, RMinPx, RMaxPx);
             ring.Changed += (_, _) =>
             {
-                CenterX = ring.CenterX;
-                CenterY = ring.CenterY;
-                RMinPx = ring.RMin;
-                RMaxPx = ring.RMax;
+                Notify(Put(ref _centerX, ring.CenterX, nameof(CenterX)), Put(ref _centerY, ring.CenterY, nameof(CenterY)),
+                    Put(ref _rMinPx, ring.RMin, nameof(RMinPx)), Put(ref _rMaxPx, ring.RMax, nameof(RMaxPx)));
                 onEdited();
             };
             return [ring];
@@ -82,20 +80,27 @@ public sealed class CvRegionOpt : INotifyPropertyChanged, ICvShapeSource
         rect.AngleDeg = RectAngleDeg;
         rect.Changed += (_, _) =>
         {
-            RectX = rect.X;
-            RectY = rect.Y;
-            RectW = rect.W;
-            RectH = rect.H;
-            RectAngleDeg = rect.AngleDeg;
+            Notify(Put(ref _rectX, rect.X, nameof(RectX)), Put(ref _rectY, rect.Y, nameof(RectY)),
+                Put(ref _rectW, rect.W, nameof(RectW)), Put(ref _rectH, rect.H, nameof(RectH)),
+                Put(ref _rectAngleDeg, rect.AngleDeg, nameof(RectAngleDeg)));
             onEdited();
         };
         return [rect];
     }
 
-    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
     {
-        if (field.Equals(value)) return;
+        var same = field.Equals(value);
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

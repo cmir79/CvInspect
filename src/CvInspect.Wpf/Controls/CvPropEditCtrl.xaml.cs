@@ -26,8 +26,9 @@ public sealed record CvPropActionFailedEvt(string Label, Exception Error);
 /// 중첩 객체 펼침), 설명은 행 아래 캡션 상시 표시.
 /// 코어의 Cv*Opt 처럼 CvCategory/CvName/CvDesc(System.ComponentModel 파생)를 단 POCO 를 그대로 넣으면 된다.
 /// 값 커밋은 행 VM 이 backing 에 SetValue 직행 후 <see cref="Committed"/> 로 통지 — 이 이벤트가 호스트 dirty 마킹의 채널이다.
-/// 코어 Opt 의 INotifyPropertyChanged 는 일부 값(그립이 쓰는 기하·학습 결과)만 통지하고 호스트 POCO 는 구현하지 않을 수 있어
-/// 소스의 통지로 dirty 를 대신할 수 없다. 소스 통지는 표시 갱신에만 쓴다 — 통지된 행은 소스를 다시 읽는다(커밋은 아니다).
+/// 코어 Opt 의 INotifyPropertyChanged 는 일부 값(그립이 쓰는 기하, 학습·스팬 전환 같은 실행 버튼이 쓰는 값)만 통지하고 호스트 POCO 는
+/// 구현하지 않을 수 있어 소스의 통지로 dirty 를 대신할 수 없다. 소스 통지는 표시 갱신에만 쓴다 — 통지된 행은 소스를 다시 읽는다(커밋은 아니다).
+/// 다시 읽으면 그 행에 입력 중이던(아직 커밋 안 한) 글자는 소스 값으로 바뀐다 — 입력 중에 같은 값의 그립을 끌면 드래그가 이긴다.
 /// 텍스트 커밋 타이밍은 LostFocus + Enter — 입력 중 커밋으로 편집 처리가 끼어들지 않게.
 /// 평범한 컨트롤 트리라 호스트 테마의 암시 스타일을 그대로 탄다. UI 라이브러리는 참조하지 않는다 —
 /// 캡션·헤더 색은 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가 있으면 따르고(실행 중 사전 교체도) 없으면 고정색이다.

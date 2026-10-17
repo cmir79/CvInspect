@@ -27,9 +27,9 @@ public sealed class CvHoughCircleOpt : INotifyPropertyChanged, ICvShapeSource
 
     // 기대 원 — 디스플레이 도형(중심/반경 그립) 드래그로 편집 (PG 미노출).
     // 검출 자체는 영역 전체 탐색이라 중심은 시각 기준일 뿐, 반경이 탐색 범위(±허용%)의 기준.
-    [Browsable(false)] public double CenterX { get => _centerX; set => SetField(ref _centerX, value); }
-    [Browsable(false)] public double CenterY { get => _centerY; set => SetField(ref _centerY, value); }
-    [Browsable(false)] public double Radius { get => _radius; set => SetField(ref _radius, value); }
+    [Browsable(false)] public double CenterX { get => _centerX; set => Notify(Put(ref _centerX, value)); }
+    [Browsable(false)] public double CenterY { get => _centerY; set => Notify(Put(ref _centerY, value)); }
+    [Browsable(false)] public double Radius { get => _radius; set => Notify(Put(ref _radius, value)); }
 
     [CvCategory("cv:CatHough", 1)]
     [CvName("cv:CannyThreshold")]
@@ -52,10 +52,10 @@ public sealed class CvHoughCircleOpt : INotifyPropertyChanged, ICvShapeSource
     public bool UseSearchRegion { get; set; }
 
     // 탐색 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출).
-    [Browsable(false)] public double SearchX { get => _searchX; set => SetField(ref _searchX, value); }
-    [Browsable(false)] public double SearchY { get => _searchY; set => SetField(ref _searchY, value); }
-    [Browsable(false)] public double SearchW { get => _searchW; set => SetField(ref _searchW, value); }
-    [Browsable(false)] public double SearchH { get => _searchH; set => SetField(ref _searchH, value); }
+    [Browsable(false)] public double SearchX { get => _searchX; set => Notify(Put(ref _searchX, value)); }
+    [Browsable(false)] public double SearchY { get => _searchY; set => Notify(Put(ref _searchY, value)); }
+    [Browsable(false)] public double SearchW { get => _searchW; set => Notify(Put(ref _searchW, value)); }
+    [Browsable(false)] public double SearchH { get => _searchH; set => Notify(Put(ref _searchH, value)); }
 
     /// <summary>편집 도형 — 기대 원(탐색 반경 범위 ±허용% 의 기준; 검출은 영역 전체 탐색이라 중심은 시각 기준일 뿐)
     /// + 탐색 영역 사각(UseSearchRegion 일 때).</summary>
@@ -66,9 +66,8 @@ public sealed class CvHoughCircleOpt : INotifyPropertyChanged, ICvShapeSource
         expect.Set(CenterX, CenterY, Radius, 0, 360);
         expect.Changed += (_, _) =>
         {
-            CenterX = expect.CenterX;
-            CenterY = expect.CenterY;
-            Radius = expect.Radius;
+            Notify(Put(ref _centerX, expect.CenterX, nameof(CenterX)), Put(ref _centerY, expect.CenterY, nameof(CenterY)),
+                Put(ref _radius, expect.Radius, nameof(Radius)));
             onEdited();
         };
         shapes.Add(expect);
@@ -79,10 +78,8 @@ public sealed class CvHoughCircleOpt : INotifyPropertyChanged, ICvShapeSource
             search.Set(SearchX, SearchY, SearchW, SearchH);
             search.Changed += (_, _) =>
             {
-                SearchX = search.X;
-                SearchY = search.Y;
-                SearchW = search.W;
-                SearchH = search.H;
+                Notify(Put(ref _searchX, search.X, nameof(SearchX)), Put(ref _searchY, search.Y, nameof(SearchY)),
+                    Put(ref _searchW, search.W, nameof(SearchW)), Put(ref _searchH, search.H, nameof(SearchH)));
                 onEdited();
             };
             shapes.Add(search);
@@ -90,10 +87,19 @@ public sealed class CvHoughCircleOpt : INotifyPropertyChanged, ICvShapeSource
         return shapes;
     }
 
-    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
     {
-        if (field.Equals(value)) return;
+        var same = field.Equals(value);
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

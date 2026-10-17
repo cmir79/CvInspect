@@ -33,10 +33,10 @@ public sealed class CvCropOpt : INotifyPropertyChanged, ICvShapeSource
     public bool UseCrop { get; set; }
 
     // 잘라낼 자리 — 원본 이미지 공간. 표시 위에서 끌어 편집한다(PG 미노출).
-    [Browsable(false)] public double CropX { get => _cropX; set => SetField(ref _cropX, value); }
-    [Browsable(false)] public double CropY { get => _cropY; set => SetField(ref _cropY, value); }
-    [Browsable(false)] public double CropW { get => _cropW; set => SetField(ref _cropW, value); }
-    [Browsable(false)] public double CropH { get => _cropH; set => SetField(ref _cropH, value); }
+    [Browsable(false)] public double CropX { get => _cropX; set => Notify(Put(ref _cropX, value)); }
+    [Browsable(false)] public double CropY { get => _cropY; set => Notify(Put(ref _cropY, value)); }
+    [Browsable(false)] public double CropW { get => _cropW; set => Notify(Put(ref _cropW, value)); }
+    [Browsable(false)] public double CropH { get => _cropH; set => Notify(Put(ref _cropH, value)); }
 
     /// <summary>편집 도형 — 잘라내기 사각(UseCrop 일 때만).</summary>
     public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
@@ -46,10 +46,8 @@ public sealed class CvCropOpt : INotifyPropertyChanged, ICvShapeSource
         crop.Set(CropX, CropY, CropW, CropH);
         crop.Changed += (_, _) =>
         {
-            CropX = crop.X;
-            CropY = crop.Y;
-            CropW = crop.W;
-            CropH = crop.H;
+            Notify(Put(ref _cropX, crop.X, nameof(CropX)), Put(ref _cropY, crop.Y, nameof(CropY)),
+                Put(ref _cropW, crop.W, nameof(CropW)), Put(ref _cropH, crop.H, nameof(CropH)));
             onEdited();
         };
         return [crop];
@@ -84,10 +82,19 @@ public sealed class CvCropOpt : INotifyPropertyChanged, ICvShapeSource
         return new CvCropOpt { UseCrop = true, CropX = c.X, CropY = c.Y, CropW = c.W, CropH = c.H };
     }
 
-    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
     {
-        if (field.Equals(value)) return;
+        var same = field.Equals(value);
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }

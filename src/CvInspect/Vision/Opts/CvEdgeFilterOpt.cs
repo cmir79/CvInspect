@@ -44,11 +44,11 @@ public sealed class CvEdgeFilterOpt : INotifyPropertyChanged, ICvShapeSource
     public bool UseRegion { get; set; }
 
     // 영역 좌표 — 디스플레이 도형 드래그로 편집 (PG 미노출, JSON 영속은 유지). AngleDeg 는 중심 기준 회전 (회전 그립).
-    [Browsable(false)] public double RegionX { get => _regionX; set => SetField(ref _regionX, value); }
-    [Browsable(false)] public double RegionY { get => _regionY; set => SetField(ref _regionY, value); }
-    [Browsable(false)] public double RegionW { get => _regionW; set => SetField(ref _regionW, value); }
-    [Browsable(false)] public double RegionH { get => _regionH; set => SetField(ref _regionH, value); }
-    [Browsable(false)] public double RegionAngleDeg { get => _regionAngleDeg; set => SetField(ref _regionAngleDeg, value); }
+    [Browsable(false)] public double RegionX { get => _regionX; set => Notify(Put(ref _regionX, value)); }
+    [Browsable(false)] public double RegionY { get => _regionY; set => Notify(Put(ref _regionY, value)); }
+    [Browsable(false)] public double RegionW { get => _regionW; set => Notify(Put(ref _regionW, value)); }
+    [Browsable(false)] public double RegionH { get => _regionH; set => Notify(Put(ref _regionH, value)); }
+    [Browsable(false)] public double RegionAngleDeg { get => _regionAngleDeg; set => Notify(Put(ref _regionAngleDeg, value)); }
 
     /// <summary>편집 도형 — 회전 가능한 영역 사각(UseRegion 일 때만).</summary>
     public IReadOnlyList<CvEditShape>? CreateShapes(Action onEdited)
@@ -59,20 +59,27 @@ public sealed class CvEdgeFilterOpt : INotifyPropertyChanged, ICvShapeSource
         rect.AngleDeg = RegionAngleDeg;
         rect.Changed += (_, _) =>
         {
-            RegionX = rect.X;
-            RegionY = rect.Y;
-            RegionW = rect.W;
-            RegionH = rect.H;
-            RegionAngleDeg = rect.AngleDeg;
+            Notify(Put(ref _regionX, rect.X, nameof(RegionX)), Put(ref _regionY, rect.Y, nameof(RegionY)),
+                Put(ref _regionW, rect.W, nameof(RegionW)), Put(ref _regionH, rect.H, nameof(RegionH)),
+                Put(ref _regionAngleDeg, rect.AngleDeg, nameof(RegionAngleDeg)));
             onEdited();
         };
         return [rect];
     }
 
-    private void SetField(ref double field, double value, [CallerMemberName] string? name = null)
+    /// <summary>값을 쓰고, 바뀌었으면 그 이름을 돌려준다(여기서는 알리지 않는다). 그립 핸들러는 축을 전부 쓴 뒤 <see cref="Notify"/> 로
+    /// 한 번에 알린다 — 쓰는 도중에 알리면 구독자가 절반만 바뀐 기하를 읽는다(통지 안에서 도형을 다시 맞추면 아직 안 쓴 축이 옛 값으로 되돌아간다).
+    /// 같은 값이어도 쓴다(-0.0 같은 비트 차이를 버리지 않는다) — 알리지만 않는다.</summary>
+    private static string? Put(ref double field, double value, [CallerMemberName] string? name = null)
     {
-        if (field.Equals(value)) return;
+        var same = field.Equals(value);
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return same ? null : name;
+    }
+
+    private void Notify(params string?[] names)
+    {
+        foreach (var n in names)
+            if (n is not null) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
     }
 }
