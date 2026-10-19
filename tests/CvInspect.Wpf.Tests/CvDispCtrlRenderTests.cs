@@ -498,6 +498,79 @@ public class CvDispCtrlRenderTests
         return (x0, y0, x1, y1);
     }
 
+    /// <summary>가운데 열에서 오버레이 없는 화면과 달라진 화소 수 — 가로로 지나가는 선 하나의 화면 굵기다.</summary>
+    private static int ChangedInMiddleColumn(byte[] px, byte[] bare)
+    {
+        int n = 0, x = ClipBox / 2;
+        for (int y = 0; y < ClipBox; y++)
+        {
+            int i = (y * ClipBox + x) * 4;
+            if (px[i] != bare[i] || px[i + 1] != bare[i + 1] || px[i + 2] != bare[i + 2]) n++;
+        }
+        return n;
+    }
+
+    [Fact]
+    public void StrokeScaleThickensOneItemAtAnyZoom() => RunSta(() =>
+    {
+        // 소비자 요청: NG 위치 박스 하나만 "한 단계 굵게 — 멀리서도 보이게". 굵기는 화면 고정이라 배수도 줌과 무관해야 한다.
+        // 세 갈래(선분·사각·폴리라인)가 각자 펜을 만든다 — 하나만 배수를 빠뜨려도 그 종류만 조용히 얇게 남으니 셋 다 본다.
+        ViOverlay One(double scale, int imgSize, string kind)
+        {
+            var k = imgSize / 400.0;   // 큰 프레임은 좌표도 같은 비율로 — 화면에서는 같은 자리에 그려진다
+            var o = new ViOverlay();
+            o.Add(kind switch
+            {
+                "seg" => new ViOverlaySeg { X1 = 100 * k, Y1 = 120 * k, X2 = 300 * k, Y2 = 120 * k, Color = ViOverlayColor.Red, StrokeScale = scale },
+                "rect" => new ViOverlayRect { CenterX = 200 * k, CenterY = 200 * k, Width = 200 * k, Height = 160 * k, Color = ViOverlayColor.Red, StrokeScale = scale },
+                _ => new ViOverlayPoly { Points = [(100 * k, 120 * k), (300 * k, 120 * k)], IsClosed = false, Color = ViOverlayColor.Red, StrokeScale = scale },
+            });
+            return o;
+        }
+        foreach (var kind in new[] { "seg", "rect", "poly" })
+        {
+            var frame = GrayFrame(400, 400);
+            var bare = Render(ClipCtrl(frame, false), ClipBox, ClipBox);
+            int Width(double scale, CamFrame f, byte[] b) => ChangedInMiddleColumn(Render(ClipCtrl(f, false, One(scale, f.Width, kind)), ClipBox, ClipBox), b);
+
+            var w1 = Width(1.0, frame, bare);
+            var w3 = Width(3.0, frame, bare);
+            Check(w1 > 0, $"{kind}: premise — the probe column crosses the line at scale 1 ({w1}px)");
+            Check(w3 >= w1 * 2, $"{kind}: StrokeScale 3 draws a clearly thicker line — {w1}px at 1.0, {w3}px at 3.0");
+
+            // 이상한 값은 기본 굵기 — 던지지도, 선을 지우지도 않는다(0 굵기 펜은 아무것도 안 그린다).
+            foreach (var bad in new[] { 0.0, -2.0, double.NaN, double.PositiveInfinity })
+                Check(Width(bad, frame, bare) == w1, $"{kind}: StrokeScale {bad} draws like 1.0 ({Width(bad, frame, bare)}px vs {w1}px)");
+
+            // 줌과 무관 — 두 배 큰 프레임은 절반 배율로 맞춰지지만 선 굵기는 화면 px 그대로다.
+            var big = GrayFrame(800, 800);
+            var bareBig = Render(ClipCtrl(big, false), ClipBox, ClipBox);
+            var w1Big = Width(1.0, big, bareBig);
+            var w3Big = Width(3.0, big, bareBig);
+            Check(Math.Abs(w1Big - w1) <= 1 && Math.Abs(w3Big - w3) <= 1,
+                $"{kind}: the stroke is screen-fixed — at half the zoom 1.0 draws {w1Big}px (was {w1}px) and 3.0 draws {w3Big}px (was {w3}px)");
+        }
+
+        // 화살촉도 같은 배수로 — 굵은 선에 기본 크기 촉이면 촉이 선에 묻힌다.
+        var f400 = GrayFrame(400, 400);
+        var bare400 = Render(ClipCtrl(f400, false), ClipBox, ClipBox);
+        int ArrowHeight(double scale)
+        {
+            var o = new ViOverlay();
+            o.Add(new ViOverlaySeg { X1 = 100, Y1 = 120, X2 = 300, Y2 = 120, HasEndArrow = true, Color = ViOverlayColor.Red, StrokeScale = scale });
+            var box = ChangedBox(Render(ClipCtrl(f400, false, o), ClipBox, ClipBox), bare400);
+            return box.Y1 - box.Y0 + 1;
+        }
+        var a1 = ArrowHeight(1.0);
+        var a3 = ArrowHeight(3.0);
+        Check(a3 >= a1 * 2, $"the end arrow grows with the stroke — {a1}px tall at 1.0, {a3}px at 3.0");
+
+        // 복사·자르기가 배수를 잇는다 — 사본에서 빠지면 잘라 보인 화면에서만 NG 박스가 다시 가늘어진다.
+        var src = new ViOverlay();
+        src.Add(new ViOverlayRect { CenterX = 50, CenterY = 50, Width = 20, Height = 20, StrokeScale = 2.5 });
+        Check(src.CropTo(10, 10, 80, 80).Items[0].StrokeScale == 2.5, "CropTo keeps StrokeScale");
+    });
+
     [Fact]
     public void OverlayLabelScaleGrowsOnlyTheNonHudLabelText() => RunSta(() =>
     {

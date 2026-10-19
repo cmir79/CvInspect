@@ -80,18 +80,31 @@ public abstract class ViOverlayItem
 {
     protected ViOverlayItem() { }
 
-    /// <summary>공통 속성(색·점선)을 <paramref name="source"/> 에서 잇는다 — 파생 형의 복사 생성자가 부른다.</summary>
+    /// <summary>공통 속성(색·점선·선 굵기 배수)을 <paramref name="source"/> 에서 잇는다 — 파생 형의 복사 생성자가 부른다.</summary>
     protected ViOverlayItem(ViOverlayItem source)
     {
         if (source is null) throw new ArgumentNullException(nameof(source));
         Color = source.Color;
         IsDashed = source.IsDashed;
+        StrokeScale = source.StrokeScale;
     }
 
     public ViOverlayColor Color { get; init; }
 
     /// <summary>점선 렌더 — 보조 기하(검색 창 등)를 실선 결과 기하와 구분.</summary>
     public bool IsDashed { get; init; }
+
+    /// <summary>선 굵기 배수 — 렌더러의 기본 굵기에 곱한다(기본 1.0 = 종전 그대로). 한 항목만 눈에 띄게 하는 용도다
+    /// (NG 위치 박스를 멀리서도 보이게 2.0 등).
+    ///
+    /// 기본 굵기는 렌더러가 정한다. CvInspect.Wpf 의 <c>CvDispCtrl</c> 은 <b>화면 고정</b> 굵기다 — 선분·사각 2, 폴리라인 1.2
+    /// (WPF 장치 독립 픽셀, 96 dpi 에서 화면 px). 이미지 줌과 무관하므로 배수도 줌과 무관하게 "한 단계 굵게" 가 된다.
+    /// 선분의 화살촉도 같은 배수로 커진다(굵은 선에 기본 화살촉이면 촉이 선에 묻힌다). 라벨(글자)은 이 값을 쓰지 않는다 —
+    /// 글자 크기는 <see cref="ViOverlayLabel.FontSize"/> 다.
+    ///
+    /// 0 이하·NaN·무한대는 1.0 으로 그린다(던지지 않는다 — 검사 실행 중 오버레이를 만드는 자리에서 던지면 판정 자체가 죽는다).
+    /// 상한은 두지 않는다 — 큰 값은 그 굵기대로 그린다.</summary>
+    public double StrokeScale { get; init; } = 1.0;
 }
 
 /// <summary>선분 — HasEndArrow 면 끝점에 채운 화살촉(라인 방향/각도 부호 혼동 방지).</summary>

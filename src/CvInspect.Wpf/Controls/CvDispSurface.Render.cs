@@ -126,7 +126,9 @@ internal sealed partial class CvDispSurface
         {
             if (include is not null && !include(item)) continue;
             var brush = MapBrush(item.Color);
-            var pen = new Pen(brush, 2);
+            // 굵기 배수 — 화면 고정 기본 굵기에 곱한다(줌과 무관). 이상한 값은 기본 굵기로(ViOverlayItem.StrokeScale 설명).
+            var stroke = item.StrokeScale is > 0 and < double.PositiveInfinity ? item.StrokeScale : 1.0;
+            var pen = new Pen(brush, 2 * stroke);
             if (item.IsDashed) pen.DashStyle = DashStyles.Dash;
             pen.Freeze();   // 렌더 중 변경되지 않는 펜 — 얼려 두면 변경 추적 비용이 빠진다
             switch (item)
@@ -136,7 +138,7 @@ internal sealed partial class CvDispSurface
                     var p1 = ToScreen(seg.X1, seg.Y1);
                     var p2 = ToScreen(seg.X2, seg.Y2);
                     dc.DrawLine(pen, p1, p2);
-                    if (seg.HasEndArrow) DrawArrowHead(dc, brush, p1, p2);
+                    if (seg.HasEndArrow) DrawArrowHead(dc, brush, p1, p2, stroke);
                     break;
                 }
                 case ViOverlayLabel label:
@@ -210,7 +212,7 @@ internal sealed partial class CvDispSurface
                     // 점 수만큼 쌓인다. 에지 블랍 윤곽은 한 장에 수천 점이 나오므로(실측 평균 3.2천·최대 5.6천),
                     // 줌·팬처럼 전체를 다시 그리는 조작마다 그 수만큼의 명령이 재생성돼 화면이 끊긴다.
                     // 점선은 선분마다 dash 를 계산하느라 그 비용이 더 커진다.
-                    var thin = new Pen(brush, 1.2);
+                    var thin = new Pen(brush, 1.2 * stroke);
                     if (poly.IsDashed) thin.DashStyle = DashStyles.Dash;
                     thin.Freeze();
 
@@ -440,7 +442,8 @@ internal sealed partial class CvDispSurface
         => dc.DrawRectangle(brush, null,
             new Rect(p.X - HandleScreenPx / 2, p.Y - HandleScreenPx / 2, HandleScreenPx, HandleScreenPx));
 
-    private static void DrawArrowHead(DrawingContext dc, Brush brush, System.Windows.Point from, System.Windows.Point to)
+    /// <summary>끝점의 채운 화살촉. <paramref name="scale"/> 은 선 굵기 배수 — 굵은 선에 기본 크기 촉을 달면 촉이 선에 묻힌다.</summary>
+    private static void DrawArrowHead(DrawingContext dc, Brush brush, System.Windows.Point from, System.Windows.Point to, double scale = 1.0)
     {
         var dx = to.X - from.X;
         var dy = to.Y - from.Y;
@@ -448,8 +451,8 @@ internal sealed partial class CvDispSurface
         if (len < 2) return;
         var ux = dx / len;
         var uy = dy / len;
-        const double headLen = 12;
-        const double headHalf = 4.5;
+        var headLen = 12 * scale;
+        var headHalf = 4.5 * scale;
         var bx = to.X - ux * headLen;
         var by = to.Y - uy * headLen;
         var geo = new StreamGeometry();
