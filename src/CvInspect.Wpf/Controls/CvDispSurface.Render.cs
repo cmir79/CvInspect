@@ -466,6 +466,10 @@ internal sealed partial class CvDispSurface
             var half = Math.Min(EdgeHandleMaxScreenPx, len / 3) / 2 / len;
             var mx = (a.X + b.X) / 2;
             var my = (a.Y + b.Y) / 2;
+            // 변 가운데가 모서리 판정 칸(화면 축 정렬 ±HitScreenPx) 안이면 낸다 해도 잡히지 않는다 — 모서리가 먼저 잡힌다.
+            // 길이 하한만으로는 45° 사각에서 빠진다(칸의 대각 거리 √2·8 ≈ 11.3 이 21~22.6 px 변 가운데까지 닿는다, 독립 검토 지적).
+            if ((Math.Abs(mx - a.X) <= HitScreenPx && Math.Abs(my - a.Y) <= HitScreenPx)
+                || (Math.Abs(mx - b.X) <= HitScreenPx && Math.Abs(my - b.Y) <= HitScreenPx)) continue;
             handles.Add((5 + e, new System.Windows.Point(mx - dx * half, my - dy * half), new System.Windows.Point(mx + dx * half, my + dy * half)));
         }
         return handles;

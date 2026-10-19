@@ -92,6 +92,34 @@ internal sealed partial class CvDispSurface
                     bodyHit = shape;
                 }
             }
+
+            // 면 핸들 — 모든 도형의 모서리·그립 다음이고, 그 자리에 <b>더 작은 도형의 몸체</b>가 있으면 그 몸체에 진다. 면 핸들의
+            // 판정 띠(길이 24 + 양옆 8)는 모서리 칸보다 넓어, 앞에 두면 Search 가 감싼 Train 을 옮기려던 누름을 Search 리사이즈로
+            // 가로챘다(독립 검토 지적). 여러 면이 닿으면(얇은 사각의 위·아래) 가장 가까운 면 — 먼저 찾은 면이면 아래 변을 잡으려던
+            // 누름이 위 변을 잡아 사각이 뒤집혔다.
+            CvEditRect? sideShape = null;
+            var sideHandle = -1;
+            var sideDist = double.MaxValue;
+            for (var i = _shapes.Count - 1; i >= 0; i--)
+            {
+                if (_shapes[i] is not CvEditRect { IsResizable: true } rect) continue;
+                foreach (var (handle, e1, e2) in RectEdgeHandles(rect))
+                {
+                    var dist = DistToSegment(screen, e1, e2);
+                    if (dist <= HitScreenPx && dist < sideDist)
+                    {
+                        sideDist = dist;
+                        sideShape = rect;
+                        sideHandle = handle;
+                    }
+                }
+            }
+            if (sideShape is not null && (bodyHit is null || BodyArea(bodyHit) >= BodyArea(sideShape)))
+            {
+                StartDrag(DragMode.Handle, sideShape, sideHandle);
+                return true;
+            }
+
             if (bodyHit is not null)
             {
                 StartDrag(DragMode.MoveShape, bodyHit, -1);
@@ -205,6 +233,15 @@ internal sealed partial class CvDispSurface
                     0 => (-1, -1), 1 => (1, -1), 2 => (1, 1), 3 => (-1, 1),
                     5 => (0, -1), 6 => (1, 0), 7 => (0, 1), _ => (-1, 0),
                 };
+                if (_dragHandle >= 5)
+                {
+                    // 면은 커서 자리로 끌어오지 않고 <b>민 만큼</b> 옮긴다 — 판정 띠가 변 양옆 8 px 라 띠 안쪽을 누르고 1 px 만
+                    // 움직여도 변이 커서까지 튀었다(독립 검토 지적). 시작 변 자리 + 로컬 변위.
+                    var ldx = cos * dx - sin * dy;
+                    var ldy = sin * dx + cos * dy;
+                    if (sxSign != 0) px = sxSign * c / 2.0 + ldx;
+                    if (sySign != 0) py = sySign * d / 2.0 + ldy;
+                }
                 if (sxSign == 0) px = c / 2.0;    // 위·아래 면: 폭은 시작 그대로(아래 식에서 nw = c, ncx = 0)
                 if (sySign == 0) py = d / 2.0;    // 좌·우 면: 높이는 시작 그대로
                 var ox = sxSign == 0 ? -c / 2.0 : -sxSign * c / 2.0;
@@ -318,11 +355,7 @@ internal sealed partial class CvDispSurface
             if (Math.Abs(p.X - screen.X) <= HitScreenPx && Math.Abs(p.Y - screen.Y) <= HitScreenPx)
                 return i;
         }
-        // 면 핸들(5..8)은 모서리·회전 그립 다음 — 겹치는 자리에서는 모서리가 이긴다(두 축을 다 바꾸는 쪽이 기존 동작이다).
-        if (shape is CvEditRect { IsResizable: true } rect)
-            foreach (var (handle, e1, e2) in RectEdgeHandles(rect))
-                if (DistToSegment(screen, e1, e2) <= HitScreenPx)
-                    return handle;
+        // 면 핸들(5..8)은 여기서 보지 않는다 — PressAt 이 모든 도형의 모서리·그립 다음에, 더 작은 도형의 몸체와 견주어 따로 고른다.
         return -1;
     }
 

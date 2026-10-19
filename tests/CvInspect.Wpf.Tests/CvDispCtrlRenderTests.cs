@@ -633,6 +633,16 @@ public class CvDispCtrlRenderTests
         Check(DragImage(s, (200, 100), (210, 60)), "pressing the middle of the top edge grabs something");
         Check(Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 160) < eps && Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps,
             $"the top edge handle grows only upward — the bottom side and the width stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        // 아래·왼쪽 면도 — 네 갈래 식이 각자 부호를 갖는다(위·오른쪽만 보면 나머지 둘의 부호가 틀려도 초록이다).
+        Check(DragImage(s, (200, 220), (190, 250)), "pressing the middle of the bottom edge grabs something");
+        Check(Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 190) < eps && Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps,
+            $"the bottom edge handle grows only downward — the top side and the width stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        Check(DragImage(s, (100, 155), (70, 140)), "pressing the middle of the left edge grabs something");
+        Check(Math.Abs(r.X - 70) < eps && Math.Abs(r.X + r.W - 300) < eps && Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 190) < eps,
+            $"the left edge handle grows only to the left — the right side and the height stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        // 띠 안쪽을 눌러도 변은 민 만큼만 — 커서 자리로 튀지 않는다(판정 띠가 변 양옆 8 px).
+        Check(DragImage(s, (295, 155), (296, 155)) && Math.Abs(r.X + r.W - 301) < eps,
+            $"pressing 5 px inside the right side and moving 1 moves the side by 1, not to the cursor (right side at {r.X + r.W}, was 300)");
 
         // 회전 30° — 오른쪽(로컬 +x) 면을 로컬 x 로 +40, 로컬 y 로 +15 흔들며 끈다. 기울기 그대로, 로컬 x 로만 40 늘고 왼쪽 면 가운데는 제자리.
         var rr = new CvEditRect { IsRotatable = true };
@@ -669,6 +679,31 @@ public class CvDispCtrlRenderTests
         var (_, ss) = EditCtrl(rs);
         Check(DragImage(ss, (106, 100), (106, 80)) && Math.Abs(rs.W - 12) > eps,
             $"on an edge too short on screen the press goes to a corner, not an edge handle (w {rs.W} changed)");
+        // 하한 자체 — 폭 20 이미지 px ≈ 화면 18 px 이면 가운데가 모서리 칸(±8) 밖이라, 면 핸들이 있었다면 그것이 잡혔다.
+        // 하한 아래라 면 핸들이 없으니 그 자리는 몸체 → 이동이다(높이 그대로, 위치만).
+        var rn = new CvEditRect();
+        rn.Set(100, 100, 20, 160);
+        var (_, sn) = EditCtrl(rn);
+        Check(DragImage(sn, (110, 101), (110, 81)) && Math.Abs(rn.Y - 80) < eps && Math.Abs(rn.H - 160) < eps && Math.Abs(rn.W - 20) < eps,
+            $"below the length floor there is no side handle — the press moves the rect (y={rn.Y}, h={rn.H}, w={rn.W})");
+
+        // 겹친 도형 — Search 가 Train 을 감싸고 여백이 화면 몇 px 일 때, Train 몸체를 누른 것은 Train 이다(Search 의 면 띠가 가로채지 않는다).
+        var train = new CvEditRect { IsResizable = false };
+        train.Set(150, 150, 100, 100);
+        var search = new CvEditRect();
+        search.Set(145, 145, 110, 110);
+        var nested = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(400, 400), Shapes = new List<CvEditShape> { train, search } };
+        Render(nested, ClipBox, ClipBox);
+        Check(DragImage(nested.Surface, (249, 200), (259, 200)) && Math.Abs(train.X - 160) < eps && Math.Abs(search.X - 145) < eps && Math.Abs(search.W - 110) < eps,
+            $"a press on the inner shape's body near the outer side handle moves the inner shape (train x={train.X}; search x={search.X}, w={search.W})");
+
+        // 얇은 띠 — 위·아래 면 띠가 겹치면 가까운 면. 띠 안 아래 변 쪽(아래 변 1 px, 위 변 5 px — 둘 다 판정 안)을 눌러 내리면
+        // 아래 변이 내려간다(먼저 찾은 위 변이 잡히면 높이가 줄었다 뒤집힌다). 아래 변 바깥을 누르면 위 변이 판정 밖이라 이 갈래를 못 본다.
+        var strip = new CvEditRect();
+        strip.Set(100, 200, 200, 6);
+        var (_, st) = EditCtrl(strip);
+        Check(DragImage(st, (200, 205), (200, 215)) && Math.Abs(strip.Y - 200) < eps && Math.Abs(strip.H - 16) < eps,
+            $"on a thin strip the nearer side is taken — pulling near the bottom grows it downward (y={strip.Y}, h={strip.H})");
     });
 
     [Fact]
@@ -693,8 +728,9 @@ public class CvDispCtrlRenderTests
         var px = Render(ctrl, ClipBox, ClipBox);
         var right = s.ImageToScreen(380, 200);
         var mid = Thickness(px, bare, (int)Math.Round(right.X), (int)Math.Round(right.Y));
-        var q = s.ImageToScreen(380, 110);   // 변의 1/4 지점 — 1/3 길이였다면 여기까지 굵었다
-        var quarter = Thickness(px, bare, (int)Math.Round(q.X), (int)Math.Round(q.Y));
+        // 기준선 — 변 1/4 지점의 얇은 외곽선 굵기. 외곽선이 점선이라 한 줄만 보면 빈 칸에 떨어질 수 있어 ±4 줄(점선 한 주기)의 최댓값.
+        var q = s.ImageToScreen(380, 110);
+        var quarter = Enumerable.Range(-4, 9).Max(o => Thickness(px, bare, (int)Math.Round(q.X), (int)Math.Round(q.Y) + o));
         Check(quarter > 0 && mid >= quarter + 2, $"the middle of the right side is drawn thicker than the rest ({mid}px vs {quarter}px at a quarter)");
         // 굵은 구간의 길이 — 상한 24 근처여야 한다(변 1/3 이면 화면 100 px 넘게)
         int thickRun = 0;
