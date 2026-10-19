@@ -40,8 +40,28 @@ internal sealed partial class CvDispSurface
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        if (_bitmap is null) return;
-        var screen = e.GetPosition(this);
+        if (!PressAt(e.GetPosition(this))) return;
+        CaptureMouse();
+        e.Handled = true;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e) => DragTo(e.GetPosition(this));
+
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        if (!ReleaseDrag()) return;
+        ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    /// <summary>이미지 좌표 → 화면 좌표 — 회귀가 핸들 자리를 찾는 데 쓴다.</summary>
+    internal System.Windows.Point ImageToScreen(double x, double y) => ToScreen(x, y);
+
+    /// <summary>왼쪽 누름 — 잡을 것이 있으면(핸들·도형 몸체·팬 모드) 드래그를 시작하고 true(호출자가 마우스를 잡는다).
+    /// 마우스 장치와 떼어 둔 것은 회귀가 좌표로 부르기 위해서다.</summary>
+    internal bool PressAt(System.Windows.Point screen)
+    {
+        if (_bitmap is null) return false;
         _dragStartScreen = screen;
 
         // 팬 모드면 도형 히트 무시하고 화면 이동. 편집 모드는 1) 핸들 → 2) 도형 몸체만 —
@@ -55,9 +75,7 @@ internal sealed partial class CvDispSurface
                 if (handle >= 0)
                 {
                     StartDrag(DragMode.Handle, shape, handle);
-                    CaptureMouse();
-                    e.Handled = true;
-                    return;
+                    return true;
                 }
             }
             // 몸체 히트 — 겹치면 면적이 가장 작은 도형 우선. Search 가 Train 을 감싸는 중첩에서
@@ -77,17 +95,14 @@ internal sealed partial class CvDispSurface
             if (bodyHit is not null)
             {
                 StartDrag(DragMode.MoveShape, bodyHit, -1);
-                CaptureMouse();
-                e.Handled = true;
-                return;
+                return true;
             }
         }
 
-        if (!IsPanMode) return;
+        if (!IsPanMode) return false;
 
         _drag = DragMode.Pan;
-        CaptureMouse();
-        e.Handled = true;
+        return true;
     }
 
     /// <summary>도형 몸체 면적 — 중첩 히트 시 작은 도형 우선 선택 기준. 선분은 몸체가 얇아 항상 최우선.</summary>
@@ -138,10 +153,10 @@ internal sealed partial class CvDispSurface
     /// <summary>원호 드래그 시작 스냅샷 — (시작각, 스팬). 시작/끝 그립이 반대편 각을 고정한 채 갱신하는 기준.</summary>
     private (double Start, double Span) _dragStartArc;
 
-    protected override void OnMouseMove(MouseEventArgs e)
+    /// <summary>끌기 — 진행 중인 드래그(팬·이동·핸들)를 이 화면 좌표까지. 드래그가 없으면 무동작.</summary>
+    internal void DragTo(System.Windows.Point screen)
     {
         if (_drag == DragMode.None) return;
-        var screen = e.GetPosition(this);
 
         if (_drag == DragMode.Pan)
         {
@@ -183,9 +198,17 @@ internal sealed partial class CvDispSurface
                 var px = cos * ddx - sin * ddy;
                 var py = sin * ddx + cos * ddy;
 
-                var (sxSign, sySign) = _dragHandle switch { 0 => (-1, -1), 1 => (1, -1), 2 => (1, 1), _ => (-1, 1) };
-                var ox = -sxSign * c / 2.0;
-                var oy = -sySign * d / 2.0;
+                // 핸들 5..8 = 위/오른쪽/아래/왼쪽 면 — 한 축만 따른다: 반대 변을 고정하고, 다른 축은 시작 크기·중심 그대로.
+                // 회전된 사각도 같은 식이다(이 로컬 프레임에서는 축 정렬 사각이다) — 기울기를 유지한 채 그 방향으로만 늘어난다.
+                var (sxSign, sySign) = _dragHandle switch
+                {
+                    0 => (-1, -1), 1 => (1, -1), 2 => (1, 1), 3 => (-1, 1),
+                    5 => (0, -1), 6 => (1, 0), 7 => (0, 1), _ => (-1, 0),
+                };
+                if (sxSign == 0) px = c / 2.0;    // 위·아래 면: 폭은 시작 그대로(아래 식에서 nw = c, ncx = 0)
+                if (sySign == 0) py = d / 2.0;    // 좌·우 면: 높이는 시작 그대로
+                var ox = sxSign == 0 ? -c / 2.0 : -sxSign * c / 2.0;
+                var oy = sySign == 0 ? -d / 2.0 : -sySign * d / 2.0;
                 var nw = Math.Max(2, Math.Abs(px - ox));
                 var nh = Math.Max(2, Math.Abs(py - oy));
                 var ncx = (px + ox) / 2.0;
@@ -262,20 +285,20 @@ internal sealed partial class CvDispSurface
         }
     }
 
-    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    /// <summary>놓기 — 드래그 중이었으면 끝내고 true(호출자가 마우스를 놓는다).</summary>
+    internal bool ReleaseDrag()
     {
-        if (_drag == DragMode.None) return;
+        if (_drag == DragMode.None) return false;
         _drag = DragMode.None;
         _dragShape = null;
-        ReleaseMouseCapture();
-        e.Handled = true;
+        return true;
     }
 
     private int HitHandle(CvEditShape shape, System.Windows.Point screen)
     {
         var pts = shape switch
         {
-            // 사각 핸들 0..3 = 모서리, 4 = 회전 그립 (IsRotatable 일 때만). 크기 고정 사각은 그립 없음(이동만).
+            // 사각 핸들 0..3 = 모서리, 4 = 회전 그립 (IsRotatable 일 때만), 5..8 = 면(아래 따로). 크기 고정 사각은 그립 없음(이동만).
             CvEditRect { IsResizable: false } => Array.Empty<(double, double)>(),
             CvEditRect r => r.IsRotatable
                 ? [.. RectCorners(r), RectGrip(r, GripScreenPx / Scale)]
@@ -295,6 +318,11 @@ internal sealed partial class CvDispSurface
             if (Math.Abs(p.X - screen.X) <= HitScreenPx && Math.Abs(p.Y - screen.Y) <= HitScreenPx)
                 return i;
         }
+        // 면 핸들(5..8)은 모서리·회전 그립 다음 — 겹치는 자리에서는 모서리가 이긴다(두 축을 다 바꾸는 쪽이 기존 동작이다).
+        if (shape is CvEditRect { IsResizable: true } rect)
+            foreach (var (handle, e1, e2) in RectEdgeHandles(rect))
+                if (DistToSegment(screen, e1, e2) <= HitScreenPx)
+                    return handle;
         return -1;
     }
 

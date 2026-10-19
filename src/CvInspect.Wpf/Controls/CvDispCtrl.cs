@@ -393,6 +393,9 @@ public sealed partial class CvDispCtrl : Grid
     /// </summary>
     public void FitToView() => _surface.FitToView();
 
+    /// <summary>렌더·입력 표면 — 회귀가 좌표로 조작한다(마우스 이벤트는 실제 장치 위치를 읽는다).</summary>
+    internal CvDispSurface Surface => _surface;
+
     private void LoadImageFromFile()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog

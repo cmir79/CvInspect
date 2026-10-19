@@ -594,6 +594,116 @@ public class CvDispCtrlRenderTests
         Check(src.CropTo(10, 10, 80, 80).Items[0].StrokeScale == 2.5, "CropTo keeps StrokeScale");
     });
 
+    /// <summary>편집 사각 하나를 얹은 화면 — 렌더까지 돌려 화면 배율이 정해진 뒤 표면을 돌려준다.</summary>
+    private static (CvDispCtrl Ctrl, CvInspect.Controls.CvDispSurface Surface) EditCtrl(CvEditRect rect)
+    {
+        var ctrl = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(400, 400), Shapes = new List<CvEditShape> { rect } };
+        Render(ctrl, ClipBox, ClipBox);
+        return (ctrl, ctrl.Surface);
+    }
+
+    /// <summary>이미지 좌표에서 누르고 이미지 좌표까지 끌어 놓는다 — 사람이 하는 드래그 그대로(누름 판정 포함).</summary>
+    private static bool DragImage(CvInspect.Controls.CvDispSurface s, (double X, double Y) from, (double X, double Y) to)
+    {
+        if (!s.PressAt(s.ImageToScreen(from.X, from.Y))) return false;
+        s.DragTo(s.ImageToScreen(to.X, to.Y));
+        s.ReleaseDrag();
+        return true;
+    }
+
+    private static (double X, double Y) Rot(double cx, double cy, double deg, double lx, double ly)
+    {
+        var r = deg * Math.PI / 180;
+        return (cx + Math.Cos(r) * lx - Math.Sin(r) * ly, cy + Math.Sin(r) * lx + Math.Cos(r) * ly);
+    }
+
+    [Fact]
+    public void EdgeHandlesResizeOneSideEvenWhenRotated() => RunSta(() =>
+    {
+        // 사용자 요청: 꼭짓점만이 아니라 면 가운데를 잡아 그 방향(좌우·상하)만 넓히기 — 사선 사각도. 면 가운데를 조금 굵게 그린 짧은 선이 핸들이다.
+        const double eps = 1e-6;
+
+        // 축 정렬 — 오른쪽 면을 끌면 폭만 늘고 왼쪽 변은 그대로. 위 면은 높이만, 아래 변 그대로.
+        var r = new CvEditRect();
+        r.Set(100, 100, 160, 120);
+        var (_, s) = EditCtrl(r);
+        Check(DragImage(s, (260, 160), (300, 175)), "pressing the middle of the right edge grabs something");
+        Check(Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps && Math.Abs(r.Y - 100) < eps && Math.Abs(r.H - 120) < eps,
+            $"the right edge handle widens only to the right — the left side, the height and the vertical place stay, even with a 15 px vertical wobble (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        Check(DragImage(s, (200, 100), (210, 60)), "pressing the middle of the top edge grabs something");
+        Check(Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 160) < eps && Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps,
+            $"the top edge handle grows only upward — the bottom side and the width stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+
+        // 회전 30° — 오른쪽(로컬 +x) 면을 로컬 x 로 +40, 로컬 y 로 +15 흔들며 끈다. 기울기 그대로, 로컬 x 로만 40 늘고 왼쪽 면 가운데는 제자리.
+        var rr = new CvEditRect { IsRotatable = true };
+        rr.Set(120, 160, 160, 80);   // 중심 (200, 200)
+        rr.AngleDeg = 30;
+        var (_, sr) = EditCtrl(rr);
+        var leftMidBefore = Rot(200, 200, 30, -80, 0);
+        Check(DragImage(sr, Rot(200, 200, 30, 80, 0), Rot(200, 200, 30, 120, 15)), "pressing the middle of the rotated right edge grabs something");
+        var c = (X: rr.X + rr.W / 2, Y: rr.Y + rr.H / 2);
+        var leftMidAfter = Rot(c.X, c.Y, rr.AngleDeg, -rr.W / 2, 0);
+        Check(Math.Abs(rr.AngleDeg - 30) < eps && Math.Abs(rr.W - 200) < 1e-6 && Math.Abs(rr.H - 80) < 1e-6,
+            $"a rotated rect keeps its angle and grows only along its own x by the dragged 40 (angle={rr.AngleDeg}, w={rr.W}, h={rr.H})");
+        Check(Math.Abs(leftMidAfter.X - leftMidBefore.X) < 1e-6 && Math.Abs(leftMidAfter.Y - leftMidBefore.Y) < 1e-6,
+            $"the opposite (left) side of the rotated rect stays where it was ({leftMidBefore} -> {leftMidAfter})");
+
+        // 모서리가 먼저다 — 꼭짓점을 잡으면 종전대로 두 축이 함께 바뀐다(면 핸들이 모서리 자리를 가로채지 않는다).
+        var rc = new CvEditRect();
+        rc.Set(100, 100, 160, 120);
+        var (_, sc) = EditCtrl(rc);
+        Check(DragImage(sc, (260, 220), (280, 250)) && Math.Abs(rc.W - 180) < eps && Math.Abs(rc.H - 150) < eps,
+            $"a corner still resizes both axes (w={rc.W}, h={rc.H})");
+
+        // 크기 고정 사각은 면 핸들도 없다 — 면 가운데를 끌면 이동이다.
+        var rf = new CvEditRect { IsResizable = false };
+        rf.Set(100, 100, 160, 120);
+        var (_, sf) = EditCtrl(rf);
+        Check(DragImage(sf, (260, 160), (280, 160)) && Math.Abs(rf.X - 120) < eps && Math.Abs(rf.W - 160) < eps,
+            $"a fixed-size rect has no edge handles — dragging an edge middle moves it (x={rf.X}, w={rf.W})");
+
+        // 화면에서 짧은 변은 면 핸들을 내지 않는다 — 모서리 핸들과 겹쳐 무엇을 잡았는지 모르게 된다. 짧은 변 가운데는 모서리 핸들의
+        // 판정 범위 안이라 모서리로 잡힌다(두 축이 바뀐다).
+        var rs = new CvEditRect();
+        rs.Set(100, 100, 12, 160);   // 폭 12 이미지 px ≈ 화면 11 px — 면 핸들 하한(21 px) 아래
+        var (_, ss) = EditCtrl(rs);
+        Check(DragImage(ss, (106, 100), (106, 80)) && Math.Abs(rs.W - 12) > eps,
+            $"on an edge too short on screen the press goes to a corner, not an edge handle (w {rs.W} changed)");
+    });
+
+    [Fact]
+    public void EdgeHandlesThickenOnlyTheMiddleOfEachSide() => RunSta(() =>
+    {
+        // 그리는 모양 — 변 가운데만 실선으로 조금 굵게, 길이는 변의 1/3 이되 화면 상한(24)이 있어 큰 사각이면 가운데만 짧게.
+        int Thickness(byte[] px, byte[] bare, int x, int yMid)
+        {
+            // (x, yMid) 를 지나는 가로줄에서 바뀐 화소 수 — 세로 변 하나의 그려진 굵기
+            int n = 0;
+            for (int xx = Math.Max(0, x - 10); xx <= Math.Min(ClipBox - 1, x + 10); xx++)
+            {
+                int i = (yMid * ClipBox + xx) * 4;
+                if (px[i] != bare[i] || px[i + 1] != bare[i + 1] || px[i + 2] != bare[i + 2]) n++;
+            }
+            return n;
+        }
+        var bare = Render(new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(400, 400) }, ClipBox, ClipBox);
+        var big = new CvEditRect { Color = ViOverlayColor.Red };
+        big.Set(20, 20, 360, 360);
+        var (ctrl, s) = EditCtrl(big);
+        var px = Render(ctrl, ClipBox, ClipBox);
+        var right = s.ImageToScreen(380, 200);
+        var mid = Thickness(px, bare, (int)Math.Round(right.X), (int)Math.Round(right.Y));
+        var q = s.ImageToScreen(380, 110);   // 변의 1/4 지점 — 1/3 길이였다면 여기까지 굵었다
+        var quarter = Thickness(px, bare, (int)Math.Round(q.X), (int)Math.Round(q.Y));
+        Check(quarter > 0 && mid >= quarter + 2, $"the middle of the right side is drawn thicker than the rest ({mid}px vs {quarter}px at a quarter)");
+        // 굵은 구간의 길이 — 상한 24 근처여야 한다(변 1/3 이면 화면 100 px 넘게)
+        int thickRun = 0;
+        // 모서리 핸들(사각 7 px)도 굵게 잡히므로 모서리 근처는 뺀다
+        for (int y = (int)s.ImageToScreen(380, 40).Y; y <= (int)s.ImageToScreen(380, 360).Y; y++)
+            if (Thickness(px, bare, (int)Math.Round(right.X), y) >= mid - 1) thickRun++;
+        Check(thickRun is >= 20 and <= 30, $"on a large rect only a short middle part is thick — {thickRun}px long, capped near 24");
+    });
+
     [Fact]
     public void OverlayLabelScaleGrowsOnlyTheNonHudLabelText() => RunSta(() =>
     {

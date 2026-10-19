@@ -261,8 +261,14 @@ internal sealed partial class CvDispSurface
                     for (var i = 0; i < 4; i++) dc.DrawLine(pen, scr[i], scr[(i + 1) % 4]);
                     // 크기 고정 사각(IsResizable=false)은 그립 미표시 — 히트 판정과 짝 (이동만 가능함을 시각화).
                     if (r.IsResizable)
+                    {
                         foreach (var (hx, hy) in corners)
                             DrawHandle(dc, brush, ToScreen(hx, hy));
+                        // 면 핸들 — 외곽선(점선) 위 변 가운데만 실선으로 조금 굵게. 잡으면 그 변만 움직인다(반대 변 고정).
+                        var edgePen = new Pen(brush, EdgeHandleThickPx);
+                        edgePen.Freeze();
+                        foreach (var (_, e1, e2) in RectEdgeHandles(r)) dc.DrawLine(edgePen, e1, e2);
+                    }
 
                     if (r.IsResizable && r.IsRotatable)
                     {
@@ -435,6 +441,34 @@ internal sealed partial class CvDispSurface
         var sin = Math.Sin(rad);
         var ly = -(r.H / 2 + gripImgLen);
         return (cx - sin * ly, cy + cos * ly);
+    }
+
+    // 면 핸들 — 각 변 가운데를 조금 굵게 그린 짧은 선. 길이는 변의 1/3 이되 화면 고정 상한이 있어, 큰 사각이면 변 가운데만
+    // 살짝 굵어 보인다. 변이 화면에서 짧으면 아예 내지 않는다 — 모서리 핸들과 겹쳐 어느 것을 잡았는지 알 수 없게 된다.
+    private const double EdgeHandleMaxScreenPx = 24;
+    private const double EdgeHandleThickPx = 5;
+    private const double EdgeHandleMinEdgeScreenPx = 3 * HandleScreenPx;
+
+    /// <summary>사각의 면 핸들(화면 좌표 선분) — 핸들 인덱스 5..8 = 위/오른쪽/아래/왼쪽 변(회전 전 로컬 기준). 화면에서 짧은
+    /// 변은 빠진다. 그리기와 잡기 판정이 같은 목록을 쓴다 — 따로 계산하면 보이는 자리와 잡히는 자리가 어긋난다.</summary>
+    private List<(int Handle, System.Windows.Point P1, System.Windows.Point P2)> RectEdgeHandles(CvEditRect r)
+    {
+        var handles = new List<(int, System.Windows.Point, System.Windows.Point)>(4);
+        var corners = RectCorners(r);
+        for (var e = 0; e < 4; e++)
+        {
+            var a = ToScreen(corners[e].X, corners[e].Y);
+            var b = ToScreen(corners[(e + 1) % 4].X, corners[(e + 1) % 4].Y);
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < EdgeHandleMinEdgeScreenPx) continue;
+            var half = Math.Min(EdgeHandleMaxScreenPx, len / 3) / 2 / len;
+            var mx = (a.X + b.X) / 2;
+            var my = (a.Y + b.Y) / 2;
+            handles.Add((5 + e, new System.Windows.Point(mx - dx * half, my - dy * half), new System.Windows.Point(mx + dx * half, my + dy * half)));
+        }
+        return handles;
     }
 
     /// <summary>이미지 좌표 → 사각 로컬 좌표 (중심 원점, 회전 해제).</summary>
