@@ -126,8 +126,10 @@ internal sealed partial class CvDispSurface
         {
             if (include is not null && !include(item)) continue;
             var brush = MapBrush(item.Color);
-            // 굵기 배수 — 화면 고정 기본 굵기에 곱한다(줌과 무관). 이상한 값은 기본 굵기로(ViOverlayItem.StrokeScale 설명).
-            var stroke = item.StrokeScale is > 0 and < double.PositiveInfinity ? item.StrokeScale : 1.0;
+            // 굵기 배수 — 화면 고정 기본 굵기에 곱한다(줌과 무관). 이상한 값은 기본 굵기로, 범위 밖은 끝값으로(ViOverlayItem.StrokeScale 설명).
+            var stroke = item.StrokeScale is > 0 and < double.PositiveInfinity
+                ? Math.Clamp(item.StrokeScale, MinStrokeScale, MaxStrokeScale)
+                : 1.0;
             var pen = new Pen(brush, 2 * stroke);
             if (item.IsDashed) pen.DashStyle = DashStyles.Dash;
             pen.Freeze();   // 렌더 중 변경되지 않는 펜 — 얼려 두면 변경 추적 비용이 빠진다
@@ -203,7 +205,16 @@ internal sealed partial class CvDispSurface
                         var (ox, oy) = corners[i];
                         pts[i] = ToScreen(rect.CenterX + cos * ox - sin * oy, rect.CenterY + sin * ox + cos * oy);
                     }
-                    for (var i = 0; i < 4; i++) dc.DrawLine(pen, pts[i], pts[(i + 1) % 4]);
+                    // 닫힌 도형 하나로 그린다 — 변마다 DrawLine 이면 끝이 평평해 모서리 바깥 (굵기/2)² 칸이 비어, 굵게 한 NG 박스의
+                    // 네 모서리가 이 빠진 것처럼 보였다(배수 3 이면 3×3). 닫힌 도형은 모서리를 이어 그린다(마이터).
+                    var box = new StreamGeometry();
+                    using (var ctx = box.Open())
+                    {
+                        ctx.BeginFigure(pts[0], isFilled: false, isClosed: true);
+                        for (var i = 1; i < 4; i++) ctx.LineTo(pts[i], isStroked: true, isSmoothJoin: false);
+                    }
+                    box.Freeze();
+                    dc.DrawGeometry(null, pen, box);
                     break;
                 }
                 case ViOverlayPoly poly when poly.Points.Count >= 2:
@@ -451,8 +462,10 @@ internal sealed partial class CvDispSurface
         if (len < 2) return;
         var ux = dx / len;
         var uy = dy / len;
-        var headLen = 12 * scale;
-        var headHalf = 4.5 * scale;
+        // 촉이 선분보다 길면 선분 길이로 줄인다(비율 유지) — 짧은 선분에 키운 촉이 시작점 뒤 빈 곳에서 튀어나오지 않게.
+        var shrink = Math.Min(1.0, len / (12 * scale));
+        var headLen = 12 * scale * shrink;
+        var headHalf = 4.5 * scale * shrink;
         var bx = to.X - ux * headLen;
         var by = to.Y - uy * headLen;
         var geo = new StreamGeometry();
@@ -469,6 +482,12 @@ internal sealed partial class CvDispSurface
     // 글자 크기(포인트)의 그릴 수 있는 범위 — FormattedText 는 0 이하나 35791 DIP(≈ 26843 pt) 넘는 크기를 던지는데, 그 예외는 OnRender
     // 안이라 레이아웃 패스를 타고 앱의 처리되지 않은 예외로 올라간다. 라벨 글자 크기는 검사 코드가 정하고(검사하지 않는다) 화면 배율이
     // 곱해지므로(검토 실측: 20 pt 라벨이 배율 1500 에서, 아주 작은 배율은 float 로 0 이 되어 던졌다) 그리는 자리에서 잡는다.
+    // 선 굵기 배수(ViOverlayItem.StrokeScale)의 그릴 수 있는 범위. 아래 끝: 0 에 가까운 배수는 선을 사실상 지운다 — 0 은 1.0 으로
+    // 바꾸면서 1e-6 은 안 보이게 두면 같은 실수가 값에 따라 갈린다. 위 끝: 아주 큰 유한값은 기본 굵기와 곱해 무한대가 되고, 화살촉
+    // 좌표는 0×∞ 로 NaN 이 된다(독립 검토 지적). 50 배면 선분 굵기 100 DIP — "눈에 띄게" 의 쓰임은 그 한참 안쪽이다.
+    private const double MinStrokeScale = 0.25;
+    private const double MaxStrokeScale = 50;
+
     private const float MinLabelPt = 0.5f;
     private const float MaxLabelPt = 26000f;
 

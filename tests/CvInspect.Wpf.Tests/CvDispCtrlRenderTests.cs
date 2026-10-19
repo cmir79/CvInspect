@@ -536,11 +536,16 @@ public class CvDispCtrlRenderTests
             var w1 = Width(1.0, frame, bare);
             var w3 = Width(3.0, frame, bare);
             Check(w1 > 0, $"{kind}: premise — the probe column crosses the line at scale 1 ({w1}px)");
-            Check(w3 >= w1 * 2, $"{kind}: StrokeScale 3 draws a clearly thicker line — {w1}px at 1.0, {w3}px at 3.0");
+            // 아래·위 둘 다 — 배수를 두 번 곱하면(9 배) 아래쪽 판정만으로는 통과한다
+            Check(w3 >= w1 * 2 && w3 < w1 * 4, $"{kind}: StrokeScale 3 draws about three times the line — {w1}px at 1.0, {w3}px at 3.0");
 
             // 이상한 값은 기본 굵기 — 던지지도, 선을 지우지도 않는다(0 굵기 펜은 아무것도 안 그린다).
             foreach (var bad in new[] { 0.0, -2.0, double.NaN, double.PositiveInfinity })
                 Check(Width(bad, frame, bare) == w1, $"{kind}: StrokeScale {bad} draws like 1.0 ({Width(bad, frame, bare)}px vs {w1}px)");
+            // 범위 끝으로 자른다 — 아주 작은 배수가 선을 지우지 않고, 아주 큰 유한값이 무한대 굵기로 넘치지 않는다.
+            var wMin = Width(0.25, frame, bare);
+            Check(wMin > 0 && Width(1e-300, frame, bare) == wMin, $"{kind}: a vanishing StrokeScale draws like the 0.25 floor ({Width(1e-300, frame, bare)}px vs {wMin}px), not nothing");
+            Check(Width(double.MaxValue, frame, bare) == Width(50, frame, bare), $"{kind}: double.MaxValue draws like the 50 ceiling instead of an infinite pen");
 
             // 줌과 무관 — 두 배 큰 프레임은 절반 배율로 맞춰지지만 선 굵기는 화면 px 그대로다.
             var big = GrayFrame(800, 800);
@@ -554,16 +559,34 @@ public class CvDispCtrlRenderTests
         // 화살촉도 같은 배수로 — 굵은 선에 기본 크기 촉이면 촉이 선에 묻힌다.
         var f400 = GrayFrame(400, 400);
         var bare400 = Render(ClipCtrl(f400, false), ClipBox, ClipBox);
-        int ArrowHeight(double scale)
+        (int X0, int Y0, int X1, int Y1) SegBox(double x1, double x2, bool arrow, double scale)
         {
             var o = new ViOverlay();
-            o.Add(new ViOverlaySeg { X1 = 100, Y1 = 120, X2 = 300, Y2 = 120, HasEndArrow = true, Color = ViOverlayColor.Red, StrokeScale = scale });
-            var box = ChangedBox(Render(ClipCtrl(f400, false, o), ClipBox, ClipBox), bare400);
-            return box.Y1 - box.Y0 + 1;
+            o.Add(new ViOverlaySeg { X1 = x1, Y1 = 120, X2 = x2, Y2 = 120, HasEndArrow = arrow, Color = ViOverlayColor.Red, StrokeScale = scale });
+            return ChangedBox(Render(ClipCtrl(f400, false, o), ClipBox, ClipBox), bare400);
         }
+        int ArrowHeight(double scale) { var b = SegBox(100, 300, true, scale); return b.Y1 - b.Y0 + 1; }
         var a1 = ArrowHeight(1.0);
         var a3 = ArrowHeight(3.0);
-        Check(a3 >= a1 * 2, $"the end arrow grows with the stroke — {a1}px tall at 1.0, {a3}px at 3.0");
+        Check(a3 >= a1 * 2 && a3 < a1 * 4, $"the end arrow grows with the stroke — {a1}px tall at 1.0, {a3}px at 3.0");
+        foreach (var bad in new[] { 0.0, -2.0, double.NaN, double.PositiveInfinity })
+            Check(ArrowHeight(bad) == a1, $"the end arrow of StrokeScale {bad} draws like 1.0 ({ArrowHeight(bad)}px vs {a1}px) — not lost, not unbounded");
+
+        // 짧은 선분 — 키운 촉(길이 36)이 선분(약 10px)보다 길면 시작점 뒤 빈 곳에서 튀어나왔다. 촉은 선분 안에 머문다.
+        var shortLine = SegBox(195, 205, false, 3.0);
+        var shortArrow = SegBox(195, 205, true, 3.0);
+        Check(shortArrow.X0 >= shortLine.X0 - 1, $"a bold arrow on a short segment stays within it (arrow starts at x={shortArrow.X0}, the line at x={shortLine.X0})");
+
+        // 굵게 한 사각의 바깥 모서리가 채워진다 — 변마다 따로 그리면 끝이 평평해 모서리 바깥 칸이 비었다(배수 3 에서 3×3).
+        var boxOverlay = new ViOverlay();
+        boxOverlay.Add(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 200, Height = 160, Color = ViOverlayColor.Red, StrokeScale = 3 });
+        var boxPx = Render(ClipCtrl(f400, false, boxOverlay), ClipBox, ClipBox);
+        var outer = ChangedBox(boxPx, bare400);
+        foreach (var (cx, cy) in new[] { (outer.X0 + 1, outer.Y0 + 1), (outer.X1 - 1, outer.Y0 + 1), (outer.X1 - 1, outer.Y1 - 1), (outer.X0 + 1, outer.Y1 - 1) })
+        {
+            int i = (cy * ClipBox + cx) * 4;
+            Check(boxPx[i + 2] > 150 && boxPx[i + 1] < 100, $"a bold rect's outer corner near ({cx},{cy}) is painted red, not notched (bgr {boxPx[i]},{boxPx[i + 1]},{boxPx[i + 2]})");
+        }
 
         // 복사·자르기가 배수를 잇는다 — 사본에서 빠지면 잘라 보인 화면에서만 NG 박스가 다시 가늘어진다.
         var src = new ViOverlay();

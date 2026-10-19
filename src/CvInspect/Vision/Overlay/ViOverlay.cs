@@ -103,7 +103,8 @@ public abstract class ViOverlayItem
     /// 글자 크기는 <see cref="ViOverlayLabel.FontSize"/> 다.
     ///
     /// 0 이하·NaN·무한대는 1.0 으로 그린다(던지지 않는다 — 검사 실행 중 오버레이를 만드는 자리에서 던지면 판정 자체가 죽는다).
-    /// 상한은 두지 않는다 — 큰 값은 그 굵기대로 그린다.</summary>
+    /// 그 밖의 값이 그릴 수 있는 범위를 넘으면 범위 끝으로 자른다 — <c>CvDispCtrl</c> 은 0.25~50 배(아주 작은 배수는 선을 지우고,
+    /// 아주 큰 배수는 굵기가 무한대로 넘친다). 사각은 닫힌 도형으로 그려 굵게 해도 모서리가 비지 않는다.</summary>
     public double StrokeScale { get; init; } = 1.0;
 }
 
