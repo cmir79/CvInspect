@@ -498,6 +498,248 @@ public class CvDispCtrlRenderTests
         return (x0, y0, x1, y1);
     }
 
+    /// <summary>가운데 열에서 오버레이 없는 화면과 달라진 화소 수 — 가로로 지나가는 선 하나의 화면 굵기다.</summary>
+    private static int ChangedInMiddleColumn(byte[] px, byte[] bare)
+    {
+        int n = 0, x = ClipBox / 2;
+        for (int y = 0; y < ClipBox; y++)
+        {
+            int i = (y * ClipBox + x) * 4;
+            if (px[i] != bare[i] || px[i + 1] != bare[i + 1] || px[i + 2] != bare[i + 2]) n++;
+        }
+        return n;
+    }
+
+    [Fact]
+    public void StrokeScaleThickensOneItemAtAnyZoom() => RunSta(() =>
+    {
+        // 소비자 요청: NG 위치 박스 하나만 "한 단계 굵게 — 멀리서도 보이게". 굵기는 화면 고정이라 배수도 줌과 무관해야 한다.
+        // 세 갈래(선분·사각·폴리라인)가 각자 펜을 만든다 — 하나만 배수를 빠뜨려도 그 종류만 조용히 얇게 남으니 셋 다 본다.
+        ViOverlay One(double scale, int imgSize, string kind)
+        {
+            var k = imgSize / 400.0;   // 큰 프레임은 좌표도 같은 비율로 — 화면에서는 같은 자리에 그려진다
+            var o = new ViOverlay();
+            o.Add(kind switch
+            {
+                "seg" => new ViOverlaySeg { X1 = 100 * k, Y1 = 120 * k, X2 = 300 * k, Y2 = 120 * k, Color = ViOverlayColor.Red, StrokeScale = scale },
+                "rect" => new ViOverlayRect { CenterX = 200 * k, CenterY = 200 * k, Width = 200 * k, Height = 160 * k, Color = ViOverlayColor.Red, StrokeScale = scale },
+                _ => new ViOverlayPoly { Points = [(100 * k, 120 * k), (300 * k, 120 * k)], IsClosed = false, Color = ViOverlayColor.Red, StrokeScale = scale },
+            });
+            return o;
+        }
+        foreach (var kind in new[] { "seg", "rect", "poly" })
+        {
+            var frame = GrayFrame(400, 400);
+            var bare = Render(ClipCtrl(frame, false), ClipBox, ClipBox);
+            int Width(double scale, CamFrame f, byte[] b) => ChangedInMiddleColumn(Render(ClipCtrl(f, false, One(scale, f.Width, kind)), ClipBox, ClipBox), b);
+
+            var w1 = Width(1.0, frame, bare);
+            var w3 = Width(3.0, frame, bare);
+            Check(w1 > 0, $"{kind}: premise — the probe column crosses the line at scale 1 ({w1}px)");
+            // 아래·위 둘 다 — 배수를 두 번 곱하면(9 배) 아래쪽 판정만으로는 통과한다
+            Check(w3 >= w1 * 2 && w3 < w1 * 4, $"{kind}: StrokeScale 3 draws about three times the line — {w1}px at 1.0, {w3}px at 3.0");
+
+            // 이상한 값은 기본 굵기 — 던지지도, 선을 지우지도 않는다(0 굵기 펜은 아무것도 안 그린다).
+            foreach (var bad in new[] { 0.0, -2.0, double.NaN, double.PositiveInfinity })
+                Check(Width(bad, frame, bare) == w1, $"{kind}: StrokeScale {bad} draws like 1.0 ({Width(bad, frame, bare)}px vs {w1}px)");
+            // 범위 끝으로 자른다 — 아주 작은 배수가 선을 지우지 않고, 아주 큰 유한값이 무한대 굵기로 넘치지 않는다.
+            var wMin = Width(0.25, frame, bare);
+            Check(wMin > 0 && Width(1e-300, frame, bare) == wMin, $"{kind}: a vanishing StrokeScale draws like the 0.25 floor ({Width(1e-300, frame, bare)}px vs {wMin}px), not nothing");
+            Check(Width(double.MaxValue, frame, bare) == Width(50, frame, bare), $"{kind}: double.MaxValue draws like the 50 ceiling instead of an infinite pen");
+
+            // 줌과 무관 — 두 배 큰 프레임은 절반 배율로 맞춰지지만 선 굵기는 화면 px 그대로다.
+            var big = GrayFrame(800, 800);
+            var bareBig = Render(ClipCtrl(big, false), ClipBox, ClipBox);
+            var w1Big = Width(1.0, big, bareBig);
+            var w3Big = Width(3.0, big, bareBig);
+            Check(Math.Abs(w1Big - w1) <= 1 && Math.Abs(w3Big - w3) <= 1,
+                $"{kind}: the stroke is screen-fixed — at half the zoom 1.0 draws {w1Big}px (was {w1}px) and 3.0 draws {w3Big}px (was {w3}px)");
+        }
+
+        // 화살촉도 같은 배수로 — 굵은 선에 기본 크기 촉이면 촉이 선에 묻힌다.
+        var f400 = GrayFrame(400, 400);
+        var bare400 = Render(ClipCtrl(f400, false), ClipBox, ClipBox);
+        (int X0, int Y0, int X1, int Y1) SegBox(double x1, double x2, bool arrow, double scale)
+        {
+            var o = new ViOverlay();
+            o.Add(new ViOverlaySeg { X1 = x1, Y1 = 120, X2 = x2, Y2 = 120, HasEndArrow = arrow, Color = ViOverlayColor.Red, StrokeScale = scale });
+            return ChangedBox(Render(ClipCtrl(f400, false, o), ClipBox, ClipBox), bare400);
+        }
+        int ArrowHeight(double scale) { var b = SegBox(100, 300, true, scale); return b.Y1 - b.Y0 + 1; }
+        var a1 = ArrowHeight(1.0);
+        var a3 = ArrowHeight(3.0);
+        Check(a3 >= a1 * 2 && a3 < a1 * 4, $"the end arrow grows with the stroke — {a1}px tall at 1.0, {a3}px at 3.0");
+        foreach (var bad in new[] { 0.0, -2.0, double.NaN, double.PositiveInfinity })
+            Check(ArrowHeight(bad) == a1, $"the end arrow of StrokeScale {bad} draws like 1.0 ({ArrowHeight(bad)}px vs {a1}px) — not lost, not unbounded");
+
+        // 짧은 선분 — 키운 촉(길이 36)이 선분(약 10px)보다 길면 시작점 뒤 빈 곳에서 튀어나왔다. 촉은 선분 안에 머문다.
+        var shortLine = SegBox(195, 205, false, 3.0);
+        var shortArrow = SegBox(195, 205, true, 3.0);
+        Check(shortArrow.X0 >= shortLine.X0 - 1, $"a bold arrow on a short segment stays within it (arrow starts at x={shortArrow.X0}, the line at x={shortLine.X0})");
+
+        // 굵게 한 사각의 바깥 모서리가 채워진다 — 변마다 따로 그리면 끝이 평평해 모서리 바깥 칸이 비었다(배수 3 에서 3×3).
+        var boxOverlay = new ViOverlay();
+        boxOverlay.Add(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 200, Height = 160, Color = ViOverlayColor.Red, StrokeScale = 3 });
+        var boxPx = Render(ClipCtrl(f400, false, boxOverlay), ClipBox, ClipBox);
+        var outer = ChangedBox(boxPx, bare400);
+        foreach (var (cx, cy) in new[] { (outer.X0 + 1, outer.Y0 + 1), (outer.X1 - 1, outer.Y0 + 1), (outer.X1 - 1, outer.Y1 - 1), (outer.X0 + 1, outer.Y1 - 1) })
+        {
+            int i = (cy * ClipBox + cx) * 4;
+            Check(boxPx[i + 2] > 150 && boxPx[i + 1] < 100, $"a bold rect's outer corner near ({cx},{cy}) is painted red, not notched (bgr {boxPx[i]},{boxPx[i + 1]},{boxPx[i + 2]})");
+        }
+
+        // 복사·자르기가 배수를 잇는다 — 사본에서 빠지면 잘라 보인 화면에서만 NG 박스가 다시 가늘어진다.
+        var src = new ViOverlay();
+        src.Add(new ViOverlayRect { CenterX = 50, CenterY = 50, Width = 20, Height = 20, StrokeScale = 2.5 });
+        Check(src.CropTo(10, 10, 80, 80).Items[0].StrokeScale == 2.5, "CropTo keeps StrokeScale");
+    });
+
+    /// <summary>편집 사각 하나를 얹은 화면 — 렌더까지 돌려 화면 배율이 정해진 뒤 표면을 돌려준다.</summary>
+    private static (CvDispCtrl Ctrl, CvInspect.Controls.CvDispSurface Surface) EditCtrl(CvEditRect rect)
+    {
+        var ctrl = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(400, 400), Shapes = new List<CvEditShape> { rect } };
+        Render(ctrl, ClipBox, ClipBox);
+        return (ctrl, ctrl.Surface);
+    }
+
+    /// <summary>이미지 좌표에서 누르고 이미지 좌표까지 끌어 놓는다 — 사람이 하는 드래그 그대로(누름 판정 포함).</summary>
+    private static bool DragImage(CvInspect.Controls.CvDispSurface s, (double X, double Y) from, (double X, double Y) to)
+    {
+        if (!s.PressAt(s.ImageToScreen(from.X, from.Y))) return false;
+        s.DragTo(s.ImageToScreen(to.X, to.Y));
+        s.ReleaseDrag();
+        return true;
+    }
+
+    private static (double X, double Y) Rot(double cx, double cy, double deg, double lx, double ly)
+    {
+        var r = deg * Math.PI / 180;
+        return (cx + Math.Cos(r) * lx - Math.Sin(r) * ly, cy + Math.Sin(r) * lx + Math.Cos(r) * ly);
+    }
+
+    [Fact]
+    public void EdgeHandlesResizeOneSideEvenWhenRotated() => RunSta(() =>
+    {
+        // 사용자 요청: 꼭짓점만이 아니라 면 가운데를 잡아 그 방향(좌우·상하)만 넓히기 — 사선 사각도. 면 가운데를 조금 굵게 그린 짧은 선이 핸들이다.
+        const double eps = 1e-6;
+
+        // 축 정렬 — 오른쪽 면을 끌면 폭만 늘고 왼쪽 변은 그대로. 위 면은 높이만, 아래 변 그대로.
+        var r = new CvEditRect();
+        r.Set(100, 100, 160, 120);
+        var (_, s) = EditCtrl(r);
+        Check(DragImage(s, (260, 160), (300, 175)), "pressing the middle of the right edge grabs something");
+        Check(Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps && Math.Abs(r.Y - 100) < eps && Math.Abs(r.H - 120) < eps,
+            $"the right edge handle widens only to the right — the left side, the height and the vertical place stay, even with a 15 px vertical wobble (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        Check(DragImage(s, (200, 100), (210, 60)), "pressing the middle of the top edge grabs something");
+        Check(Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 160) < eps && Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps,
+            $"the top edge handle grows only upward — the bottom side and the width stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        // 아래·왼쪽 면도 — 네 갈래 식이 각자 부호를 갖는다(위·오른쪽만 보면 나머지 둘의 부호가 틀려도 초록이다).
+        Check(DragImage(s, (200, 220), (190, 250)), "pressing the middle of the bottom edge grabs something");
+        Check(Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 190) < eps && Math.Abs(r.X - 100) < eps && Math.Abs(r.W - 200) < eps,
+            $"the bottom edge handle grows only downward — the top side and the width stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        Check(DragImage(s, (100, 155), (70, 140)), "pressing the middle of the left edge grabs something");
+        Check(Math.Abs(r.X - 70) < eps && Math.Abs(r.X + r.W - 300) < eps && Math.Abs(r.Y - 60) < eps && Math.Abs(r.H - 190) < eps,
+            $"the left edge handle grows only to the left — the right side and the height stay (x={r.X}, w={r.W}, y={r.Y}, h={r.H})");
+        // 띠 안쪽을 눌러도 변은 민 만큼만 — 커서 자리로 튀지 않는다(판정 띠가 변 양옆 8 px).
+        Check(DragImage(s, (295, 155), (296, 155)) && Math.Abs(r.X + r.W - 301) < eps,
+            $"pressing 5 px inside the right side and moving 1 moves the side by 1, not to the cursor (right side at {r.X + r.W}, was 300)");
+
+        // 회전 30° — 오른쪽(로컬 +x) 면을 로컬 x 로 +40, 로컬 y 로 +15 흔들며 끈다. 기울기 그대로, 로컬 x 로만 40 늘고 왼쪽 면 가운데는 제자리.
+        var rr = new CvEditRect { IsRotatable = true };
+        rr.Set(120, 160, 160, 80);   // 중심 (200, 200)
+        rr.AngleDeg = 30;
+        var (_, sr) = EditCtrl(rr);
+        var leftMidBefore = Rot(200, 200, 30, -80, 0);
+        Check(DragImage(sr, Rot(200, 200, 30, 80, 0), Rot(200, 200, 30, 120, 15)), "pressing the middle of the rotated right edge grabs something");
+        var c = (X: rr.X + rr.W / 2, Y: rr.Y + rr.H / 2);
+        var leftMidAfter = Rot(c.X, c.Y, rr.AngleDeg, -rr.W / 2, 0);
+        Check(Math.Abs(rr.AngleDeg - 30) < eps && Math.Abs(rr.W - 200) < 1e-6 && Math.Abs(rr.H - 80) < 1e-6,
+            $"a rotated rect keeps its angle and grows only along its own x by the dragged 40 (angle={rr.AngleDeg}, w={rr.W}, h={rr.H})");
+        Check(Math.Abs(leftMidAfter.X - leftMidBefore.X) < 1e-6 && Math.Abs(leftMidAfter.Y - leftMidBefore.Y) < 1e-6,
+            $"the opposite (left) side of the rotated rect stays where it was ({leftMidBefore} -> {leftMidAfter})");
+
+        // 모서리가 먼저다 — 꼭짓점을 잡으면 종전대로 두 축이 함께 바뀐다(면 핸들이 모서리 자리를 가로채지 않는다).
+        var rc = new CvEditRect();
+        rc.Set(100, 100, 160, 120);
+        var (_, sc) = EditCtrl(rc);
+        Check(DragImage(sc, (260, 220), (280, 250)) && Math.Abs(rc.W - 180) < eps && Math.Abs(rc.H - 150) < eps,
+            $"a corner still resizes both axes (w={rc.W}, h={rc.H})");
+
+        // 크기 고정 사각은 면 핸들도 없다 — 면 가운데를 끌면 이동이다.
+        var rf = new CvEditRect { IsResizable = false };
+        rf.Set(100, 100, 160, 120);
+        var (_, sf) = EditCtrl(rf);
+        Check(DragImage(sf, (260, 160), (280, 160)) && Math.Abs(rf.X - 120) < eps && Math.Abs(rf.W - 160) < eps,
+            $"a fixed-size rect has no edge handles — dragging an edge middle moves it (x={rf.X}, w={rf.W})");
+
+        // 화면에서 짧은 변은 면 핸들을 내지 않는다 — 모서리 핸들과 겹쳐 무엇을 잡았는지 모르게 된다. 짧은 변 가운데는 모서리 핸들의
+        // 판정 범위 안이라 모서리로 잡힌다(두 축이 바뀐다).
+        var rs = new CvEditRect();
+        rs.Set(100, 100, 12, 160);   // 폭 12 이미지 px ≈ 화면 11 px — 면 핸들 하한(21 px) 아래
+        var (_, ss) = EditCtrl(rs);
+        Check(DragImage(ss, (106, 100), (106, 80)) && Math.Abs(rs.W - 12) > eps,
+            $"on an edge too short on screen the press goes to a corner, not an edge handle (w {rs.W} changed)");
+        // 하한 자체 — 폭 20 이미지 px ≈ 화면 18 px 이면 가운데가 모서리 칸(±8) 밖이라, 면 핸들이 있었다면 그것이 잡혔다.
+        // 하한 아래라 면 핸들이 없으니 그 자리는 몸체 → 이동이다(높이 그대로, 위치만).
+        var rn = new CvEditRect();
+        rn.Set(100, 100, 20, 160);
+        var (_, sn) = EditCtrl(rn);
+        Check(DragImage(sn, (110, 101), (110, 81)) && Math.Abs(rn.Y - 80) < eps && Math.Abs(rn.H - 160) < eps && Math.Abs(rn.W - 20) < eps,
+            $"below the length floor there is no side handle — the press moves the rect (y={rn.Y}, h={rn.H}, w={rn.W})");
+
+        // 겹친 도형 — Search 가 Train 을 감싸고 여백이 화면 몇 px 일 때, Train 몸체를 누른 것은 Train 이다(Search 의 면 띠가 가로채지 않는다).
+        var train = new CvEditRect { IsResizable = false };
+        train.Set(150, 150, 100, 100);
+        var search = new CvEditRect();
+        search.Set(145, 145, 110, 110);
+        var nested = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(400, 400), Shapes = new List<CvEditShape> { train, search } };
+        Render(nested, ClipBox, ClipBox);
+        Check(DragImage(nested.Surface, (249, 200), (259, 200)) && Math.Abs(train.X - 160) < eps && Math.Abs(search.X - 145) < eps && Math.Abs(search.W - 110) < eps,
+            $"a press on the inner shape's body near the outer side handle moves the inner shape (train x={train.X}; search x={search.X}, w={search.W})");
+
+        // 얇은 띠 — 위·아래 면 띠가 겹치면 가까운 면. 띠 안 아래 변 쪽(아래 변 1 px, 위 변 5 px — 둘 다 판정 안)을 눌러 내리면
+        // 아래 변이 내려간다(먼저 찾은 위 변이 잡히면 높이가 줄었다 뒤집힌다). 아래 변 바깥을 누르면 위 변이 판정 밖이라 이 갈래를 못 본다.
+        var strip = new CvEditRect();
+        strip.Set(100, 200, 200, 6);
+        var (_, st) = EditCtrl(strip);
+        Check(DragImage(st, (200, 205), (200, 215)) && Math.Abs(strip.Y - 200) < eps && Math.Abs(strip.H - 16) < eps,
+            $"on a thin strip the nearer side is taken — pulling near the bottom grows it downward (y={strip.Y}, h={strip.H})");
+    });
+
+    [Fact]
+    public void EdgeHandlesThickenOnlyTheMiddleOfEachSide() => RunSta(() =>
+    {
+        // 그리는 모양 — 변 가운데만 실선으로 조금 굵게, 길이는 변의 1/3 이되 화면 상한(24)이 있어 큰 사각이면 가운데만 짧게.
+        int Thickness(byte[] px, byte[] bare, int x, int yMid)
+        {
+            // (x, yMid) 를 지나는 가로줄에서 바뀐 화소 수 — 세로 변 하나의 그려진 굵기
+            int n = 0;
+            for (int xx = Math.Max(0, x - 10); xx <= Math.Min(ClipBox - 1, x + 10); xx++)
+            {
+                int i = (yMid * ClipBox + xx) * 4;
+                if (px[i] != bare[i] || px[i + 1] != bare[i + 1] || px[i + 2] != bare[i + 2]) n++;
+            }
+            return n;
+        }
+        var bare = Render(new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(400, 400) }, ClipBox, ClipBox);
+        var big = new CvEditRect { Color = ViOverlayColor.Red };
+        big.Set(20, 20, 360, 360);
+        var (ctrl, s) = EditCtrl(big);
+        var px = Render(ctrl, ClipBox, ClipBox);
+        var right = s.ImageToScreen(380, 200);
+        var mid = Thickness(px, bare, (int)Math.Round(right.X), (int)Math.Round(right.Y));
+        // 기준선 — 변 1/4 지점의 얇은 외곽선 굵기. 외곽선이 점선이라 한 줄만 보면 빈 칸에 떨어질 수 있어 ±4 줄(점선 한 주기)의 최댓값.
+        var q = s.ImageToScreen(380, 110);
+        var quarter = Enumerable.Range(-4, 9).Max(o => Thickness(px, bare, (int)Math.Round(q.X), (int)Math.Round(q.Y) + o));
+        Check(quarter > 0 && mid >= quarter + 2, $"the middle of the right side is drawn thicker than the rest ({mid}px vs {quarter}px at a quarter)");
+        // 굵은 구간의 길이 — 상한 24 근처여야 한다(변 1/3 이면 화면 100 px 넘게)
+        int thickRun = 0;
+        // 모서리 핸들(사각 7 px)도 굵게 잡히므로 모서리 근처는 뺀다
+        for (int y = (int)s.ImageToScreen(380, 40).Y; y <= (int)s.ImageToScreen(380, 360).Y; y++)
+            if (Thickness(px, bare, (int)Math.Round(right.X), y) >= mid - 1) thickRun++;
+        Check(thickRun is >= 20 and <= 30, $"on a large rect only a short middle part is thick — {thickRun}px long, capped near 24");
+    });
+
     [Fact]
     public void OverlayLabelScaleGrowsOnlyTheNonHudLabelText() => RunSta(() =>
     {

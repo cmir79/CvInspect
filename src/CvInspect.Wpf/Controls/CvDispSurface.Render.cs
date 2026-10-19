@@ -126,7 +126,11 @@ internal sealed partial class CvDispSurface
         {
             if (include is not null && !include(item)) continue;
             var brush = MapBrush(item.Color);
-            var pen = new Pen(brush, 2);
+            // 굵기 배수 — 화면 고정 기본 굵기에 곱한다(줌과 무관). 이상한 값은 기본 굵기로, 범위 밖은 끝값으로(ViOverlayItem.StrokeScale 설명).
+            var stroke = item.StrokeScale is > 0 and < double.PositiveInfinity
+                ? Math.Clamp(item.StrokeScale, MinStrokeScale, MaxStrokeScale)
+                : 1.0;
+            var pen = new Pen(brush, 2 * stroke);
             if (item.IsDashed) pen.DashStyle = DashStyles.Dash;
             pen.Freeze();   // 렌더 중 변경되지 않는 펜 — 얼려 두면 변경 추적 비용이 빠진다
             switch (item)
@@ -136,7 +140,7 @@ internal sealed partial class CvDispSurface
                     var p1 = ToScreen(seg.X1, seg.Y1);
                     var p2 = ToScreen(seg.X2, seg.Y2);
                     dc.DrawLine(pen, p1, p2);
-                    if (seg.HasEndArrow) DrawArrowHead(dc, brush, p1, p2);
+                    if (seg.HasEndArrow) DrawArrowHead(dc, brush, p1, p2, stroke);
                     break;
                 }
                 case ViOverlayLabel label:
@@ -201,7 +205,16 @@ internal sealed partial class CvDispSurface
                         var (ox, oy) = corners[i];
                         pts[i] = ToScreen(rect.CenterX + cos * ox - sin * oy, rect.CenterY + sin * ox + cos * oy);
                     }
-                    for (var i = 0; i < 4; i++) dc.DrawLine(pen, pts[i], pts[(i + 1) % 4]);
+                    // 닫힌 도형 하나로 그린다 — 변마다 DrawLine 이면 끝이 평평해 모서리 바깥 (굵기/2)² 칸이 비어, 굵게 한 NG 박스의
+                    // 네 모서리가 이 빠진 것처럼 보였다(배수 3 이면 3×3). 닫힌 도형은 모서리를 이어 그린다(마이터).
+                    var box = new StreamGeometry();
+                    using (var ctx = box.Open())
+                    {
+                        ctx.BeginFigure(pts[0], isFilled: false, isClosed: true);
+                        for (var i = 1; i < 4; i++) ctx.LineTo(pts[i], isStroked: true, isSmoothJoin: false);
+                    }
+                    box.Freeze();
+                    dc.DrawGeometry(null, pen, box);
                     break;
                 }
                 case ViOverlayPoly poly when poly.Points.Count >= 2:
@@ -210,7 +223,7 @@ internal sealed partial class CvDispSurface
                     // 점 수만큼 쌓인다. 에지 블랍 윤곽은 한 장에 수천 점이 나오므로(실측 평균 3.2천·최대 5.6천),
                     // 줌·팬처럼 전체를 다시 그리는 조작마다 그 수만큼의 명령이 재생성돼 화면이 끊긴다.
                     // 점선은 선분마다 dash 를 계산하느라 그 비용이 더 커진다.
-                    var thin = new Pen(brush, 1.2);
+                    var thin = new Pen(brush, 1.2 * stroke);
                     if (poly.IsDashed) thin.DashStyle = DashStyles.Dash;
                     thin.Freeze();
 
@@ -248,8 +261,14 @@ internal sealed partial class CvDispSurface
                     for (var i = 0; i < 4; i++) dc.DrawLine(pen, scr[i], scr[(i + 1) % 4]);
                     // 크기 고정 사각(IsResizable=false)은 그립 미표시 — 히트 판정과 짝 (이동만 가능함을 시각화).
                     if (r.IsResizable)
+                    {
                         foreach (var (hx, hy) in corners)
                             DrawHandle(dc, brush, ToScreen(hx, hy));
+                        // 면 핸들 — 외곽선(점선) 위 변 가운데만 실선으로 조금 굵게. 잡으면 그 변만 움직인다(반대 변 고정).
+                        var edgePen = new Pen(brush, EdgeHandleThickPx);
+                        edgePen.Freeze();
+                        foreach (var (_, e1, e2) in RectEdgeHandles(r)) dc.DrawLine(edgePen, e1, e2);
+                    }
 
                     if (r.IsResizable && r.IsRotatable)
                     {
@@ -424,6 +443,38 @@ internal sealed partial class CvDispSurface
         return (cx - sin * ly, cy + cos * ly);
     }
 
+    // 면 핸들 — 각 변 가운데를 조금 굵게 그린 짧은 선. 길이는 변의 1/3 이되 화면 고정 상한이 있어, 큰 사각이면 변 가운데만
+    // 살짝 굵어 보인다. 변이 화면에서 짧으면 아예 내지 않는다 — 모서리 핸들과 겹쳐 어느 것을 잡았는지 알 수 없게 된다.
+    private const double EdgeHandleMaxScreenPx = 24;
+    private const double EdgeHandleThickPx = 5;
+    private const double EdgeHandleMinEdgeScreenPx = 3 * HandleScreenPx;
+
+    /// <summary>사각의 면 핸들(화면 좌표 선분) — 핸들 인덱스 5..8 = 위/오른쪽/아래/왼쪽 변(회전 전 로컬 기준). 화면에서 짧은
+    /// 변은 빠진다. 그리기와 잡기 판정이 같은 목록을 쓴다 — 따로 계산하면 보이는 자리와 잡히는 자리가 어긋난다.</summary>
+    private List<(int Handle, System.Windows.Point P1, System.Windows.Point P2)> RectEdgeHandles(CvEditRect r)
+    {
+        var handles = new List<(int, System.Windows.Point, System.Windows.Point)>(4);
+        var corners = RectCorners(r);
+        for (var e = 0; e < 4; e++)
+        {
+            var a = ToScreen(corners[e].X, corners[e].Y);
+            var b = ToScreen(corners[(e + 1) % 4].X, corners[(e + 1) % 4].Y);
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < EdgeHandleMinEdgeScreenPx) continue;
+            var half = Math.Min(EdgeHandleMaxScreenPx, len / 3) / 2 / len;
+            var mx = (a.X + b.X) / 2;
+            var my = (a.Y + b.Y) / 2;
+            // 변 가운데가 모서리 판정 칸(화면 축 정렬 ±HitScreenPx) 안이면 낸다 해도 잡히지 않는다 — 모서리가 먼저 잡힌다.
+            // 길이 하한만으로는 45° 사각에서 빠진다(칸의 대각 거리 √2·8 ≈ 11.3 이 21~22.6 px 변 가운데까지 닿는다, 독립 검토 지적).
+            if ((Math.Abs(mx - a.X) <= HitScreenPx && Math.Abs(my - a.Y) <= HitScreenPx)
+                || (Math.Abs(mx - b.X) <= HitScreenPx && Math.Abs(my - b.Y) <= HitScreenPx)) continue;
+            handles.Add((5 + e, new System.Windows.Point(mx - dx * half, my - dy * half), new System.Windows.Point(mx + dx * half, my + dy * half)));
+        }
+        return handles;
+    }
+
     /// <summary>이미지 좌표 → 사각 로컬 좌표 (중심 원점, 회전 해제).</summary>
     private static (double X, double Y) ToRectLocal(CvEditRect r, double imgX, double imgY)
     {
@@ -440,7 +491,8 @@ internal sealed partial class CvDispSurface
         => dc.DrawRectangle(brush, null,
             new Rect(p.X - HandleScreenPx / 2, p.Y - HandleScreenPx / 2, HandleScreenPx, HandleScreenPx));
 
-    private static void DrawArrowHead(DrawingContext dc, Brush brush, System.Windows.Point from, System.Windows.Point to)
+    /// <summary>끝점의 채운 화살촉. <paramref name="scale"/> 은 선 굵기 배수 — 굵은 선에 기본 크기 촉을 달면 촉이 선에 묻힌다.</summary>
+    private static void DrawArrowHead(DrawingContext dc, Brush brush, System.Windows.Point from, System.Windows.Point to, double scale = 1.0)
     {
         var dx = to.X - from.X;
         var dy = to.Y - from.Y;
@@ -448,8 +500,10 @@ internal sealed partial class CvDispSurface
         if (len < 2) return;
         var ux = dx / len;
         var uy = dy / len;
-        const double headLen = 12;
-        const double headHalf = 4.5;
+        // 촉이 선분보다 길면 선분 길이로 줄인다(비율 유지) — 짧은 선분에 키운 촉이 시작점 뒤 빈 곳에서 튀어나오지 않게.
+        var shrink = Math.Min(1.0, len / (12 * scale));
+        var headLen = 12 * scale * shrink;
+        var headHalf = 4.5 * scale * shrink;
         var bx = to.X - ux * headLen;
         var by = to.Y - uy * headLen;
         var geo = new StreamGeometry();
@@ -466,6 +520,12 @@ internal sealed partial class CvDispSurface
     // 글자 크기(포인트)의 그릴 수 있는 범위 — FormattedText 는 0 이하나 35791 DIP(≈ 26843 pt) 넘는 크기를 던지는데, 그 예외는 OnRender
     // 안이라 레이아웃 패스를 타고 앱의 처리되지 않은 예외로 올라간다. 라벨 글자 크기는 검사 코드가 정하고(검사하지 않는다) 화면 배율이
     // 곱해지므로(검토 실측: 20 pt 라벨이 배율 1500 에서, 아주 작은 배율은 float 로 0 이 되어 던졌다) 그리는 자리에서 잡는다.
+    // 선 굵기 배수(ViOverlayItem.StrokeScale)의 그릴 수 있는 범위. 아래 끝: 0 에 가까운 배수는 선을 사실상 지운다 — 0 은 1.0 으로
+    // 바꾸면서 1e-6 은 안 보이게 두면 같은 실수가 값에 따라 갈린다. 위 끝: 아주 큰 유한값은 기본 굵기와 곱해 무한대가 되고, 화살촉
+    // 좌표는 0×∞ 로 NaN 이 된다(독립 검토 지적). 50 배면 선분 굵기 100 DIP — "눈에 띄게" 의 쓰임은 그 한참 안쪽이다.
+    private const double MinStrokeScale = 0.25;
+    private const double MaxStrokeScale = 50;
+
     private const float MinLabelPt = 0.5f;
     private const float MaxLabelPt = 26000f;
 

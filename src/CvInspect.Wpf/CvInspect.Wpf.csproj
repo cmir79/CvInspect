@@ -30,4 +30,9 @@
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 회귀가 표면 조작(누름·끌기·놓기)을 좌표로 부른다 — 마우스 이벤트 인자는 실제 장치 위치를 읽어 합성 이벤트로는 자리를 못 준다. -->
+    <InternalsVisibleTo Include="CvInspect.Wpf.Tests" />
+  </ItemGroup>
+
 </Project>
