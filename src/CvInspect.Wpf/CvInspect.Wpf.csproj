@@ -27,6 +27,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 코어 Display\ 의 UI 중립 계층(아직 internal)을 소스로 들인다. 코어 어셈블리의 internal 을 IVT 로 빌려 쓰면
+         소비자가 코어만 올린 조합에서 시그니처가 어긋나 실행 중에 MissingMethodException 이 난다 — 소스 링크는 그 의존을 만들지 않는다.
+         공개로 열면 이 링크를 걷고 코어의 public 을 쓴다. -->
+    <Compile Include="..\CvInspect\Display\*.cs" Link="Display\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 

@@ -9,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using OpenCvSharp;
+using CvInspect.Display;
 using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
@@ -93,9 +94,9 @@ public sealed partial class CvDispCtrl : Grid
         var fitBtn = MakeToolButton("⛶", "Fit");
         fitBtn.Click += (_, _) => FitToView();
         var zoomInBtn = MakeToolButton("➕", "Zoom In");
-        zoomInBtn.Click += (_, _) => _surface.ZoomAtCenter(1.25);
+        zoomInBtn.Click += (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep);
         var zoomOutBtn = MakeToolButton("➖", "Zoom Out");
-        zoomOutBtn.Click += (_, _) => _surface.ZoomAtCenter(1 / 1.25);
+        zoomOutBtn.Click += (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep);
 
         // 팬 모드 토글 — 켜면 드래그가 항상 팬 (편집 도형이 화면을 덮어도 이동/리사이즈 대신 화면 이동)
         var panBtn = new ToggleButton
@@ -182,9 +183,9 @@ public sealed partial class CvDispCtrl : Grid
         var panItem = new MenuItem { IsCheckable = true };
         panItem.Click += (_, _) => panBtn.IsChecked = panItem.IsChecked;
         var zoomInItem = new MenuItem();
-        zoomInItem.Click += (_, _) => _surface.ZoomAtCenter(1.25);
+        zoomInItem.Click += (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep);
         var zoomOutItem = new MenuItem();
-        zoomOutItem.Click += (_, _) => _surface.ZoomAtCenter(1 / 1.25);
+        zoomOutItem.Click += (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep);
         var fitItem = new MenuItem();
         fitItem.Click += (_, _) => FitToView();
         var clearItem = new MenuItem();

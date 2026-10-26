@@ -1,10 +1,12 @@
 // CvDispSurface 본체 — 표시 상태(프레임·오버레이·편집 도형) 보관과 뷰 변환(줌·핏·좌표 환산).
 // 그리기는 CvDispSurface.Render.cs, 마우스 조작은 CvDispSurface.Input.cs 에 있다.
+// 뷰 변환·드래그·렌더 기하의 계산은 UI 중립 계층(CvInspect.Display — 코어 소스 링크)이 하고, 여기는 WPF 쪽 배선만 남는다.
 
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using CvInspect.Display;
 using CvInspect.Vision.Overlay;
 using OpenCvSharp;
 using CvInspect.Vision.Edit;
@@ -14,9 +16,6 @@ namespace CvInspect.Controls;
 /// <summary>CvDispCtrl 의 렌더/인터랙션 표면 — 이미지·오버레이·도형을 단일 OnRender 로 그린다.</summary>
 internal sealed partial class CvDispSurface : FrameworkElement
 {
-    private const double MinScale = 0.02;
-    private const double MaxScale = 64;
-
     private BitmapSource? _bitmap;
     private WriteableBitmap? _wb;   // 재사용 백버퍼 — 프레임마다 새 BitmapSource 할당(대해상도=수MB LOH)·신규 GPU 텍스처를 회피, WritePixels 전면 갱신
     private byte[]? _pixels;        // 표시 프레임 픽셀 — 상태바 픽셀 값 조회·파일 저장용. Mat 경로면 _snap(자체 스냅샷),
@@ -30,7 +29,7 @@ internal sealed partial class CvDispSurface : FrameworkElement
     private ViOverlay? _overlay;
     private IReadOnlyList<CvEditShape>? _shapes;
     private bool _shapesAttached;   // 지금 도형 변경을 구독 중인가 — 화면에서 내려가면 푼다
-    private Matrix _view = Matrix.Identity;   // 이미지 → 화면
+    private CvViewXform _view = CvViewXform.Identity;   // 이미지 → 화면
     private bool _fitPending = true;
 
     /// <summary>팬 모드 — true 면 좌드래그가 도형 히트 무시하고 항상 화면 이동 (툴바 ✋ 토글).</summary>
@@ -254,7 +253,7 @@ internal sealed partial class CvDispSurface : FrameworkElement
         AttachShapes(false);
         _shapes = shapes;
         AttachShapes(true);
-        _drag = DragMode.None;
+        _editDrag.Cancel();
         InvalidateVisual();
     }
 
@@ -285,26 +284,25 @@ internal sealed partial class CvDispSurface : FrameworkElement
     public void ZoomAtCenter(double factor)
     {
         if (_bitmap is null) return;
-        var next = Math.Clamp(Scale * factor, MinScale, MaxScale);
-        factor = next / Scale;
-        if (Math.Abs(factor - 1) < 1e-9) return;
-        var m = _view;
-        m.ScaleAt(factor, factor, ActualWidth / 2, ActualHeight / 2);
-        _view = m;
+        if (!_view.TryZoomAt(factor, ActualWidth / 2, ActualHeight / 2, out var next)) return;
+        _view = next;
         InvalidateVisual();
         StatusChanged?.Invoke();
     }
 
-    private System.Windows.Point ToScreen(double x, double y) => _view.Transform(new System.Windows.Point(x, y));
+    private System.Windows.Point ToScreen(double x, double y)
+    {
+        var (sx, sy) = _view.ToScreen(x, y);
+        return new System.Windows.Point(sx, sy);
+    }
 
     private System.Windows.Point ToImage(System.Windows.Point screen)
     {
-        var inv = _view;
-        inv.Invert();
-        return inv.Transform(screen);
+        var (x, y) = _view.ToImage(screen.X, screen.Y);
+        return new System.Windows.Point(x, y);
     }
 
-    private double Scale => _view.M11;   // 등방 스케일 전제 (Scale/ScaleAt 만 사용)
+    private double Scale => _view.Scale;
 
     /// <summary>표시 픽셀 → 새 Mat 복원 (파일 저장용) — 표시 가능한 프레임이 없으면 null. dispose 는 호출자 책임.
     /// 행 끝 패딩이 있어도(공급자 경로) Clone 이 연속 Mat 으로 접는다.</summary>

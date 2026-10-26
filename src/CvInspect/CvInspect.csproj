@@ -40,4 +40,10 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Display\ 의 UI 중립 계층(뷰 변환·편집 도형 드래그·렌더 기하)은 아직 internal 이다 — 코어 회귀가 Linux 에서도 시험한다.
+         UI 패키지(CvInspect.Wpf)는 이 소스를 자기 어셈블리에 링크해 쓴다(패키지 사이 internal 의존이 없어 판이 섞여도 안 깨진다). -->
+    <InternalsVisibleTo Include="CvInspect.Tests" />
+  </ItemGroup>
+
 </Project>
