@@ -1,6 +1,7 @@
 // 그리기 목록을 만든다 — 결과 오버레이, 편집 도형, 무이미지 안내. 화면 좌표(DIP)의 프리미티브를 그리는 순서대로 낸다.
 // 순서와 값은 화면 모양 그 자체다: 같은 프리미티브라도 순서가 바뀌면 겹친 자리의 색이, 경로를 합치면 점선 위상과 모서리가 바뀐다.
 
+using System.Buffers;
 using CvInspect.Vision.Edit;
 using CvInspect.Vision.Overlay;
 
@@ -26,6 +27,14 @@ internal static class ViDrawBldr
 
     /// <summary>중심 십자 반 길이(DIP).</summary>
     private const double CrossHalfPx = 7;
+
+    /// <summary>목록을 비운다 — 풀에서 빌린 폴리라인 점 배열을 돌려준다. 다음 그리기 전에 부른다(그리는 동안 배열이 쓰이므로 그 뒤에).</summary>
+    internal static void Clear(List<ViPrim> prims)
+    {
+        foreach (var p in prims)
+            if (p is ViPrimPath { IsPooled: true } path) ArrayPool<(double X, double Y)>.Shared.Return(path.Points);
+        prims.Clear();
+    }
 
     /// <summary>결과 오버레이 전부 — 클립을 켜면 이미지 사각 안으로 자르고, 모서리 요약 HUD 는 자르지 않고 그 뒤에 낸다.</summary>
     /// <remarks>HUD 를 자르면 글자가 화면 고정 크기라 작게 그려진 이미지에서 판정 사유 줄이 사라지고 남은 헤더 한 줄이 온전한 HUD 처럼
@@ -74,16 +83,18 @@ internal static class ViDrawBldr
                 case ViOverlayRect rect:
                     // 닫힌 도형 하나로 — 변마다 선분이면 끝이 평평해 모서리 바깥 (굵기/2)² 칸이 비어, 굵게 한 NG 박스의 네 모서리가
                     // 이 빠진 것처럼 보였다(배수 3 이면 3×3). 닫힌 도형은 모서리를 이어 그린다(마이터).
-                    dst.Add(new ViPrimPath(line, ViDrawGeom.OverlayRectCorners(rect, view), isClosed: true));
+                    dst.Add(new ViPrimPath(line, ViDrawGeom.OverlayRectCorners(rect, view), 4, isClosed: true));
                     break;
                 case ViOverlayPoly poly when poly.Points.Count >= 2:
                 {
                     // 폴리라인은 <b>경로 하나</b>로 — 점마다 선분이면 드로잉 명령이 점 수만큼 쌓인다. 에지 블랍 윤곽은 한 장에 수천 점이
                     // 나오므로(실측 평균 3.2천·최대 5.6천), 줌·팬처럼 전체를 다시 그리는 조작마다 그 수만큼의 명령이 재생성돼 화면이 끊긴다.
-                    var pts = new (double X, double Y)[poly.Points.Count];
-                    for (var i = 0; i < pts.Length; i++) pts[i] = view.ToScreen(poly.Points[i].X, poly.Points[i].Y);
-                    dst.Add(new ViPrimPath(new ViStroke(paint, ViDrawGeom.OverlayPolyThick * stroke, poly.IsDashed), pts,
-                        isClosed: poly.IsClosed && poly.Points.Count >= 3));
+                    // 화면 점 배열은 풀에서 빌린다 — 5.3천 점부터 대형 객체 힙으로 가서, 매 줌·팬마다 새로 만들면 그 쓰레기가 쌓인다.
+                    var n = poly.Points.Count;
+                    var pts = ArrayPool<(double X, double Y)>.Shared.Rent(n);
+                    for (var i = 0; i < n; i++) pts[i] = view.ToScreen(poly.Points[i].X, poly.Points[i].Y);
+                    dst.Add(new ViPrimPath(new ViStroke(paint, ViDrawGeom.OverlayPolyThick * stroke, poly.IsDashed), pts, n,
+                        isClosed: poly.IsClosed && n >= 3, isPooled: true));
                     break;
                 }
             }
@@ -95,16 +106,17 @@ internal static class ViDrawBldr
         // 글자 크기만 키운다 — 기준점·정렬은 그대로, 배경 상자는 글자의 잉크 경계를 따라간다. 모서리 요약 HUD 는 그대로다
         // (자르기와 같은 판정 — HUD 표식이 있어도 모서리 정렬이 아니면 붙은 모서리가 없으므로 다른 라벨처럼 다룬다).
         var sizePt = ViDrawGeom.LabelSizePt(label, labelScale);
-        var m = tm.Measure(label.Text, sizePt, ViFontRole.Data, paint);
+        var dip = ViDrawGeom.LabelDip(sizePt);
+        var m = tm.Measure(label.Text, dip, ViFontRole.Data, paint);
         var (x, y) = ViDrawGeom.LabelOrigin(label.Align, view.ToScreen(label.X, label.Y), m.Width, m.Height);
-        if (label.HasBackground && tm.MeasureInk(m, label.Text, sizePt, ViFontRole.Data, x, y) is { } ink)
+        if (label.HasBackground && tm.MeasureInk(m, label.Text, dip, ViFontRole.Data, x, y) is { } ink)
         {
             // 줄 높이(행간 포함)는 헐렁하므로 실제 잉크 경계 + 소폭 패딩으로 타이트하게.
             dst.Add(new ViPrimBox(LabelBack, Inflate(ink, 2, 2)));
         }
         if (label.LineColors is null)
         {
-            dst.Add(new ViPrimText(label.Text, sizePt, ViFontRole.Data, paint, (x, y), m));
+            dst.Add(new ViPrimText(label.Text, sizePt, dip, ViFontRole.Data, paint, (x, y), m));
             return;
         }
         // 줄마다 색이 다르면 한 번에 못 그린다 — 줄 단위로 나눈다. 줄 높이는 블록 높이를 줄 수로 나눠 쓴다(같은 폰트·같은 행간이라 균일).
@@ -113,7 +125,7 @@ internal static class ViDrawBldr
         for (var li = 0; li < textLines.Length; li++)
         {
             var lc = li < label.LineColors.Count ? label.LineColors[li] : null;
-            dst.Add(new ViPrimText(textLines[li], sizePt, ViFontRole.Data, lc is null ? paint : ViPaint.Of(lc.Value), (x, y + li * lineH), null));
+            dst.Add(new ViPrimText(textLines[li], sizePt, dip, ViFontRole.Data, lc is null ? paint : ViPaint.Of(lc.Value), (x, y + li * lineH), null));
         }
     }
 
@@ -225,26 +237,30 @@ internal static class ViDrawBldr
     internal static void Placeholder(List<ViPrim> dst, double viewW, double viewH, string title, string? hint, ITextMetricPort tm)
     {
         if (viewW < 60 || viewH < 40) return;
-        var tm1 = tm.Measure(title, 14, ViFontRole.Ui, HintGray);
+        var titleDip = ViDrawGeom.UiDip(14);
+        var tm1 = tm.Measure(title, titleDip, ViFontRole.Ui, HintGray);
         var cx = viewW / 2;
         var cy = viewH / 2;
         if (hint is null)
         {
             // 힌트가 빠지면 제목 혼자 남으므로 두 줄 기준의 위쪽 자리가 아니라 정가운데로 온다.
-            dst.Add(new ViPrimText(title, 14, ViFontRole.Ui, HintGray, (cx - tm1.Width / 2, cy - tm1.Height / 2), tm1));
+            dst.Add(new ViPrimText(title, 14, titleDip, ViFontRole.Ui, HintGray, (cx - tm1.Width / 2, cy - tm1.Height / 2), tm1));
             return;
         }
-        var tm2 = tm.Measure(hint, 11, ViFontRole.Ui, HintGray);
-        dst.Add(new ViPrimText(title, 14, ViFontRole.Ui, HintGray, (cx - tm1.Width / 2, cy - tm1.Height - 2), tm1));
-        dst.Add(new ViPrimText(hint, 11, ViFontRole.Ui, HintGray, (cx - tm2.Width / 2, cy + 2), tm2));
+        var hintDip = ViDrawGeom.UiDip(11);
+        var tm2 = tm.Measure(hint, hintDip, ViFontRole.Ui, HintGray);
+        dst.Add(new ViPrimText(title, 14, titleDip, ViFontRole.Ui, HintGray, (cx - tm1.Width / 2, cy - tm1.Height - 2), tm1));
+        dst.Add(new ViPrimText(hint, 11, hintDip, ViFontRole.Ui, HintGray, (cx - tm2.Width / 2, cy + 2), tm2));
     }
 
     /// <summary>편집 도형 이름표 — 기준점에서 오른쪽 dx, 글자 블록 높이 + dy 만큼 위.</summary>
     private static void ShapeLabel(List<ViPrim> dst, CvEditShape shape, ITextMetricPort tm, ViPaint paint, (double X, double Y) at, double dx, double dy)
     {
         if (shape.Label.Length == 0) return;
-        var m = tm.Measure(shape.Label, ShapeLabelPt, ViFontRole.Data, paint);
-        dst.Add(new ViPrimText(shape.Label, ShapeLabelPt, ViFontRole.Data, paint, (at.X + dx, at.Y - m.Height - dy), m));
+        var dip = ViDrawGeom.LabelDip(ShapeLabelPt);
+        var m = tm.Measure(shape.Label, dip, ViFontRole.Data, paint);
+        // 오른쪽으로 밀지 않는 이름표는 기준점 X 를 그대로 쓴다 — 0 을 더하면 -0.0 이 +0.0 으로 바뀐다(화면은 같지만 값이 달라진다).
+        dst.Add(new ViPrimText(shape.Label, ShapeLabelPt, dip, ViFontRole.Data, paint, (dx == 0 ? at.X : at.X + dx, at.Y - m.Height - dy), m));
     }
 
     private static void Handle(List<ViPrim> dst, ViPaint paint, (double X, double Y) p)

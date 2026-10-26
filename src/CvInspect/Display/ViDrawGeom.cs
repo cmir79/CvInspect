@@ -53,6 +53,9 @@ internal static class ViDrawGeom
     internal static double LabelDip(float sizePt)
         => (float.IsNaN(sizePt) ? MinLabelPt : Math.Clamp(sizePt, MinLabelPt, MaxLabelPt)) * 96.0 / 72.0;
 
+    /// <summary>안내 문구 글자 크기 pt → DIP. 자르지 않는다 — 크기는 코드가 정한 상수(14·11)뿐이다.</summary>
+    internal static double UiDip(float sizePt) => sizePt * 96.0 / 72.0;
+
     /// <summary>라벨 글자 블록의 왼쪽 위 — 기준점(화면)과 측정한 블록 폭·높이로 정렬을 푼다.</summary>
     internal static (double X, double Y) LabelOrigin(ViOverlayAlign align, (double X, double Y) anchor, double width, double height)
     {

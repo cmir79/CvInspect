@@ -9,7 +9,8 @@ namespace CvInspect.Controls;
 
 internal sealed partial class CvDispSurface
 {
-    // 그리기 목록 — 그릴 때마다 비우고 다시 채운다(목록 자체를 재사용해 프레임마다 새로 할당하지 않는다).
+    // 그리기 목록 — 그릴 때마다 비우고 다시 채운다. 목록 객체와 폴리라인 점 배열(풀)은 다시 쓰지만 프리미티브는 프레임마다 새로 만든다.
+    // 비우는 것은 다음 그리기 때라 그 사이 지난 프레임의 프리미티브·글자 객체가 살아 있다(목록 하나 분량).
     private readonly List<ViPrim> _prims = new();
 
     // === 렌더 ===
@@ -36,7 +37,7 @@ internal sealed partial class CvDispSurface
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));   // 히트 영역 확보
         var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var tm = new CvDispTextPort(ppd);
-        _prims.Clear();
+        ViDrawBldr.Clear(_prims);
 
         if (_bitmap is null || _imgW == 0)
         {

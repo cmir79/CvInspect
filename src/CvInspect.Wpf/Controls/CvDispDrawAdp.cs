@@ -12,15 +12,15 @@ namespace CvInspect.Controls;
 /// <summary>WPF 글자 측정 — 한 번 그리는 동안만 쓴다(DPI 가 바뀌면 새로 만든다).</summary>
 internal sealed class CvDispTextPort(double pixelsPerDip) : ITextMetricPort
 {
-    public ViTextMetric Measure(string text, float sizePt, ViFontRole role, ViPaint paint)
+    public ViTextMetric Measure(string text, double sizeDip, ViFontRole role, ViPaint paint)
     {
-        var ft = CvDispDrawAdp.Format(text, sizePt, role, CvDispDrawAdp.BrushOf(paint), pixelsPerDip);
+        var ft = CvDispDrawAdp.Format(text, sizeDip, role, CvDispDrawAdp.BrushOf(paint), pixelsPerDip);
         return new ViTextMetric(ft.Width, ft.Height, ft);
     }
 
-    public ViBox? MeasureInk(in ViTextMetric metric, string text, float sizePt, ViFontRole role, double x, double y)
+    public ViBox? MeasureInk(in ViTextMetric metric, string text, double sizeDip, ViFontRole role, double x, double y)
     {
-        var ft = metric.Tag as FormattedText ?? CvDispDrawAdp.Format(text, sizePt, role, Brushes.White, pixelsPerDip);
+        var ft = metric.Tag as FormattedText ?? CvDispDrawAdp.Format(text, sizeDip, role, Brushes.White, pixelsPerDip);
         var ink = ft.BuildGeometry(new System.Windows.Point(x, y)).Bounds;
         return ink.IsEmpty ? null : new ViBox(ink.X, ink.Y, ink.Width, ink.Height);
     }
@@ -29,7 +29,8 @@ internal sealed class CvDispTextPort(double pixelsPerDip) : ITextMetricPort
 /// <summary>그리기 목록 → DrawingContext.</summary>
 internal static class CvDispDrawAdp
 {
-    /// <summary>목록 순서대로 그린다. 펜·브러시는 이 호출 안에서 같은 값끼리 하나를 나눠 쓴다(얼려서 변경 추적 비용을 뺀다).</summary>
+    /// <summary>목록 순서대로 그린다. 펜은 이 호출 안에서 같은 값(색·굵기·점선)끼리 하나를 나눠 쓴다(얼려서 변경 추적 비용을 뺀다).
+    /// 이름 색 브러시는 WPF 의 공용 브러시, ARGB 브러시(라벨 배경·안내 회색)는 쓸 때마다 새로 얼린다.</summary>
     internal static void Draw(DrawingContext dc, IReadOnlyList<ViPrim> prims, double pixelsPerDip)
     {
         var pens = new Dictionary<ViStroke, Pen>();
@@ -40,13 +41,13 @@ internal static class CvDispDrawAdp
                 case ViPrimLine line:
                     dc.DrawLine(PenOf(pens, line.Stroke), Pt(line.P1), Pt(line.P2));
                     break;
-                case ViPrimPath path when path.Points.Length >= 2:
+                case ViPrimPath path when path.Count >= 2:
                 {
                     var geo = new StreamGeometry();
                     using (var ctx = geo.Open())
                     {
                         ctx.BeginFigure(Pt(path.Points[0]), isFilled: false, isClosed: path.IsClosed);
-                        for (var i = 1; i < path.Points.Length; i++) ctx.LineTo(Pt(path.Points[i]), isStroked: true, isSmoothJoin: false);
+                        for (var i = 1; i < path.Count; i++) ctx.LineTo(Pt(path.Points[i]), isStroked: true, isSmoothJoin: false);
                     }
                     geo.Freeze();
                     dc.DrawGeometry(null, PenOf(pens, path.Stroke), geo);
@@ -72,9 +73,11 @@ internal static class CvDispDrawAdp
                     break;
                 case ViPrimText text:
                 {
-                    var ft = text.Metric?.Tag as FormattedText
-                             ?? Format(text.Text, text.SizePt, text.Role, BrushOf(text.Paint), pixelsPerDip);
-                    dc.DrawText(ft, Pt(text.Origin));
+                    // 잰 객체를 다시 쓸 때도 색은 프리미티브가 정한다 — 잴 때 넘긴 색과 다르게 칠하는 목록이 생겨도 옛 색으로 그리지 않게.
+                    var brush = BrushOf(text.Paint);
+                    if (text.Metric?.Tag is FormattedText measured) measured.SetForegroundBrush(brush);
+                    else measured = Format(text.Text, text.SizeDip, text.Role, brush, pixelsPerDip);
+                    dc.DrawText(measured, Pt(text.Origin));
                     break;
                 }
                 case ViPrimClipPush clip:
@@ -120,13 +123,11 @@ internal static class CvDispDrawAdp
         _ => Brushes.White,
     };
 
-    /// <summary>글자 — 데이터 라벨은 Consolas Bold(크기는 그릴 수 있는 범위로 자른 뒤 환산), 안내 문구는 Segoe UI(그대로 환산).</summary>
-    internal static FormattedText Format(string text, float sizePt, ViFontRole role, Brush brush, double ppd)
-        => role == ViFontRole.Ui
-            ? new(text, CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
-                new Typeface(new System.Windows.Media.FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
-                sizePt * 96.0 / 72.0, brush, ppd)
-            : new(text, CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
-                new Typeface(new System.Windows.Media.FontFamily("Consolas"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
-                ViDrawGeom.LabelDip(sizePt), brush, ppd);
+    /// <summary>글자 — 데이터 라벨은 Consolas Bold, 안내 문구는 Segoe UI. 크기는 코어가 이미 DIP 로 정해 자른 값이다.</summary>
+    internal static FormattedText Format(string text, double sizeDip, ViFontRole role, Brush brush, double ppd)
+        => new(text, CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
+            role == ViFontRole.Ui
+                ? new Typeface(new System.Windows.Media.FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal)
+                : new Typeface(new System.Windows.Media.FontFamily("Consolas"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
+            sizeDip, brush, ppd);
 }
