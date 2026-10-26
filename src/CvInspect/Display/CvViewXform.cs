@@ -1,8 +1,11 @@
 // 표시 표면의 뷰 변환 — 이미지 좌표 ↔ 화면 좌표. 등방 배율 + 이동만 쓴다(회전·비등방 없음).
-// UI 프레임워크 무관: WPF·Avalonia 어댑터가 이 값으로 그리고 잡는다.
+// UI 프레임워크 무관: 지금은 WPF 어댑터(CvDispSurface)가 이 값으로 그리고 잡고, 다른 UI 어댑터도 같은 값을 쓰게 하려는 자리다.
 //
 // 식은 WPF Matrix 의 배율+이동 경로와 같은 순서로 계산한다 — 한 연산이라도 순서를 바꾸면 끝자리가 갈리고,
-// 히트 판정 경계(±8 DIP, 변 길이 21 DIP)에서 결과가 뒤집힐 수 있다. Windows 회귀가 Matrix 와 비트 단위로 대조한다.
+// 히트 판정 경계(±8 DIP, 변 길이 21 DIP)에서 결과가 뒤집힐 수 있다. Windows 회귀(CvViewXformMatrixTests)가 Matrix 와 비트 단위로 대조한다.
+//
+// ⚠ default(CvViewXform) 는 배율 0 이라 ToImage 가 무한대를 낸다(Matrix 의 default 는 단위행렬처럼 동작했다).
+// 필드는 반드시 Identity 로 초기화한다.
 
 namespace CvInspect.Display;
 

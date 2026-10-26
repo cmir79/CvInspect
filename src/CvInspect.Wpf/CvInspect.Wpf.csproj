@@ -33,6 +33,12 @@
     <Compile Include="..\CvInspect\Display\*.cs" Link="Display\%(Filename)%(Extension)" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <!-- 링크 사본이 코어 타입을 조용히 가리는 것을 막는다 — 코어가 Display 를 public 으로 열거나 이 어셈블리에 IVT 를 주는데
+         위 링크를 안 걷으면 CS0436(같은 이름 타입이 둘, 사본이 이김)이 경고로만 나고 지나간다. 오류로 올려 그 판에서 멈추게 한다. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS0436</WarningsAsErrors>
+  </PropertyGroup>
+
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
