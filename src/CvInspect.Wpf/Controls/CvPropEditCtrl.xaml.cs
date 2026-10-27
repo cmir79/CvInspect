@@ -5,20 +5,7 @@ using System.Windows.Media;
 
 namespace CvInspect.Controls;
 
-/// <summary>편집 커밋 통지 — 어떤 프로퍼티가 커밋됐는지 (호스트 dirty 마킹 채널). CLR 프로퍼티명이다.</summary>
-public sealed record CvPropCommittedEvt(string PropertyName);
-
-/// <summary>실행 버튼 실행 직전 통지 — 호스트가 사전 준비(낡은 학습 체인 재구성 등)를 거는 자리.
-/// PropertyName 은 CLR 프로퍼티명.</summary>
-public sealed record CvPropActionExecutingEvt(string PropertyName);
-
-/// <summary>실행 버튼 정상 완료 통지 — 파라미터를 바꾸는 액션(스팬 전환 등)의 편집 추적용.
-/// 창만 여는 액션까지 dirty 로 오염시키지 않도록, 어느 편집기에 배선할지는 호스트가 정한다.</summary>
-public sealed record CvPropActionExecutedEvt(string PropertyName);
-
-/// <summary>실행 버튼 실패 통지 — 표시 방법은 호스트가 정한다. Label 은 행의 번역된 표시명이다
-/// (사용자에게 보여줄 제목용 — 코드 분기 키로 쓰지 말 것).</summary>
-public sealed record CvPropActionFailedEvt(string Label, Exception Error);
+// 통지 인자(CvProp…Evt)·행 VM·빌더는 코어 CvInspect 에 있다(UI 무관) — 이 컨트롤은 그것을 WPF 로 그리기만 한다.
 
 /// <summary>
 /// typed POCO 를 리플렉션으로 펼쳐 편집하는 프로퍼티 편집기 — 카테고리 그룹 + 행별 편집기
@@ -32,7 +19,8 @@ public sealed record CvPropActionFailedEvt(string Label, Exception Error);
 /// 텍스트 커밋 타이밍은 LostFocus + Enter — 입력 중 커밋으로 편집 처리가 끼어들지 않게.
 /// 평범한 컨트롤 트리라 호스트 테마의 암시 스타일을 그대로 탄다. UI 라이브러리는 참조하지 않는다 —
 /// 캡션·헤더 색은 호스트 테마의 키(SecondaryTextBrush / PrimaryBrush)가 있으면 따르고(실행 중 사전 교체도) 없으면 고정색이다.
-/// 소스 INotifyPropertyChanged 구독은 약한 구독이라 파기 시 별도 해제 훅이 없어도 새지 않는다.
+/// 소스 INotifyPropertyChanged 구독은 약한 구독이라 파기 시 별도 해제 훅이 없어도 행·컨트롤을 붙잡지 않는다
+/// (소스에 남는 작은 다리는 소스의 다음 통지 때 스스로 풀린다 — CvPropWeakSub).
 /// </summary>
 public partial class CvPropEditCtrl : UserControl
 {
@@ -112,9 +100,7 @@ public partial class CvPropEditCtrl : UserControl
 
     private void RebuildRows()
     {
-        foreach (var g in _groups)
-            foreach (var r in g.Rows)
-                r.Detach();
+        CvPropRowBldr.Detach(_groups);
 
         // plain object 는 "typed 설정 없음" sentinel — 빈 화면 (GetType() != typeof(object) 규약).
         var src = Source;

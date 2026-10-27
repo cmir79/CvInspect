@@ -1,7 +1,8 @@
 <UserControl x:Class="CvInspect.Controls.CvPropEditCtrl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:CvInspect.Controls">
+             xmlns:local="clr-namespace:CvInspect.Controls"
+             xmlns:core="clr-namespace:CvInspect.Controls;assembly=CvInspect">
   <UserControl.Resources>
     <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
@@ -52,7 +53,7 @@
       </Style.Triggers>
     </Style>
 
-    <DataTemplate DataType="{x:Type local:CvPropBoolRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropBoolRowVm}">
       <Grid Margin="0,2,0,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
@@ -69,7 +70,7 @@
       </Grid>
     </DataTemplate>
 
-    <DataTemplate DataType="{x:Type local:CvPropNumRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropNumRowVm}">
       <Grid Margin="0,2,0,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
@@ -87,7 +88,7 @@
       </Grid>
     </DataTemplate>
 
-    <DataTemplate DataType="{x:Type local:CvPropStrRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropStrRowVm}">
       <Grid Margin="0,2,0,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
@@ -104,7 +105,7 @@
       </Grid>
     </DataTemplate>
 
-    <DataTemplate DataType="{x:Type local:CvPropEnumRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropEnumRowVm}">
       <Grid Margin="0,2,0,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
@@ -121,7 +122,7 @@
       </Grid>
     </DataTemplate>
 
-    <DataTemplate DataType="{x:Type local:CvPropActionRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropActionRowVm}">
       <Grid Margin="0,2,0,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
@@ -139,7 +140,7 @@
     </DataTemplate>
 
     <!-- 읽기 전용 나열 — 입력칸으로 그리지 않는다. 테두리가 있으면 고칠 수 있는 값으로 읽힌다. -->
-    <DataTemplate DataType="{x:Type local:CvPropListRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropListRowVm}">
       <Grid Margin="0,2,0,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" SharedSizeGroup="PropLabel" />
@@ -159,7 +160,7 @@
     <!-- 중첩 객체 — 라벨을 소제목으로 세우고 자식 행을 들여 그린다. 자식들은 자기들끼리 라벨 폭을 맞춘다
          (안쪽에 별도 SharedSize 범위): 들여쓴 블록을 바깥 그룹과 같은 폭에 맞추면 자식 값칸이 밀려 좁아진다.
          펼칠 것이 없으면(값 null) 소제목만 남으므로 통째로 감춘다. -->
-    <DataTemplate DataType="{x:Type local:CvPropNestedRowVm}">
+    <DataTemplate DataType="{x:Type core:CvPropNestedRowVm}">
       <StackPanel Margin="0,4,0,0" Visibility="{Binding HasChildren, Converter={StaticResource BoolToVis}}">
         <TextBlock Text="{Binding Label}" FontWeight="SemiBold" Margin="0,0,0,1"
                    TextTrimming="CharacterEllipsis" ToolTip="{StaticResource RowTip}" />
@@ -173,7 +174,7 @@
   <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
     <ItemsControl x:Name="GroupsHost" Grid.IsSharedSizeScope="True">
       <ItemsControl.ItemTemplate>
-        <DataTemplate DataType="{x:Type local:CvPropGroupVm}">
+        <DataTemplate DataType="{x:Type core:CvPropGroupVm}">
           <StackPanel>
             <TextBlock Text="{Binding Header}" FontWeight="Bold" FontSize="12"
                        Foreground="{DynamicResource CvPropHeaderBrush}" Margin="0,6,0,2"
