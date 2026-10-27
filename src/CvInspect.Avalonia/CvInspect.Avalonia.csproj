@@ -23,8 +23,8 @@
 
   <ItemGroup>
     <!-- Avalonia 본체 하나만 — 플랫폼(Desktop)·렌더러(Skia)·글자 셰이퍼(HarfBuzz)·테마(Fluent 등)는 앱이 고른다.
-         하한은 12.1.4. 앱은 모든 Avalonia.* 패키지를 같은 판으로 맞춰야 한다(낮은 판의 Avalonia.Desktop 을 경유하면 경고 없이 판이 섞인다). -->
-    <PackageReference Include="Avalonia" Version="12.1.4" />
+         하한은 루트 Directory.Build.props 의 AvaloniaVersion(시험과 같은 값). 앱은 모든 Avalonia.* 패키지를 같은 판으로 맞춰야 한다(낮은 판의 Avalonia.Desktop 을 경유하면 경고 없이 판이 섞인다). -->
+    <PackageReference Include="Avalonia" Version="$(AvaloniaVersion)" />
   </ItemGroup>
 
   <ItemGroup>

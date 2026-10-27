@@ -27,6 +27,11 @@
          싣는 코어 하나뿐이다). 소급은 안 된다 — 이미 올린 판에는 영원히 이 탭이 없다. -->
     <!-- 프리릴리스(-dev)는 가리킬 태그가 없다. 조건 없이 두면 사설 피드에 올라간 개발 판이 죽은 링크를 달고 다닌다. -->
     <PackageReleaseNotes Condition="!$(Version.Contains('-'))">https://github.com/cmir79/CvInspect/releases/tag/v$(Version)</PackageReleaseNotes>
+
+    <!-- Avalonia 판 한 곳 — CvInspect.Avalonia 패키지와 그 헤드리스 시험이 같은 값을 쓴다. 앱은 모든 Avalonia.* 를 같은 판으로 맞춰야
+         해서(낮은 판의 Avalonia.Desktop 을 거치면 경고 없이 판이 섞인다) 시험이 패키지와 다른 판을 물면 소비자 조합을 재지 못한다.
+         패키지의 하한이기도 하다 — 올리면 그 판 미만을 쓰는 소비자의 복원이 멈춘다(NU1605). -->
+    <AvaloniaVersion>12.1.4</AvaloniaVersion>
   </PropertyGroup>
 
 </Project>
