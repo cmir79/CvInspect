@@ -40,7 +40,7 @@ internal sealed partial class CvDispSurface
         var tm = new CvDispTextPort(ppd);
         ViDrawBldr.Clear(_prims);
 
-        if (_bitmap is null || _imgW == 0)
+        if (_bitmap is null || _frame.Width == 0)
         {
             // 무이미지 플레이스홀더 — 중앙 안내 문구만 (히트 없음 — 우클릭 메뉴 등 상위 인터랙션 유지).
             // 불러오기가 없는 화면에서는 힌트 문구가 되지도 않는 조작을 시키는 셈이라 제목만 남긴다.
@@ -53,19 +53,19 @@ internal sealed partial class CvDispSurface
         if (_fitPending) ApplyFit();
 
         dc.PushTransform(new MatrixTransform(new Matrix(_view.Scale, 0, 0, _view.Scale, _view.OffsetX, _view.OffsetY)));
-        dc.DrawImage(_bitmap, new Rect(0, 0, _imgW, _imgH));
+        dc.DrawImage(_bitmap, new Rect(0, 0, _frame.Width, _frame.Height));
         dc.Pop();
 
         // 클립(ClipOverlayToImage)의 근거·실측은 CvDispCtrl.ClipOverlayToImage 주석. 편집 도형은 자르지 않는다 — 가장자리 핸들을 잡을 수 있어야 한다.
-        if (_overlay is not null) ViDrawBldr.Overlay(_prims, _overlay, _view, tm, _overlayLabelScale, _clipOverlayToImage, _imgW, _imgH);
-        if (_shapes is not null) ViDrawBldr.Shapes(_prims, _shapes, _view, tm);
+        if (_overlay is not null) ViDrawBldr.Overlay(_prims, _overlay, _view, tm, _overlayLabelScale, _clipOverlayToImage, _frame.Width, _frame.Height);
+        if (_shapeSub.Shapes is { } shapes) ViDrawBldr.Shapes(_prims, shapes, _view, tm);
         CvDispDrawAdp.Draw(dc, _prims, ppd);
     }
 
     private void ApplyFit()
     {
         _fitPending = false;   // 맞추지 못해도(표면이 너무 작음) 예약은 소화한다 — 다음 크기 변경이 다시 세운다
-        if (!CvViewXform.TryFit(ActualWidth, ActualHeight, _imgW, _imgH, out var fit)) return;
+        if (!CvViewXform.TryFit(ActualWidth, ActualHeight, _frame.Width, _frame.Height, out var fit)) return;
         _view = fit;
         StatusChanged?.Invoke();   // 컨트롤이 디스패처 경유로 갱신 — OnRender 중 호출 안전
     }

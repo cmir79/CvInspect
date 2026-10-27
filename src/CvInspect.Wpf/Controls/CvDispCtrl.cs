@@ -1,8 +1,6 @@
 // CvDispCtrl 본체 — 컨트롤 조립(툴바·상태바·우클릭 메뉴)과 이미지 파일 불러오기/저장.
 // 렌더·입력은 내부 서피스(CvDispSurface)가 맡고, 바인딩 표면은 CvDispCtrl.Props.cs 에 있다.
 
-using System.IO;
-using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -33,8 +31,7 @@ public sealed partial class CvDispCtrl : Grid
     private readonly Border _toolbarBorder;
     private readonly Border[] _toolSeps;
     private readonly Border _statusBorder;
-    private readonly MenuItem _loadItem;
-    private readonly FrameworkElement[] _toolMenuItems;
+    private readonly (CvDispMenuGroup Group, FrameworkElement Elem)[] _menuGroupItems;   // 함께 여닫는 메뉴 자리(구분선 포함) — 코어 CvDispMenu
     private readonly Button _grabBtn;
     private readonly ToggleButton _playBtn;
     private readonly ToggleButton _panBtn;
@@ -47,7 +44,7 @@ public sealed partial class CvDispCtrl : Grid
     {
         // 명령 속성 콜백(SwapCamCommand)이 쓰는 처리기 — 앱 사전 스타일이 명령을 주면 그 콜백이 생성자 안에서 돈다(맨 끝 주석).
         _onCamCommandCanExecuteChanged = OnCamCommandCanExecuteChanged;
-        Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
+        Background = new SolidColorBrush(ColorOf(CvDispTheme.DefaultControlBack));
         // 행 정의와 자식은 이 생성자 맨 끝에서 붙인다 — 이유는 그 자리 주석.
 
         // === 툴바 — 좌: 카메라 조작 / 우: 디스플레이 조작. ToolbarDock 으로 4방향 도킹 (기본 상단) ===
@@ -56,19 +53,15 @@ public sealed partial class CvDispCtrl : Grid
         _camPanel = new StackPanel { Orientation = Orientation.Horizontal };
         DockPanel.SetDock(_camPanel, Dock.Left);
 
-        // 활성 여부는 RefreshCamButtons 가 명령의 CanExecute 로 정한다. 클릭에서도 다시 묻는다 — 회색이 되기 전에 이미 들어와 있던
-        // 클릭(자동화·큐에 쌓인 입력)이 막힌 명령을 실행하면 안 된다. 거절하면 버튼 상태도 다시 정한다(⏯ 는 OnPlayToggle 의 되돌림이 같은
-        // 일을 한다): 호스트가 CanExecuteChanged 없이 CanExecute 를 false 로 바꿨다면 이 클릭이 그것을 알려 준 유일한 신호이고, 다시 정하지
-        // 않으면 버튼이 살아 보이는데 눌러도 아무 일이 없는 채로 남는다(7650d05 실측 — 회귀 ARefusedGrabClickGreysAStaleButtonLikePlay).
-        // 실행한 뒤에는 다시 묻지 않는다 — 바쁨 표식을 Execute 안에서 세우는 명령이면 매 클릭이 버튼을 회색으로 만들고, 그 명령이 풀 때
-        // 알리지 않으면 회색이 다음 알림까지 남는다. 거절 뒤 회색도 같은 이유로 다음 알림까지 남지만, 그때는 그것이 명령의 지금 답이다.
-        // (⏯ 의 되돌림은 실행 뒤에도 다시 정한다 — IsRunning 을 맞추는 길에 딸려 오는 것이다.)
+        // 활성 여부는 RefreshCamButtons 가 명령의 CanExecute 로 정한다. 클릭에서도 다시 묻는다(코어 CvCamCmd.Click — 실행 뒤에는 다시
+        // 묻지 않는 이유도 그쪽). 거절하면 버튼 상태도 다시 정한다(⏯ 는 OnPlayToggle 의 되돌림이 같은 일을 한다): 호스트가 CanExecuteChanged
+        // 없이 CanExecute 를 false 로 바꿨다면 이 클릭이 그것을 알려 준 유일한 신호이고, 다시 정하지 않으면 버튼이 살아 보이는데 눌러도
+        // 아무 일이 없는 채로 남는다(7650d05 실측 — 회귀 ARefusedGrabClickGreysAStaleButtonLikePlay). 거절 뒤 회색은 다음 알림까지 남지만,
+        // 그때는 그것이 명령의 지금 답이다. (⏯ 의 되돌림은 실행 뒤에도 다시 정한다 — IsRunning 을 맞추는 길에 딸려 오는 것이다.)
         _grabBtn = MakeToolButton("📸", "Grab");
         _grabBtn.Click += (_, _) =>
         {
-            if (GrabCommand is not { } cmd) return;
-            if (CanRun(cmd)) cmd.Execute(null);
-            else RefreshCamButtons();
+            if (CvCamCmd.Click(GrabCommand) == CvCmdRun.Refused) RefreshCamButtons();
         };
         _camPanel.Children.Add(_grabBtn);
 
@@ -179,58 +172,52 @@ public sealed partial class CvDispCtrl : Grid
             System.Windows.Threading.DispatcherPriority.Background);
         UpdateStatus(null);
 
-        // === 우클릭 메뉴 — 디스플레이 조작(버튼 순서와 동일) + 구분선 + 이미지 파일 불러오기/저장 ===
-        var panItem = new MenuItem { IsCheckable = true };
-        panItem.Click += (_, _) => panBtn.IsChecked = panItem.IsChecked;
-        var zoomInItem = new MenuItem();
-        zoomInItem.Click += (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep);
-        var zoomOutItem = new MenuItem();
-        zoomOutItem.Click += (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep);
-        var fitItem = new MenuItem();
-        fitItem.Click += (_, _) => FitToView();
-        var clearItem = new MenuItem();
-        clearItem.Click += (_, _) => _surface.SetOverlay(null);
-        var loadItem = new MenuItem();
-        loadItem.Click += (_, _) => LoadImageFromFile();
-        var saveItem = new MenuItem();
-        saveItem.Click += (_, _) => SaveImageToFile();
+        // === 우클릭 메뉴 — 순서·번역 키·함께 여닫는 묶음·활성 조건은 코어 CvDispMenu(근거도 그쪽) ===
+        // 항목 구성은 여기서 한 번만 끝내고, 이후엔 Visibility 로만 여닫는다 — 열리는 도중에 Items 를 갈아 끼우면 팝업이 직전 구성의
+        // 크기로 열려 늘어난 항목이 배경 장식 밖으로 삐져나온 채 그려진다(장식 없는 맨 배경 위에 한 줄만 떠 보인다).
         var menu = new ContextMenu();
-        _loadItem = loadItem;
-        // 감출 때는 그 자리에 딸린 구분선까지 한 묶음으로 — 항목만 빼면 구분선이 겹쳐 남는다.
-        //  - 불러오기: 받을 곳(LoadFrameCommand)이 없으면 감춘다
-        //  - 그래픽 지우기: 툴바 버튼과 짝이라 툴바를 감추면 같이 사라진다
-        _toolMenuItems = [new Separator(), clearItem];
-
-        // 항목 구성은 여기서 한 번만 끝내고, 이후엔 Visibility 로만 여닫는다. 메뉴가 열리는 도중에
-        // Items 를 갈아 끼우면 팝업이 직전 구성의 크기로 열려, 늘어난 항목이 배경 장식 밖으로
-        // 삐져나온 채 그려진다(장식 없는 맨 배경 위에 한 줄만 떠 보인다).
-        menu.Items.Add(loadItem);
-        menu.Items.Add(saveItem);
-
-        // 팬·맞춤·확대·축소는 툴바와 무관하게 늘 남긴다. 툴바를 감춘 화면에서 무슨 이유로든 배율이
-        // 어긋나면 되돌릴 수단이 이 메뉴밖에 없다 — 버튼이 없다고 메뉴에서도 빼면 손쓸 방법이 없어진다.
-        menu.Items.Add(new Separator());
-        menu.Items.Add(panItem);
-        menu.Items.Add(new Separator());
-        menu.Items.Add(fitItem);
-        menu.Items.Add(zoomInItem);
-        menu.Items.Add(zoomOutItem);
-
-        foreach (var item in _toolMenuItems) menu.Items.Add(item);
+        var menuItems = new List<(CvDispMenuCmd Cmd, MenuItem Item)>();
+        var groupItems = new List<(CvDispMenuGroup Group, FrameworkElement Elem)>();
+        MenuItem? panItem = null;
+        foreach (var entry in CvDispMenu.Layout)
+        {
+            FrameworkElement elem;
+            if (entry.Cmd is { } cmd)
+            {
+                var item = new MenuItem { IsCheckable = cmd == CvDispMenuCmd.Pan };
+                item.Click += cmd switch
+                {
+                    CvDispMenuCmd.Load => (_, _) => LoadImageFromFile(),
+                    CvDispMenuCmd.Save => (_, _) => SaveImageToFile(),
+                    CvDispMenuCmd.Pan => (_, _) => panBtn.IsChecked = item.IsChecked,
+                    CvDispMenuCmd.Fit => (_, _) => FitToView(),
+                    CvDispMenuCmd.ZoomIn => (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep),
+                    CvDispMenuCmd.ZoomOut => (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep),
+                    _ => (RoutedEventHandler)((_, _) => _surface.SetOverlay(null)),   // Clear — 결과 오버레이만 지움
+                };
+                if (cmd == CvDispMenuCmd.Pan) panItem = item;
+                menuItems.Add((cmd, item));
+                elem = item;
+            }
+            else
+            {
+                elem = new Separator();
+            }
+            menu.Items.Add(elem);
+            if (entry.Group != CvDispMenuGroup.Always) groupItems.Add((entry.Group, elem));
+        }
+        _menuGroupItems = groupItems.ToArray();
 
         void RefreshMenu()
         {
-            // 라벨은 매번 다시 읽는다 — 언어 전환 대응.
-            panItem.Header = CvLoc.T("cv:Pan");
-            zoomInItem.Header = CvLoc.T("cv:ZoomIn");
-            zoomOutItem.Header = CvLoc.T("cv:ZoomOut");
-            fitItem.Header = CvLoc.T("cv:FitView");
-            clearItem.Header = CvLoc.T("cv:ClearGraphics");
-            loadItem.Header = CvLoc.T("cv:LoadImage");
-            saveItem.Header = CvLoc.T("cv:SaveImage");
-            panItem.IsChecked = panBtn.IsChecked == true;
-            // 저장은 "지금 그릴 게 없다"는 일시 상태라 회색으로 남긴다 — 불러오기와 달리 화면의 성격 문제가 아니다.
-            saveItem.IsEnabled = Frame is not null;
+            var hasFrame = Frame is not null;
+            foreach (var (cmd, item) in menuItems)
+            {
+                item.Header = CvLoc.T(CvDispMenu.LabelKey(cmd));   // 매번 다시 읽는다 — 언어 전환 대응
+                // 활성은 프레임에 걸린 항목(저장)에만 Local 로 넣는다 — 나머지에 Local 을 넣으면 호스트 MenuItem 스타일의 IsEnabled 를 이긴다.
+                if (cmd == CvDispMenuCmd.Save) item.IsEnabled = CvDispMenu.IsEnabled(cmd, hasFrame);
+            }
+            panItem!.IsChecked = panBtn.IsChecked == true;
         }
 
         // 팝업이 뜨기 전에 맞춘다. 여기서 손대는 건 라벨·체크·활성 뿐이라 항목 수가 변하지 않는다 —
@@ -259,20 +246,11 @@ public sealed partial class CvDispCtrl : Grid
         Children.Add(_statusBorder);
     }
 
-    /// <summary>상태바 갱신 — pos 는 surface 기준 마우스 위치 (null = 이미지 밖/마우스 이탈).</summary>
+    /// <summary>상태바 갱신 — pos 는 surface 기준 마우스 위치 (null = 이미지 밖/마우스 이탈). 글자 형식은 코어 CvDispStatus.</summary>
     private void UpdateStatus(System.Windows.Point? pos)
     {
-        var size = _surface.FrameSize;
-        _statusRight.Text = size is null
-            ? ""
-            : $"{size.Value.W}×{size.Value.H}  {Math.Round(_surface.ViewScale * 100)}%";
-
-        var probe = pos is null ? null : _surface.ProbeImage(pos.Value);
-        _statusLeft.Text = probe is null
-            ? ""
-            : probe.Value.Val is { } v
-                ? $"X {probe.Value.X}  Y {probe.Value.Y}  {v}"
-                : $"X {probe.Value.X}  Y {probe.Value.Y}";
+        _statusRight.Text = CvDispStatus.SizeText(_surface.FrameSize, _surface.ViewScale);
+        _statusLeft.Text = CvDispStatus.ProbeText(pos is null ? null : _surface.ProbeImage(pos.Value));
     }
 
     // MinWidth 44 — 이모지 글리프마다 어드밴스 폭이 달라(컬러 이모지 vs 텍스트 기호) 버튼 폭이 제각각이 되는 것을 흡수.
@@ -301,9 +279,8 @@ public sealed partial class CvDispCtrl : Grid
         try
         {
             // 토글 직후라 눌림이면 시작, 풀림이면 정지다. CanExecute 가 false 면 내지 않는다 — 버튼이 회색이어도 이 길에는 회색이 되기
-            // 전에 들어온 클릭이 닿는다. 내지 않아도 아래 되돌림이 버튼을 IsRunning 으로 돌려놓는다.
-            var cmd = _playBtn.IsChecked == true ? ContinuousCommand : StopCommand;
-            if (cmd is not null && CanRun(cmd)) cmd.Execute(null);
+            // 전에 들어온 클릭이 닿는다. 내지 않아도 아래 되돌림이 버튼을 IsRunning 으로 돌려놓는다(그래서 Click 의 결과는 보지 않는다).
+            CvCamCmd.Click(CvCamCmd.PlayClickCmd(_playBtn.IsChecked == true, ContinuousCommand, StopCommand));
         }
         finally
         {
@@ -316,8 +293,7 @@ public sealed partial class CvDispCtrl : Grid
     }
 
     // === 카메라 버튼과 명령의 CanExecute ===
-    // 0.30.0 까지는 두 버튼이 Execute 를 직접 불러 CanExecute 를 한 번도 묻지 않았다 — 호스트가 촬영 중에 명령을 막아 둬도 버튼이
-    // 살아 있고 눌렸다. 이제 WPF 버튼의 Command 와 같은 뜻을 따른다: false 면 회색이고 실행하지 않으며, CanExecuteChanged 가 오면 다시 묻는다.
+    // 판정(활성·⏯ 가 낼 명령·클릭 실행·던지는 CanExecute 의 한 번 경고)은 코어 CvCamCmd 에 있고, 여기는 구독·스레드 넘기기·버튼 칠하기만 남는다.
     // WPF 버튼과 다른 점 셋(그 버튼의 처리기는 알림을 올린 스레드에서 바로 IsEnabled 를 다시 계산하고, CanExecute 의 예외를 그대로 흘린다 —
     // 원문 확인): 다른 스레드에서 온 알림은 UI 스레드로 넘기고, CanExecute 가 던져도 알림을 올린 쪽으로 돌려보내지 않는다. 알림을 올리는
     // 쪽은 흔히 바쁨 표식을 세운 직후 try 밖에서 올리므로, 여기서 던지면 그 표식이 안 풀린 채 남아 카메라 명령이 영구히 막힌다.
@@ -337,52 +313,22 @@ public sealed partial class CvDispCtrl : Grid
     }
 
     /// <summary>약한 구독의 중계자는 알림을 올린 스레드에서 이 처리기를 부른다. UI 스레드가 아니면 넘기고 돌아간다 — 기다리지 않는다.
-    /// 여기서 하는 일은 다시 묻기뿐이고 그 안의 예외는 <see cref="CanRun"/> 이 삼키므로 이 처리기는 던지지 않는다.</summary>
+    /// 여기서 하는 일은 다시 묻기뿐이고 그 안의 예외는 <see cref="CvCamCmd.CanRun"/> 이 삼키므로 이 처리기는 던지지 않는다.</summary>
     private void OnCamCommandCanExecuteChanged(object? sender, EventArgs e)
     {
         if (Dispatcher.CheckAccess()) RefreshCamButtons();
         else Dispatcher.BeginInvoke(new Action(RefreshCamButtons));
     }
 
-    /// <summary>📸·⏯ 의 활성을 지금의 명령으로 다시 정한다. 명령이 없으면 종전대로 살아 있다. ⏯ 는 눌렀을 때 낼 명령이 정한다 —
-    /// 돌고 있으면(IsRunning) StopCommand, 멈춰 있으면 ContinuousCommand. 시작 명령 하나로 정하면 시작이 막힌 사이에 라이브를 끌 수
-    /// 없게 된다. 그래서 IsRunning 이 바뀔 때도 다시 정한다(SyncPlayState). 거절된 클릭 뒤에도 다시 정한다(📸 Click 처리기·⏯ 되돌림).
+    /// <summary>📸·⏯ 의 활성을 지금의 명령으로 다시 정한다(코어 CvCamCmd.IsEnabled — 명령이 없으면 종전대로 살아 있다). ⏯ 는 눌렀을 때
+    /// 낼 명령이 정한다(CvCamCmd.PlayGateCmd). 그래서 IsRunning 이 바뀔 때도 다시 정한다(SyncPlayState). 거절된 클릭 뒤에도 다시
+    /// 정한다(📸 Click 처리기·⏯ 되돌림).
     /// 활성만 바꾸고 색은 넣지 않는다 — 회색은 호스트의 버튼 스타일이 그린다. ⏯ 에 넣어 둔 강조색은 그대로 두어도 된다: 기본 버튼 스타일의 비활성 트리거가 그 위를 덮는다(실측, Windows 기본
     /// 테마·96DPI 오프스크린: 멈춘 ⏯ 가 살아 있으면 정지 강조색 화소 1409, 회색이면 0 이고 #F4F4F4 로 그려진다).</summary>
     private void RefreshCamButtons()
     {
-        _grabBtn.IsEnabled = GrabCommand is not { } grab || CanRun(grab);
-        var next = IsRunning ? StopCommand : ContinuousCommand;
-        _playBtn.IsEnabled = next is null || CanRun(next);
-    }
-
-    /// <summary>CanExecute 가 던졌다고 이미 경고한 명령 인스턴스. 약한 키라 명령의 수명을 늘리지 않고, 참조로 찾으므로 명령이 Equals 를
-    /// 바꿔도 인스턴스별이다. 정적이라 같은 명령을 여러 컨트롤에 묶어도 한 번이다. 값은 처음 던진 예외의 형식이다(디버거에서 볼 진단용 —
-    /// 코드는 읽지 않는다).</summary>
-    private static readonly ConditionalWeakTable<ICommand, object> _canExecuteThrowWarned = new();
-
-    /// <summary>CanExecute 를 null 로 묻는다 — 버튼이 Execute 에 넘기는 값도 늘 null 이다. 던지면 실행 가능으로 본다: 이 판 전에는
-    /// CanExecute 를 묻지 않았으니 그것이 종전 동작이고(버튼은 살아 있고 클릭은 Execute 에 닿는다 — 고장 난 명령이면 거기서 종전대로 던진다),
-    /// 회색으로 바꾸면 요란하던 실패가 조용히 굳은 버튼이 된다.
-    /// 경고는 명령 인스턴스마다 한 번만 남긴다. 버튼 상태는 대입·알림·IsRunning 변화·클릭마다 다시 묻고, CommandManager.RequerySuggested 로
-    /// 알리는 명령이면 입력마다 묻는다 — 물을 때마다 남기면 같은 줄이 로그를 덮는다(실측: 던지는 명령 하나를 📸 에 걸고 대입 1·알림 3·
-    /// IsRunning 왕복 2·클릭 2 → 8번 물었고 7650d05 는 경고 8줄을 남겼다 — 회귀 AThrowingCanExecuteIsWarnedOncePerCommandInstance). 그 뒤의
-    /// 예외는 남기지 않으니 문구에 그것을 밝힌다. 문구는 상태 갱신 길과 클릭 길 모두에서 참인 것만 적는다 — 7650d05 의 "the button is left
-    /// enabled" 는 클릭 길에서 실제로 일어난 일(그대로 실행)을 말하지 않았다.</summary>
-    private static bool CanRun(ICommand cmd)
-    {
-        try
-        {
-            return cmd.CanExecute(null);
-        }
-        catch (Exception ex)
-        {
-            if (_canExecuteThrowWarned.TryAdd(cmd, ex.GetType()))
-                CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
-                    $"{cmd.GetType().Name}.CanExecute threw; treating the command as runnable, so the throw does not grey its button " +
-                    "and clicks still reach Execute. Logged once per command instance; later throws from it are not logged.", ex);
-            return true;
-        }
+        _grabBtn.IsEnabled = CvCamCmd.IsEnabled(GrabCommand);
+        _playBtn.IsEnabled = CvCamCmd.IsEnabled(CvCamCmd.PlayGateCmd(IsRunning, ContinuousCommand, StopCommand));
     }
 
     /// <summary>
@@ -397,29 +343,22 @@ public sealed partial class CvDispCtrl : Grid
     /// <summary>렌더·입력 표면 — 회귀가 좌표로 조작한다(마우스 이벤트는 실제 장치 위치를 읽는다).</summary>
     internal CvDispSurface Surface => _surface;
 
+    // 파일 규칙(확장자 목록·기본 이름·바이트 디코드/인코드·JPEG 알파 접기·Mat 소유권 넘기기)은 코어 CvImgFileIO. 여기는 대화상자와 오류 창만.
+
     private void LoadImageFromFile()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
-            Filter = "Image|*.bmp;*.png;*.jpg;*.jpeg;*.tif;*.tiff|All|*.*",
+            Filter = CvImgFileIO.WinFilter(CvImgFileIO.OpenTypes),
         };
         if (dlg.ShowDialog() != true) return;
         try
         {
-            // ImRead 는 Windows 비ASCII(한글) 경로에서 실패한다 — 바이트로 읽어 디코드한다.
-            var mat = Cv2.ImDecode(File.ReadAllBytes(dlg.FileName), ImreadModes.Unchanged);
-            if (mat.Empty())
-            {
-                mat.Dispose();
-                throw new InvalidOperationException("Unsupported image format");
-            }
-            // Mat 소유권은 명령 수신자(VM)로 넘어간다 — 받을 곳이 없으면 여기서 해제.
-            if (LoadFrameCommand is { } cmd) cmd.Execute(mat);
-            else mat.Dispose();
+            CvImgFileIO.LoadInto(dlg.FileName, LoadFrameCommand);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, CvLoc.T("cv:LoadImage"), MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, CvLoc.T(CvDispMenu.LabelKey(CvDispMenuCmd.Load)), MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -428,41 +367,17 @@ public sealed partial class CvDispCtrl : Grid
         if (Frame is null) return;
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
-            Filter = "PNG|*.png|BMP|*.bmp|JPEG|*.jpg",
-            FileName = $"image_{DateTime.Now:yyyyMMdd_HHmmss}.png",
+            Filter = CvImgFileIO.WinFilter(CvImgFileIO.SaveTypes),
+            FileName = CvImgFileIO.DefaultSaveName(DateTime.Now),
         };
         if (dlg.ShowDialog() != true) return;
         try
         {
-            // 저장 원본은 서피스의 픽셀 스냅샷 — Frame DP 의 Mat 은 할당 후 호스트가 dispose 했을 수 있어 건드리지 않는다.
-            using var mat = _surface.SnapMat()
-                ?? throw new InvalidOperationException("Unsupported frame format");
-            var isJpeg = Path.GetExtension(dlg.FileName).ToLowerInvariant() is ".jpg" or ".jpeg";
-            if (isJpeg && mat.Channels() == 4)
-            {
-                // JPEG 는 알파 미지원 — BGRA 는 BGR 로 접어 저장
-                using var bgr = new Mat();
-                Cv2.CvtColor(mat, bgr, ColorConversionCodes.BGRA2BGR);
-                WriteImageFile(dlg.FileName, bgr);
-            }
-            else
-            {
-                WriteImageFile(dlg.FileName, mat);
-            }
+            CvImgFileIO.WriteFrame(dlg.FileName, _surface.FrameBuf);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, CvLoc.T("cv:SaveImage"), MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(ex.Message, CvLoc.T(CvDispMenu.LabelKey(CvDispMenuCmd.Save)), MessageBoxButton.OK, MessageBoxImage.Error);
         }
-    }
-
-    /// <summary>ImWrite 는 Windows 비ASCII(한글) 경로에서 실패한다 — 인코드 후 바이트로 쓴다.</summary>
-    private static void WriteImageFile(string path, Mat mat)
-    {
-        var ext = Path.GetExtension(path);
-        if (string.IsNullOrEmpty(ext)) ext = ".png";
-        if (!Cv2.ImEncode(ext, mat, out var bytes))
-            throw new IOException("Failed to encode image file");
-        File.WriteAllBytes(path, bytes);
     }
 }

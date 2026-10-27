@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using CvInspect.Display;
 
 namespace CvInspect.Controls;
 
@@ -94,24 +95,20 @@ public partial class CvPropEditCtrl : UserControl
         InitializeComponent();
         _defaultDesc = (Brush)Resources["CvPropDescBrush"];
         _defaultHeader = (Brush)Resources["CvPropHeaderBrush"];
-        SetResourceReference(HostDescSlotProperty, "SecondaryTextBrush");
-        SetResourceReference(HostHeaderSlotProperty, "PrimaryBrush");
+        SetResourceReference(HostDescSlotProperty, CvPropEditSvc.HostDescKey);
+        SetResourceReference(HostHeaderSlotProperty, CvPropEditSvc.HostHeaderKey);
     }
 
+    /// <summary>옛 행 떼기 → 센티널(null·plain object 는 빈 화면) → 짓기 순서는 코어 CvPropEditSvc.Rebuild. 여기는 이벤트를 이 컨트롤을
+    /// sender 로 올리는 대리자만 넘긴다.</summary>
     private void RebuildRows()
     {
-        CvPropRowBldr.Detach(_groups);
-
-        // plain object 는 "typed 설정 없음" sentinel — 빈 화면 (GetType() != typeof(object) 규약).
-        var src = Source;
-        _groups = src is null || src.GetType() == typeof(object)
-            ? []
-            : CvPropRowBldr.Build(src,
-                name => Committed?.Invoke(this, new CvPropCommittedEvt(name)),
-                name => ActionExecuting?.Invoke(this, new CvPropActionExecutingEvt(name)),
-                name => ActionExecuted?.Invoke(this, new CvPropActionExecutedEvt(name)),
-                (label, ex) => ActionFailed?.Invoke(this, new CvPropActionFailedEvt(label, ex)),
-                ExecuteText, ShowDesc);
+        _groups = CvPropEditSvc.Rebuild(_groups, Source,
+            name => Committed?.Invoke(this, new CvPropCommittedEvt(name)),
+            name => ActionExecuting?.Invoke(this, new CvPropActionExecutingEvt(name)),
+            name => ActionExecuted?.Invoke(this, new CvPropActionExecutedEvt(name)),
+            (label, ex) => ActionFailed?.Invoke(this, new CvPropActionFailedEvt(label, ex)),
+            ExecuteText, ShowDesc);
         GroupsHost.ItemsSource = _groups;
     }
 

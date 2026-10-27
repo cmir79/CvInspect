@@ -16,7 +16,7 @@ internal sealed partial class CvDispSurface
     {
         if (_bitmap is null) return;
         var pos = e.GetPosition(this);
-        var factor = e.Delta > 0 ? CvViewXform.ZoomStep : 1 / CvViewXform.ZoomStep;
+        var factor = CvViewXform.WheelFactor(e.Delta);
         if (!_view.TryZoomAt(factor, pos.X, pos.Y, out var next)) return;
         _view = next;
         InvalidateVisual();
@@ -46,7 +46,7 @@ internal sealed partial class CvDispSurface
     /// <summary>왼쪽 누름 — 잡을 것이 있으면(핸들·도형 몸체·팬 모드) 드래그를 시작하고 true(호출자가 마우스를 잡는다).
     /// 마우스 장치와 떼어 둔 것은 회귀가 좌표로 부르기 위해서다.</summary>
     internal bool PressAt(System.Windows.Point screen)
-        => _bitmap is not null && _editDrag.Press(_shapes, (screen.X, screen.Y), _view, IsPanMode);
+        => _bitmap is not null && _editDrag.Press(_shapeSub.Shapes, (screen.X, screen.Y), _view, IsPanMode);
 
     /// <summary>끌기 — 진행 중인 드래그(팬·이동·핸들)를 이 화면 좌표까지. 드래그가 없으면 무동작.</summary>
     internal void DragTo(System.Windows.Point screen)

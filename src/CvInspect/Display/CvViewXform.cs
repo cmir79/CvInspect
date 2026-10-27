@@ -19,6 +19,9 @@ internal readonly struct CvViewXform
     /// <summary>휠 한 칸·줌 버튼 한 번의 배율.</summary>
     internal const double ZoomStep = 1.25;
 
+    /// <summary>휠 한 칸의 줌 배수 — 위로 굴리면(delta &gt; 0) 확대, 0 이하면 축소. 크기는 보지 않고 부호만 본다(한 통지 = 한 칸).</summary>
+    internal static double WheelFactor(double delta) => delta > 0 ? ZoomStep : 1 / ZoomStep;
+
     /// <summary>맞춤 여백 — 표면에 꽉 채우지 않고 이만큼 줄인다(가장자리 핸들·라벨이 표면 경계에 붙지 않게).</summary>
     private const double FitMargin = 0.97;
 

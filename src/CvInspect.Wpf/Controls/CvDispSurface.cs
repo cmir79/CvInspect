@@ -2,13 +2,11 @@
 // 그리기는 CvDispSurface.Render.cs, 마우스 조작은 CvDispSurface.Input.cs 에 있다.
 // 뷰 변환·드래그·렌더 기하의 계산은 UI 중립 계층(CvInspect.Display — 코어 소스 링크)이 하고, 여기는 WPF 쪽 배선만 남는다.
 
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CvInspect.Display;
 using CvInspect.Vision.Overlay;
-using OpenCvSharp;
 using CvInspect.Vision.Edit;
 
 namespace CvInspect.Controls;
@@ -18,17 +16,10 @@ internal sealed partial class CvDispSurface : FrameworkElement
 {
     private BitmapSource? _bitmap;
     private WriteableBitmap? _wb;   // 재사용 백버퍼 — 프레임마다 새 BitmapSource 할당(대해상도=수MB LOH)·신규 GPU 텍스처를 회피, WritePixels 전면 갱신
-    private byte[]? _pixels;        // 표시 프레임 픽셀 — 상태바 픽셀 값 조회·파일 저장용. Mat 경로면 _snap(자체 스냅샷),
-                                    // ICvPixelSource 경로면 공급자 배열 그 자체(복사 없음 — "발행 뒤 불변" 계약이 참조 보관을 허락한다).
-    private byte[]? _snap;          // Mat 경로 전용 재사용 스냅샷 버퍼. Mat 은 호출측이 곧 dispose 할 수 있어 여기로 떠 둔다.
-                                    // _pixels 와 분리하는 이유: 공급자 배열을 참조 중일 때 다음 Mat 을 그 위에 덮어쓰면 안 된다.
-    private int _stride;            // _pixels 의 행 바이트 수 — Mat 경로는 폭×채널(타이트), 공급자 경로는 그쪽 Stride(행 끝 패딩 가능)
-    private int _channels;          // 1=Gray8 / 3=Bgr24 / 4=Bgra32, 0=표시 불가 포맷
-    private int _imgW;
-    private int _imgH;
+    // 표시 프레임 픽셀(형 분기·Mat 스냅샷·공급자 계약 검사·픽셀 값·저장용 복원) — 코어 CvFrameBuf. 여기는 그 픽셀을 백버퍼로 옮기기만 한다.
+    private readonly CvFrameBuf _frame = new();
     private ViOverlay? _overlay;
-    private IReadOnlyList<CvEditShape>? _shapes;
-    private bool _shapesAttached;   // 지금 도형 변경을 구독 중인가 — 화면에서 내려가면 푼다
+    private readonly CvShapeSub _shapeSub;   // 편집 도형 목록과 그 Changed 구독 — 화면에 올라와 있는 동안만 건다(코어 CvShapeSub)
     private CvViewXform _view = CvViewXform.Identity;   // 이미지 → 화면
     private bool _fitPending = true;
 
@@ -113,13 +104,10 @@ internal sealed partial class CvDispSurface : FrameworkElement
         Focusable = false;
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
 
-        // 화면에서 내려가면 도형 구독을 놓는다 — 도형 목록은 대개 호스트(VM)가 들고 있어서 컨트롤보다
-        // 오래 산다. 그 목록이 우리 핸들러를 붙잡고 있으면 버려진 컨트롤이 수집되지 않는다(실측: 한 목록에
-        // 컨트롤 40개를 붙였다 버리면 +799MB, 도형 없는 같은 40개는 +50MB — 컨트롤 하나가 백버퍼·픽셀
-        // 배열·비주얼 트리를 통째로 끌고 간다). 탭·페이지 전환처럼 뷰만 다시 세우는 배치가 그 자리다.
-        // 다시 붙을 때 되건다 — 내려갔다 올라오는 것은 흔하고, 그때 구독을 잃으면 드래그 편집이 조용히 죽는다.
-        Loaded += (_, _) => AttachShapes(true);
-        Unloaded += (_, _) => AttachShapes(false);
+        // 화면에서 내려가면 도형 구독을 놓고 다시 붙을 때 되건다 — 근거(누수 실측)는 코어 CvShapeSub.
+        _shapeSub = new CvShapeSub(OnShapeChanged);
+        Loaded += (_, _) => _shapeSub.Attach(true, IsLoaded);
+        Unloaded += (_, _) => _shapeSub.Attach(false, IsLoaded);
     }
 
     // === 외부 상태 주입 (CvDispCtrl DP 콜백) ===
@@ -129,146 +117,64 @@ internal sealed partial class CvDispSurface : FrameworkElement
 
     internal double ViewScale => Scale;
 
-    internal (int W, int H)? FrameSize => _imgW == 0 ? null : (_imgW, _imgH);
+    internal (int W, int H)? FrameSize => _frame.Width == 0 ? null : (_frame.Width, _frame.Height);
 
-    /// <summary>화면 좌표 → 이미지 정수 픽셀 좌표 + 픽셀 값 라벨(1채널: "V n" / 컬러: "RGB r,g,b") — 이미지 밖이면 null.</summary>
+    /// <summary>표시 중인 프레임 픽셀 — 파일 저장(코어 CvImgFileIO.WriteFrame)이 읽는다.</summary>
+    internal CvFrameBuf FrameBuf => _frame;
+
+    /// <summary>화면 좌표 → 이미지 정수 픽셀 좌표 + 픽셀 값 라벨(1채널: "V n" / 컬러: "RGB r,g,b", 코어 CvFrameBuf.ValueAt) — 이미지 밖이면 null.</summary>
     internal (int X, int Y, string? Val)? ProbeImage(System.Windows.Point screen)
     {
         if (_bitmap is null) return null;
         var p = ToImage(screen);
         var x = (int)Math.Floor(p.X);
         var y = (int)Math.Floor(p.Y);
-        if (x < 0 || y < 0 || x >= _imgW || y >= _imgH) return null;
+        if (x < 0 || y < 0 || x >= _frame.Width || y >= _frame.Height) return null;
+        return (x, y, _frame.ValueAt(x, y));
+    }
 
-        string? val = null;
-        if (_pixels is { } px)
+    /// <summary>프레임 교체 — 형 분기(Mat·ICvPixelSource·그 밖은 경고), Mat 스냅샷 복사, 공급자 계약 검사는 코어 CvFrameBuf 가 한다
+    /// (Mat 은 대입 뒤 호스트가 dispose 해도 안전, 공급자 배열은 참조 — 프레임당 복사는 WPF 백버퍼로 가는 WritePixels 한 번뿐).
+    /// 담을 수 없는 값은 빈 화면. 프레임이 없어지거나 치수가 바뀌면 맞춤을 예약한다.</summary>
+    public void SetFrame(object? value)
+    {
+        var refit = _frame.Set(value);
+        if (_frame.Pixels is { } px)
         {
-            var stride = _stride;
-            switch (_channels)
+            try { Present(px, _frame.Width, _frame.Height, _frame.Stride, FormatOf(_frame.Channels)); }
+            catch
             {
-                case 1:
-                    val = $"V {px[y * stride + x]}";
-                    break;
-                case 3:
-                {
-                    var o = y * stride + x * 3;
-                    val = $"RGB {px[o + 2]},{px[o + 1]},{px[o]}";
-                    break;
-                }
-                case 4:
-                {
-                    var o = y * stride + x * 4;
-                    val = $"RGB {px[o + 2]},{px[o + 1]},{px[o]}";
-                    break;
-                }
+                // 버퍼는 이미 새 프레임인데 비트맵이 옛것이면 옛 그림을 새 치수로 그리고 탐침·저장은 새 픽셀을 읽는다 — 빈 화면으로 맞춘 뒤 던진다.
+                _frame.Set(null);
+                _bitmap = null;
+                _fitPending = true;
+                InvalidateVisual();
+                StatusChanged?.Invoke();
+                throw;
             }
         }
-        return (x, y, val);
-    }
-
-    /// <summary>프레임 교체(Mat) — 픽셀을 자체 스냅샷 버퍼로 복사하므로 리턴 후 호출측이 mat 을 dispose 해도 안전.
-    /// null/빈 Mat 은 빈 화면. 치수 변경 시 자동 Fit.</summary>
-    public void SetFrame(Mat? mat)
-    {
-        var prevW = _imgW;
-        var prevH = _imgH;
-        if (mat is null || mat.Empty() || !TryMapChannels(mat.Type(), out var ch, out var fmt))
-        {
-            ClearFrame();
-        }
-        else
-        {
-            var stride = mat.Width * ch;
-            var len = stride * mat.Height;
-            if (_snap is null || _snap.Length != len) _snap = new byte[len];
-            if (mat.IsContinuous())
-            {
-                Marshal.Copy(mat.Data, _snap, 0, len);
-            }
-            else
-            {
-                using var cont = mat.Clone();   // 서브뷰(ROI)라 행 사이 패딩이 있는 경우 — Clone 은 항상 연속
-                Marshal.Copy(cont.Data, _snap, 0, len);
-            }
-            Present(_snap, mat.Width, mat.Height, stride, ch, fmt);
-        }
-        AfterFrame(prevW, prevH);
-    }
-
-    /// <summary>프레임 교체(픽셀 공급자) — 복사하지 않고 공급자 배열을 참조로 붙잡는다. 프레임당 복사는 WPF 백버퍼로 가는
-    /// WritePixels 한 번뿐이다. 이것이 안전한 근거는 <see cref="ICvPixelSource"/> 의 "발행 뒤 불변" 계약이다.
-    /// 계약이 말하는 치수·길이를 만족하지 못하는 값은 빈 화면 + 경고 로그(WritePixels 가 던지기 전에 거른다).</summary>
-    public void SetFrame(ICvPixelSource? src)
-    {
-        var prevW = _imgW;
-        var prevH = _imgH;
-        if (src is null || src.Width <= 0 || src.Height <= 0 || !TryMapChannels(src.Channels, out var fmt))
-        {
-            ClearFrame();
-        }
-        else if (src.Pixels is null || src.Stride < src.Width * src.Channels || src.Pixels.Length < (long)src.Stride * src.Height)
-        {
-            CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
-                $"Frame ignored: ICvPixelSource buffer violates its contract (w={src.Width} h={src.Height} ch={src.Channels} stride={src.Stride} len={src.Pixels?.Length ?? -1}).");
-            ClearFrame();
-        }
-        else
-        {
-            Present(src.Pixels, src.Width, src.Height, src.Stride, src.Channels, fmt);
-        }
-        AfterFrame(prevW, prevH);
-    }
-
-    private void ClearFrame()
-    {
-        _bitmap = null;
-        _pixels = null;
-        _snap = null;
-        _stride = 0;
-        _channels = 0;
-        _imgW = 0;
-        _imgH = 0;
-    }
-
-    private void AfterFrame(int prevW, int prevH)
-    {
-        if (_bitmap is null || _imgW != prevW || _imgH != prevH) _fitPending = true;
+        else _bitmap = null;
+        if (refit) _fitPending = true;
         InvalidateVisual();
         StatusChanged?.Invoke();
     }
 
-    /// <summary>표시 가능한 8비트 채널 수 → WPF 픽셀 포맷. 그 외(16비트/float 등)는 false — 비트맵 없음(플레이스홀더).</summary>
-    private static bool TryMapChannels(int channels, out PixelFormat fmt)
+    /// <summary>채널 수 → WPF 픽셀 포맷. 받는 채널 수(1·3·4)는 코어 CvFrameBuf.IsShowable 이 정한다.</summary>
+    private static PixelFormat FormatOf(int channels) => channels switch
     {
-        switch (channels)
-        {
-            case 1: fmt = PixelFormats.Gray8; return true;
-            case 3: fmt = PixelFormats.Bgr24; return true;
-            // BGRA — 일부 GigE 컬러 카메라가 실제로 발행하는 포맷. 빠뜨리면 컬러 검사 티칭 화면이 통째로 공백이 된다.
-            case 4: fmt = PixelFormats.Bgra32; return true;
-            default: fmt = default; return false;
-        }
-    }
-
-    private static bool TryMapChannels(MatType type, out int channels, out PixelFormat fmt)
-    {
-        channels = type == MatType.CV_8UC1 ? 1 : type == MatType.CV_8UC3 ? 3 : type == MatType.CV_8UC4 ? 4 : 0;
-        return TryMapChannels(channels, out fmt);
-    }
+        1 => PixelFormats.Gray8,
+        3 => PixelFormats.Bgr24,
+        _ => PixelFormats.Bgra32,
+    };
 
     /// <summary>표시 비트맵 갱신 — 재사용 WriteableBitmap 에 전면 WritePixels. 매 프레임 새 BitmapSource 할당(대해상도=수MB LOH →
     /// GC 일시정지)과 신규 GPU 텍스처를 피한다. stride 는 그대로 넘긴다 — 행 끝 패딩은 WritePixels 가 건너뛴다.</summary>
-    private void Present(byte[] pixels, int w, int h, int stride, int ch, PixelFormat fmt)
+    private void Present(byte[] pixels, int w, int h, int stride, PixelFormat fmt)
     {
         if (_wb is null || _wb.PixelWidth != w || _wb.PixelHeight != h || _wb.Format != fmt)
             _wb = new WriteableBitmap(w, h, 96, 96, fmt, null);
         _wb.WritePixels(new Int32Rect(0, 0, w, h), pixels, stride, 0);
         _bitmap = _wb;
-        _pixels = pixels;
-        _stride = stride;
-        _channels = ch;
-        _imgW = w;
-        _imgH = h;
     }
 
     public void SetOverlay(ViOverlay? overlay)
@@ -277,28 +183,12 @@ internal sealed partial class CvDispSurface : FrameworkElement
         InvalidateVisual();
     }
 
+    /// <summary>도형 목록 교체 — 옛 목록 구독을 놓고, 화면에 올라와 있을 때만 새 목록에 건다(코어 CvShapeSub.Swap).</summary>
     public void SetShapes(IReadOnlyList<CvEditShape>? shapes)
     {
-        AttachShapes(false);
-        _shapes = shapes;
-        AttachShapes(true);
+        _shapeSub.Swap(shapes, IsLoaded);
         _editDrag.Cancel();
         InvalidateVisual();
-    }
-
-    /// <summary>도형 변경 구독을 걸거나 푼다 — 이미 그 상태면 아무것도 안 한다(Loaded 가 두 번 나도 이중 구독이 없다).
-    /// <b>거는 것은 화면에 올라와 있을 때만</b>이다 — 내려간 사이에 목록만 갈아끼워도 구독이 되살아나면
-    /// (그 뒤로 Unloaded 가 다시 나지 않으므로) 그대로 누수가 된다. 올라올 때 Loaded 가 다시 건다.</summary>
-    private void AttachShapes(bool attach)
-    {
-        if (attach && !IsLoaded) return;
-        if (_shapes is null || attach == _shapesAttached) return;
-        foreach (var s in _shapes)
-        {
-            if (attach) s.Changed += OnShapeChanged;
-            else s.Changed -= OnShapeChanged;
-        }
-        _shapesAttached = attach;
     }
 
     private void OnShapeChanged(object? sender, EventArgs e) => InvalidateVisual();
@@ -332,14 +222,4 @@ internal sealed partial class CvDispSurface : FrameworkElement
     }
 
     private double Scale => _view.Scale;
-
-    /// <summary>표시 픽셀 → 새 Mat 복원 (파일 저장용) — 표시 가능한 프레임이 없으면 null. dispose 는 호출자 책임.
-    /// 행 끝 패딩이 있어도(공급자 경로) Clone 이 연속 Mat 으로 접는다.</summary>
-    internal Mat? SnapMat()
-    {
-        if (_pixels is null || _imgW == 0) return null;
-        var type = _channels switch { 1 => MatType.CV_8UC1, 3 => MatType.CV_8UC3, _ => MatType.CV_8UC4 };
-        using var view = Mat.FromPixelData(_imgH, _imgW, type, _pixels, _stride);   // 무복사 래핑 — dispose 는 핀 해제
-        return view.Clone();
-    }
 }
