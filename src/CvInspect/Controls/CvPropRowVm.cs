@@ -60,7 +60,8 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
     public bool IsEditable => !IsReadOnly;
 
     private CvPropWeakSub? _sub;
-    private bool _detached;
+    // 통지 스레드가 읽고 UI 스레드가 쓴다 — 캐시된 옛 값으로 떼어진 행을 갱신하지 않게 volatile.
+    private volatile bool _detached;
 
     // 약한 구독 — 화면 이탈로 Detach 가 안 돌아도 오래 사는 소스(검사 인스턴스 소유 POCO)가 죽은 행/컨트롤을 붙잡지 못하게 한다.
     internal void Attach()
@@ -78,6 +79,9 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
 
     internal void OnSourceChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // Detach 직전에 이미 출발한 통지(다른 스레드)가 떼어진 행을 갱신하지 않게 — 중첩 행이면 새 자식을 세워
+        // 아무도 떼지 않는 구독을 남긴다. 창을 좁힐 뿐 닫지는 않는다(검사와 Detach 사이는 여전히 열려 있다).
+        if (_detached) return;
         if (!string.IsNullOrEmpty(e.PropertyName) && e.PropertyName != Prop.Name) return;
         // 통지 경로에서 새면 소스가 PropertyChanged 를 낸 자리에서 터진다 — 편집기가 호스트 코드를 깨뜨리는 꼴이다.
         // 여기서는 행을 뺄 수 없으니 마지막으로 읽은 값을 그대로 남긴다.

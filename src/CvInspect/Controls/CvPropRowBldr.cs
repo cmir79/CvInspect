@@ -25,9 +25,14 @@ public static class CvPropRowBldr
 {
     /// <summary>빌드한 행을 떼어 낸다 — 소스 통지 구독과 호스트 훅을 끊는다. 편집기가 Source 를 바꾸거나 화면에서 내릴 때 옛 행에 부른다.
     /// 떼어진 행은 화면에 남은 시각 트리에서 늦게 커밋이 와도 아무것도 쓰지 않는다(폐기된 POCO 를 오염시키지 않게).
-    /// 중첩 행은 자식까지 떼어 낸다. 같은 행을 두 번 떼어도 된다.</summary>
+    /// 중첩 행은 자식까지 떼어 낸다. 같은 행을 두 번 떼어도 된다.
+    /// ⚠ <b>되돌릴 수 없다</b> — 떼어진 행은 다시 붙지 않고, 이후 편집은 오류도 로그도 없이 버려진다.
+    /// 그래서 <b>그 행을 만든 쪽(편집기)만</b> 부른다. 편집기가 아직 보여 주는 그룹(예: 편집기의 공개 Groups)에 부르면
+    /// 화면은 멀쩡한데 편집이 소스에 닿지 않는다.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="groups"/> 가 null.</exception>
     public static void Detach(IEnumerable<CvPropGroupVm> groups)
     {
+        if (groups is null) throw new ArgumentNullException(nameof(groups));
         foreach (var g in groups)
             foreach (var r in g.Rows)
                 r.Detach();

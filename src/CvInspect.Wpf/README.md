@@ -112,6 +112,23 @@ The control references no UI library; it adopts the host theme's `SecondaryTextB
 `PrimaryBrush` when those keys exist (and follows them when the host swaps its dictionary at run
 time) and falls back to fixed colors otherwise.
 
+**Since 0.34 the row view-models and the builder live in the core package.** `CvPropGroupVm`, the
+`CvProp…RowVm` rows, `CvPropRowBldr` and the four `CvProp…Evt` records moved from this package into
+`CvInspect` with the same names and namespace. This package forwards them, so code and XAML built
+against 0.33 keep working — but raise both packages together. A core-only or non-WPF host can build
+the same rows itself with `CvPropRowBldr.Build`. The builder is reflection-based, so under IL2CPP
+managed stripping keep the option types (for example with `link.xml`), or rows silently go missing.
+
+The editor follows `PropertyChanged` through a weak subscription: a dropped editor never keeps the
+POCO's rows alive. What is left on the source after its rows are collected is one small bridge
+object, and it unsubscribes itself **the next time that source raises `PropertyChanged`** — not on a
+timer. So opening and dropping editors many times on a long-lived POCO that rarely notifies leaves
+that many bridges until it next notifies. That self-removal runs inside the source's raise, which is
+safe for ordinary field-like events; a hand-written event accessor that iterates its own handler list
+must copy the list before invoking it. `CvPropRowBldr.Detach` (used by the editor when `Source`
+changes) unsubscribes at once, and it is final: detached rows never write again. Call it only on rows
+you built yourself, never on an editor's live `Groups`.
+
 ## Frame lifetime
 
 `Frame` accepts two kinds of value, with different lifetime rules:
