@@ -258,7 +258,13 @@ Roll recipes back together with the host (keep a copy from before the first 0.27
   multi-camera PC: enumerates devices, snaps one frame per index and backend, then reopens each
   camera by VID/PID through `CamOpt.SerialNumber` so the two pictures can be compared.
 
-The demo is WPF only; there is no Avalonia sample yet. The Avalonia controls' usage is in the
+- `samples/CvInspect.Demo.Avalonia` — the same window built on CvInspect.Avalonia (same view-model,
+  recipe and synthetic part, compiled from the WPF demo's files). From source only:
+  `dotnet run --project samples/CvInspect.Demo.Avalonia`; the release exe is the WPF demo. The Avalonia
+  test suite opens the window headless and checks that the synthetic part is shown and the recipe
+  runs; not yet run on macOS (no OpenCV runtime is referenced there — add one).
+
+The Avalonia controls' usage is in the
 [CvInspect.Avalonia README](https://github.com/cmir79/CvInspect/blob/main/src/CvInspect.Avalonia/README.md).
 
 ## Tests

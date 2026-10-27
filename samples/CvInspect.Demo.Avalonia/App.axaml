@@ -1,0 +1,19 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CvInspect.Demo.App"
+             RequestedThemeVariant="Light">
+  <!-- 라이트 고정 — WPF 데모(기본 테마)와 같은 인상. Default 로 두면 OS 다크 모드를 따라가 표시 컨트롤의 밝은 툴바와 어긋난다. -->
+  <Application.Styles>
+    <FluentTheme />
+  </Application.Styles>
+  <Application.Resources>
+    <!-- 강조색도 고정 — 그대로 두면 콤보·목록 선택·체크가 OS 개인 설정의 강조색을 따라간다. Fluent 가 읽는 일곱 키를 다 덮는다. -->
+    <Color x:Key="SystemAccentColor">#0078D4</Color>
+    <Color x:Key="SystemAccentColorLight1">#1A86D9</Color>
+    <Color x:Key="SystemAccentColorLight2">#4CA0E0</Color>
+    <Color x:Key="SystemAccentColorLight3">#80BAE9</Color>
+    <Color x:Key="SystemAccentColorDark1">#006CBE</Color>
+    <Color x:Key="SystemAccentColorDark2">#005A9E</Color>
+    <Color x:Key="SystemAccentColorDark3">#004275</Color>
+  </Application.Resources>
+</Application>

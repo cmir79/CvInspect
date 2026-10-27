@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using CvInspect.Controls;
 
@@ -6,10 +7,11 @@ namespace CvInspect.Demo;
 
 public partial class MainWindow : Window
 {
-    private readonly MainVm _vm = new();
+    private readonly MainVm _vm;
 
     public MainWindow()
     {
+        _vm = new MainVm(new WpfDemoUiAdp(), Environment.GetCommandLineArgs(), Path.Combine(Path.GetTempPath(), "CvInspect.Demo"));
         InitializeComponent();
         DataContext = _vm;
     }

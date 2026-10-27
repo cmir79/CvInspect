@@ -29,6 +29,9 @@
     <ProjectReference Include="..\..\src\CvInspect.Avalonia\CvInspect.Avalonia.csproj" />
     <!-- 취득 프레임(CamFrame)이 표시 계약(ICvPixelSource)의 실제 공급자다 — Mat 경로와 같은 그림인지 그것으로 잰다. -->
     <ProjectReference Include="..\..\src\CvInspect.Imaging\CvInspect.Imaging.csproj" />
+    <!-- Avalonia 데모 창의 연기 시험(DemoWindowTests) — 실행 파일 참조다. 데모가 Avalonia.Desktop 을 끌고 오지만 시험 앱은 TestApp 의
+         헤드리스 플랫폼으로 서므로 데스크톱 백엔드는 쓰이지 않는다. 화면 VM 은 WPF 데모와 같은 소스라 이 시험이 그 VM 도 덮는다. -->
+    <ProjectReference Include="..\..\samples\CvInspect.Demo.Avalonia\CvInspect.Demo.Avalonia.csproj" />
     <!-- 네이티브 런타임은 소비자가 고른다는 계약의 실증 — 시험도 소비자다(Mat 경로 비교에 필요). 빌드하는 OS 의 것만 받는다. -->
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
     <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />

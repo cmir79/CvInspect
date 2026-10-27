@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WPF 데모(samples/CvInspect.Demo)의 Avalonia 판 — 같은 화면을 CvInspect.Avalonia 컨트롤로 그린다. 화면 VM·레시피·합성 부품·소스
+         목록은 WPF 데모 폴더의 파일을 링크로 함께 컴파일한다(사본을 두지 않는다 — 두 판이 갈라지지 않게). 여기 있는 것은 창·앱·UI 포트뿐이다.
+         RID·SelfContained 는 넣지 않는다 — 넣으면 디자인 프리뷰어가 bin/<cfg>/net8.0/<rid> 를 찾다 멈춘다. 단독본은 publish 때 -r 로. -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>CvInspect.Demo</RootNamespace>
+    <AssemblyName>CvInspect.Demo.Avalonia</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF 무관 파일만 — WPF 데모의 App·MainWindow·WpfDemoUiAdp 는 System.Windows 를 쓴다. MainVm 은 IDemoUiPort 로만 UI 에 닿는다. -->
+    <Compile Include="..\CvInspect.Demo\DemoImage.cs" Link="Shared\DemoImage.cs" />
+    <Compile Include="..\CvInspect.Demo\DemoRecipe.cs" Link="Shared\DemoRecipe.cs" />
+    <Compile Include="..\CvInspect.Demo\DemoRecipeRunner.cs" Link="Shared\DemoRecipeRunner.cs" />
+    <Compile Include="..\CvInspect.Demo\DemoSource.cs" Link="Shared\DemoSource.cs" />
+    <Compile Include="..\CvInspect.Demo\IDemoUiPort.cs" Link="Shared\IDemoUiPort.cs" />
+    <Compile Include="..\CvInspect.Demo\MainVm.cs" Link="Shared\MainVm.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CvInspect.Avalonia\CvInspect.Avalonia.csproj" />
+    <ProjectReference Include="..\..\src\CvInspect.Imaging\CvInspect.Imaging.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 플랫폼·렌더러·테마·글꼴은 앱이 고른다(패키지는 Avalonia 하나만 문다). 모든 Avalonia.* 는 한 판으로 — 섞이면 경고 없이 깨진다. -->
+    <PackageReference Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />
+    <!-- 화면 VM 용 MVVM 툴킷 — WPF 데모와 같은 판(같은 VM 소스를 컴파일한다). -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <!-- 네이티브 런타임은 소비자가 고른다는 계약 — 앱이 소비자다. 빌드하는 OS 의 것만 받는다(시험 프로젝트와 같은 조건).
+         macOS 는 공식 런타임 패키지가 없어 여기서 고르지 않는다 — 그 OS 에서 돌리려면 맞는 런타임을 직접 넣는다. -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />
+  </ItemGroup>
+
+  <!-- WPF 데모 csproj 와 같은 "LGPL 코덱 빼기" — 이유와 함정(단일 파일 deps.json 의 이름, 두 타깃이 필요한 까닭)은 그쪽 주석에 있다.
+       이 데모도 이미지는 ImDecode 로 읽고 웹캠은 OpenCvSharpExtern 안의 백엔드로 연다. -->
+  <Target Name="DropVideoCodecFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="$([System.String]::Copy('%(ResolvedFileToPublish.Filename)').StartsWith('opencv_videoio_ffmpeg'))" />
+    </ItemGroup>
+  </Target>
+  <Target Name="DropVideoCodecFromBuild" AfterTargets="ResolveLockFileCopyLocalFiles">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+                               Condition="$([System.String]::Copy('%(Filename)').StartsWith('opencv_videoio_ffmpeg'))" />
+    </ItemGroup>
+  </Target>
+
+</Project>
