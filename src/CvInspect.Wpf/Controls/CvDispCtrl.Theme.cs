@@ -1,9 +1,10 @@
-// CvDispCtrl 의 색 표면 — 툴바·상태 줄·영상 영역 바탕 색과 ⏯·✋ 강조색을 어디서 가져오는지.
+// CvDispCtrl 의 색 표면 — 툴바·상태 줄·영상 영역 바탕·무이미지 안내 글자 색과 ⏯·✋ 강조색을 어디서 가져오는지.
 // 먼저 있는 것이 이긴다: 이 인스턴스에 준 속성 값(직접 값·바인딩·스타일 세터) → 호스트 리소스 키(색 사전 한 곳에서 모든
 // 인스턴스) → 고정 기본색(영상 영역 바탕만은 고정색이 아니라 컨트롤의 Background 로 떨어진다). 키는 리소스 참조로 붙잡아 두므로 호스트가 실행 중 사전을 갈아 끼우면 다시 띄우지 않아도 따라온다.
 
 using System.Windows;
 using System.Windows.Media;
+using CvInspect.Display;
 
 namespace CvInspect.Controls;
 
@@ -34,6 +35,12 @@ public sealed partial class CvDispCtrl
     /// 무이미지 안내 글자는 #9E9E9E 고정이라 아주 밝은 바탕에서는 옅다. 결과 오버레이의 이름 붙은 색도 어두운 바탕 기준으로 고른 것이라,
     /// 바탕을 밝게 하면 호스트가 오버레이 색을 거기에 맞춰 고른다.</summary>
     public const string ViewBackgroundKey = "CvDispViewBackgroundBrush";
+
+    /// <summary>무이미지 안내 글자(제목·불러오기 힌트) 색 리소스 키. 없으면 #9E9E9E — 어두운 바탕에서도 밝은 바탕에서도 읽히는 중간 회색이지만
+    /// 밝은 바탕(#E6E6E6)에서는 대비가 약 2.3:1 로 낮다. <see cref="ViewBackgroundKey"/> 를 밝게 할 때 함께 둔다.
+    /// <b>단색 브러시(SolidColorBrush)만 쓴다</b> — 글자는 코어 그리기 목록의 색(ARGB)으로 그려서다. 브러시의 Opacity 는 알파에 곱한다.
+    /// 다른 종류(그라데이션 등)는 기본색으로 남고 경고 한 줄을 남긴다.</summary>
+    public const string PlaceholderForegroundKey = "CvDispPlaceholderForegroundBrush";
 
     public static readonly DependencyProperty ToolbarBackgroundProperty = RegisterChrome(nameof(ToolbarBackground));
 
@@ -87,6 +94,16 @@ public sealed partial class CvDispCtrl
         set => SetValue(ViewBackgroundProperty, value);
     }
 
+    public static readonly DependencyProperty PlaceholderForegroundProperty = RegisterChrome(nameof(PlaceholderForeground));
+
+    /// <summary>이 인스턴스의 무이미지 안내 글자 색. 주면 <see cref="PlaceholderForegroundKey"/> 를 이긴다. null(기본)이면 키 → 없으면 #9E9E9E.
+    /// 단색 브러시만 — 이유와 출처 규칙은 <see cref="PlaceholderForegroundKey"/>·<see cref="ToolbarBackground"/>.</summary>
+    public Brush? PlaceholderForeground
+    {
+        get => (Brush?)GetValue(PlaceholderForegroundProperty);
+        set => SetValue(PlaceholderForegroundProperty, value);
+    }
+
     // 호스트 키 슬롯 — 생성자에서 요소를 다 만든 뒤(행·자식을 붙이기 전) SetResourceReference 로 키에 묶는다. 키가 없으면 기본값(null)으로 남고, 호스트가 사전을 바꾸면
     // WPF 가 리소스 참조를 다시 풀어 값이 바뀐다 — 그 변경 콜백이 다시 칠한다. 공개 속성과 따로 두는 이유: 공개 속성에 참조를 걸면
     // 그것이 Local 값이라 호스트의 스타일 세터를 조용히 이기고, 호스트가 값을 줬다가 걷으면 참조까지 지워져 키로 돌아오지 않는다.
@@ -98,6 +115,7 @@ public sealed partial class CvDispCtrl
     private static readonly DependencyProperty StatusBarForegroundSlotProperty = RegisterSlot("StatusBarForegroundSlot");
     private static readonly DependencyProperty SeparatorBrushSlotProperty = RegisterSlot("SeparatorBrushSlot");
     private static readonly DependencyProperty ViewBackgroundSlotProperty = RegisterSlot("ViewBackgroundSlot");
+    private static readonly DependencyProperty PlaceholderForegroundSlotProperty = RegisterSlot("PlaceholderForegroundSlot");
 
     // 강조색 — 호스트 테마가 정의한 컨트롤 라이브러리 키(PrimaryBrush/SuccessBrush/DangerBrush)를 있으면 그대로 써서 화면 전체
     // 팔레트를 따르고, 없으면(테마 미병합·콘솔 하네스) 고정색으로 떨어진다. 이 컨트롤은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다.
@@ -135,6 +153,7 @@ public sealed partial class CvDispCtrl
         SetResourceReference(StatusBarForegroundSlotProperty, StatusBarForegroundKey);
         SetResourceReference(SeparatorBrushSlotProperty, SeparatorBrushKey);
         SetResourceReference(ViewBackgroundSlotProperty, ViewBackgroundKey);
+        SetResourceReference(PlaceholderForegroundSlotProperty, PlaceholderForegroundKey);
         SetResourceReference(PrimarySlotProperty, "PrimaryBrush");
         SetResourceReference(SuccessSlotProperty, "SuccessBrush");
         SetResourceReference(DangerSlotProperty, "DangerBrush");
@@ -157,6 +176,7 @@ public sealed partial class CvDispCtrl
          : slot == StatusBarForegroundSlotProperty ? StatusBarForegroundKey
          : slot == SeparatorBrushSlotProperty ? SeparatorBrushKey
          : slot == ViewBackgroundSlotProperty ? ViewBackgroundKey
+         : slot == PlaceholderForegroundSlotProperty ? PlaceholderForegroundKey
          : null;
 
     /// <summary>현재 출처대로 다시 칠한다 — 속성·슬롯 어느 쪽이 바뀌어도 전부. 몇 개 요소에 브러시를 넣을 뿐이라 나눌 이유가 없다.</summary>
@@ -173,7 +193,30 @@ public sealed partial class CvDispCtrl
         _statusRight.Foreground = fg;
         // 영상 영역은 기본색으로 떨어지지 않는다 — 둘 다 없으면 null 을 넘겨 컨트롤의 Background 가 비치게 한다(그것이 종전 기본이다).
         _surface.ViewBackground = GetValue(ViewBackgroundProperty) as Brush ?? GetValue(ViewBackgroundSlotProperty) as Brush;
+        _surface.PlaceholderPaint = HintPaintOf(GetValue(PlaceholderForegroundProperty) as Brush ?? GetValue(PlaceholderForegroundSlotProperty) as Brush);
         ApplyAccents();
+    }
+
+    private Brush? _warnedHintBrush;
+
+    /// <summary>안내 글자 브러시 → 그리기 목록 색. 단색만 옮길 수 있다(글자는 코어 목록의 ARGB 로 그린다). null 이면 코어 기본.
+    /// 다른 종류는 기본으로 남기고 같은 브러시에 대해 한 번만 경고한다 — 이 메서드는 색 출처가 바뀔 때마다 불린다.</summary>
+    private ViPaint? HintPaintOf(Brush? brush)
+    {
+        if (brush is null) return null;
+        if (brush is SolidColorBrush s)
+        {
+            var c = s.Color;
+            var a = (byte)Math.Round(c.A * Math.Clamp(s.Opacity, 0.0, 1.0));
+            return ViPaint.Argb(a, c.R, c.G, c.B);
+        }
+        if (!ReferenceEquals(_warnedHintBrush, brush))
+        {
+            _warnedHintBrush = brush;
+            CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
+                $"Placeholder text brush is a {brush.GetType().Name}; only SolidColorBrush is supported, the default color is used.");
+        }
+        return null;
     }
 
     private Brush Pick(DependencyProperty own, DependencyProperty slot, Brush fallback)

@@ -56,7 +56,7 @@ dotnet add package OpenCvSharp4.runtime.win
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (top/bottom/left/right). |
 | `FitToView()` | method | Same as the ⛶ toolbar button: drop the user's zoom and pan and fit the image. The fit is applied at the next draw, so it can be called while the control is hidden (it shows fitted when it comes back) or before the first frame. Call it on the UI thread. |
-| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` | `Brush` | Per-instance toolbar, status bar and image-area colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
+| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` / `PlaceholderForeground` | `Brush` | Per-instance toolbar, status bar, image-area and no-image text colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
 
 ## Property editor
 
@@ -171,6 +171,7 @@ dictionary at run time (a light/dark switch) repaints every display without a re
 | `StatusBarForegroundKey` | `CvDispStatusBarForegroundBrush` | `StatusBarForeground` | `#555555` | Status bar text |
 | `SeparatorBrushKey` | `CvDispSeparatorBrush` | `SeparatorBrush` | `#DDDDDD` | Toolbar group separators, the toolbar's edge line, the status bar's edge line |
 | `ViewBackgroundKey` | `CvDispViewBackgroundBrush` | `ViewBackground` | the control's `Background` (`#2A2A2A`) | Image area around the picture and the no-image screen; opaque image pixels are drawn over it (a Bgra32 frame's transparent pixels show it through) |
+| `PlaceholderForegroundKey` | `CvDispPlaceholderForegroundBrush` | `PlaceholderForeground` | `#9E9E9E` | No-image title and load hint (`SolidColorBrush` only) |
 
 ```xml
 <!-- the host's dark color dictionary — one place covers every CvDispCtrl, including those made by a DataTemplate -->
@@ -186,12 +187,13 @@ The image area is dark by default, which suits a dark theme. A light theme can l
 
 ```xml
 <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ViewBackgroundKey}" Color="#E6E6E6" />
+<SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.PlaceholderForegroundKey}" Color="#5F5F5F" />
 ```
 
 Write the key through `x:Static`: a typo then fails loudly when the dictionary loads (a
 `XamlParseException` whose inner exception names the member) — the build does not check it — while a mistyped key string
 is silently ignored and the default stays. The value must be a `Brush`. A non-`null` value of another
-type under one of these five keys is ignored, and each display logs a `CvLog` warning naming the key
+type under one of these six keys is ignored, and each display logs a `CvLog` warning naming the key
 when it picks the value up.
 
 The instance properties take a direct value, a binding, a `DynamicResource` or a style setter, and win
@@ -203,9 +205,12 @@ property on the element in the template.
 
 `ViewBackground` falls back one step further than the others: with neither a value nor the key, the
 image area shows the control's own `Background` (`#2A2A2A` unless the host set it), exactly as before
-0.34. The no-image text stays `#9E9E9E`, which is faint on a very light background, and the named
-overlay colors were chosen against a dark view — a host that lightens the view should choose its
-overlay colors to match.
+0.34. The no-image text defaults to `#9E9E9E`, which reads on both but is faint on a very light
+background (about 2.3:1 on `#E6E6E6`) — set `PlaceholderForegroundKey` alongside. That one takes a
+`SolidColorBrush` only (its `Opacity` multiplies the alpha), because the text is drawn from the core
+draw list's ARGB color; any other brush type keeps the default and logs a warning. The named overlay
+colors were chosen against a dark view — a host that lightens the view should choose its overlay
+colors to match.
 
 Toolbar accent colors use the host theme's `PrimaryBrush` / `SuccessBrush` / `DangerBrush` resource
 keys when present, and `CvPropEditCtrl` uses `SecondaryTextBrush` / `PrimaryBrush`; both fall back to

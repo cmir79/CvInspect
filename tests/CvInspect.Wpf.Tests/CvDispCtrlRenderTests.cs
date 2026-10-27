@@ -1074,6 +1074,8 @@ public class CvDispCtrlRenderTests
             "key constants spell the documented strings");
         Check(CvDispCtrl.ViewBackgroundKey == "CvDispViewBackgroundBrush",
             $"the view background key spells the README string, so x:Static and a typed key reach the same slot: {CvDispCtrl.ViewBackgroundKey}");
+        Check(CvDispCtrl.PlaceholderForegroundKey == "CvDispPlaceholderForegroundBrush",
+            $"the placeholder text key spells the README string: {CvDispCtrl.PlaceholderForegroundKey}");
     }
 
     /// <summary>인스턴스 속성은 키를 이기고, 걷으면 다음 출처로 돌아간다 — 스타일 세터가 있으면 그것, 없으면 키. 키 참조를 공개 속성 자체에
@@ -1152,6 +1154,7 @@ public class CvDispCtrlRenderTests
                 ["CvDispStatusBarForegroundBrush"] = Color.FromRgb(1, 2, 5),
                 ["CvDispSeparatorBrush"] = Color.FromRgb(1, 2, 6),
                 ["CvDispViewBackgroundBrush"] = Color.FromRgb(1, 2, 7),
+                ["CvDispPlaceholderForegroundBrush"] = Color.FromRgb(1, 2, 8),
                 ["DangerBrush"] = Color.FromRgb(4, 5, 6),
             };
             var r = Chrome(Shoot(host), host, Default, out var ok);
@@ -1161,7 +1164,7 @@ public class CvDispCtrlRenderTests
             lock (warnings)
             {
                 var all = string.Join(" | ", warnings);
-                foreach (var key in new[] { "CvDispToolbarBackgroundBrush", "CvDispStatusBarBackgroundBrush", "CvDispStatusBarForegroundBrush", "CvDispSeparatorBrush", "CvDispViewBackgroundBrush" })
+                foreach (var key in new[] { "CvDispToolbarBackgroundBrush", "CvDispStatusBarBackgroundBrush", "CvDispStatusBarForegroundBrush", "CvDispSeparatorBrush", "CvDispViewBackgroundBrush", "CvDispPlaceholderForegroundBrush" })
                     Check(warnings.Any(w => w.Contains("'" + key + "'")), $"the misplaced key {key} is named in a warning: [{all}]");
                 Check(!warnings.Any(w => w.Contains("DangerBrush")), $"a host library key of another type stays quiet: [{all}]");
             }
@@ -1205,6 +1208,59 @@ public class CvDispCtrlRenderTests
         host.Resources.MergedDictionaries.Clear();
         var sd = Shoot(host);
         Check(ViewAt(sd, host) == CtrlBackground, $"removing the host key brings the control's #2A2A2A back: {ViewAt(sd, host)}");
+    });
+
+    /// <summary>무이미지 안내 글자 색은 키·속성을 따른다 — 밝은 바탕(#E6E6E6)에서 기본 #9E9E9E 는 대비가 약 2.3:1 이라 소비자가 바꿀 길을 요청했다.
+    /// 글자 화소는 "기본 회색보다 지정 색에 가까운 화소" 로 센다(경계는 바탕과 섞이므로 정확히 같은 색만 세면 0 이 될 수 있다).
+    /// 살아 있음: 키가 없을 때 같은 계수는 0 이어야 하고(지정 색이 기본 화면에 없다), 키를 두면 0 보다 커야 한다.
+    /// 단색이 아닌 브러시는 기본색으로 남고 경고한다.</summary>
+    [Fact]
+    public void PlaceholderTextFollowsItsKeyAndProperty() => RunSta(() =>
+    {
+        var warnings = new List<string>();
+        var before = CvLog.Sink;
+        CvLog.Sink = (level, src, msg, ex) => { if (level == CvLogLevel.Warning) lock (warnings) warnings.Add(msg); };
+        lock (warnings) warnings.Clear();
+        try
+        {
+            var gray = Color.FromRgb(0x9E, 0x9E, 0x9E);
+            var keyed = Color.FromRgb(0x10, 0xD0, 0x30);
+            var own = Color.FromRgb(0xD0, 0x20, 0xC0);
+            var (host, ctrl) = Hosted(withFrame: false);
+            int Count(Color want)
+            {
+                var s = Shoot(host);
+                var surf = SurfaceRect(host);
+                int n = 0;
+                for (int y = (int)(surf.Top * s.S); y < (int)(surf.Bottom * s.S); y++)
+                    for (int x = (int)(surf.Left * s.S); x < (int)(surf.Right * s.S); x++)
+                    {
+                        var c = s.At(x, y);
+                        if (Dist2(c, want) < Dist2(c, gray) && Dist2(c, want) < Dist2(c, CtrlBackground)) n++;
+                    }
+                return n;
+            }
+
+            Check(Count(keyed) == 0, "control: without the key no pixel of the empty view is closer to the keyed color than to the default gray");
+            host.Resources.MergedDictionaries.Add(new ResourceDictionary { [CvDispCtrl.PlaceholderForegroundKey] = new SolidColorBrush(keyed) });
+            var nKey = Count(keyed);
+            Check(nKey > 0, $"the host key colors the no-image text: keyed pixels={nKey}");
+
+            ctrl.PlaceholderForeground = new SolidColorBrush(own);
+            Check(Count(own) > 0 && Count(keyed) == 0, "the instance PlaceholderForeground beats the host key");
+            ctrl.ClearValue(CvDispCtrl.PlaceholderForegroundProperty);
+            Check(Count(keyed) > 0, "clearing the instance value goes back to the host key");
+
+            host.Resources.MergedDictionaries.Clear();
+            Check(Count(keyed) == 0, "removing the key brings the default gray back");
+
+            ctrl.PlaceholderForeground = new LinearGradientBrush(own, keyed, 0);
+            Check(Count(own) == 0 && Count(keyed) == 0, "a non-solid brush keeps the default gray instead of breaking the draw");
+            lock (warnings)
+                Check(warnings.Count(w => w.Contains("Placeholder text brush is a LinearGradientBrush")) == 1,
+                    $"a non-solid placeholder brush is named once in a warning, not on every repaint: [{string.Join(" | ", warnings)}]");
+        }
+        finally { CvLog.Sink = before; }
     });
 
     /// <summary>키·속성이 없으면 영상 영역은 컨트롤의 Background 가 비친다 — 호스트가 컨트롤에 직접 준 Background 도 종전처럼 보여야 한다.

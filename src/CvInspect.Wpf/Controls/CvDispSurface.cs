@@ -93,6 +93,20 @@ internal sealed partial class CvDispSurface : FrameworkElement
         }
     }
 
+    private ViPaint? _hintPaint;
+
+    /// <summary>무이미지 안내 글자 색. null 이면 코어 기본(#9E9E9E).</summary>
+    public ViPaint? PlaceholderPaint
+    {
+        get => _hintPaint;
+        set
+        {
+            if (_hintPaint == value) return;
+            _hintPaint = value;
+            if (_bitmap is null) InvalidateVisual();   // 플레이스홀더가 떠 있을 때만 다시 그리면 된다
+        }
+    }
+
     public CvDispSurface()
     {
         ClipToBounds = true;

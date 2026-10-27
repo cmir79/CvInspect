@@ -13,7 +13,7 @@ internal static class ViDrawBldr
     /// <summary>라벨 배경 — 반투명 검정.</summary>
     internal static readonly ViPaint LabelBack = ViPaint.Argb(200, 0, 0, 0);
 
-    /// <summary>무이미지 안내 문구 색.</summary>
+    /// <summary>무이미지 안내 문구 기본 색 — 호스트가 색을 주지 않을 때(UI 패키지의 안내 글자 색 키·속성).</summary>
     internal static readonly ViPaint HintGray = ViPaint.Argb(255, 0x9E, 0x9E, 0x9E);
 
     /// <summary>편집 도형 라벨 글자 크기(pt).</summary>
@@ -233,24 +233,25 @@ internal static class ViDrawBldr
         }
     }
 
-    /// <summary>무이미지 안내 — 표면 가운데에 제목(과 불러오기 힌트). 표면이 너무 작으면 아무것도 안 낸다.</summary>
-    internal static void Placeholder(List<ViPrim> dst, double viewW, double viewH, string title, string? hint, ITextMetricPort tm)
+    /// <summary>무이미지 안내 — 표면 가운데에 제목(과 불러오기 힌트). 표면이 너무 작으면 아무것도 안 낸다. <paramref name="paint"/> 가 없으면 <see cref="HintGray"/>.</summary>
+    internal static void Placeholder(List<ViPrim> dst, double viewW, double viewH, string title, string? hint, ITextMetricPort tm, ViPaint? paint = null)
     {
         if (viewW < 60 || viewH < 40) return;
+        var p = paint ?? HintGray;
         var titleDip = ViDrawGeom.UiDip(14);
-        var tm1 = tm.Measure(title, titleDip, ViFontRole.Ui, HintGray);
+        var tm1 = tm.Measure(title, titleDip, ViFontRole.Ui, p);
         var cx = viewW / 2;
         var cy = viewH / 2;
         if (hint is null)
         {
             // 힌트가 빠지면 제목 혼자 남으므로 두 줄 기준의 위쪽 자리가 아니라 정가운데로 온다.
-            dst.Add(new ViPrimText(title, 14, titleDip, ViFontRole.Ui, HintGray, (cx - tm1.Width / 2, cy - tm1.Height / 2), tm1));
+            dst.Add(new ViPrimText(title, 14, titleDip, ViFontRole.Ui, p, (cx - tm1.Width / 2, cy - tm1.Height / 2), tm1));
             return;
         }
         var hintDip = ViDrawGeom.UiDip(11);
-        var tm2 = tm.Measure(hint, hintDip, ViFontRole.Ui, HintGray);
-        dst.Add(new ViPrimText(title, 14, titleDip, ViFontRole.Ui, HintGray, (cx - tm1.Width / 2, cy - tm1.Height - 2), tm1));
-        dst.Add(new ViPrimText(hint, 11, hintDip, ViFontRole.Ui, HintGray, (cx - tm2.Width / 2, cy + 2), tm2));
+        var tm2 = tm.Measure(hint, hintDip, ViFontRole.Ui, p);
+        dst.Add(new ViPrimText(title, 14, titleDip, ViFontRole.Ui, p, (cx - tm1.Width / 2, cy - tm1.Height - 2), tm1));
+        dst.Add(new ViPrimText(hint, 11, hintDip, ViFontRole.Ui, p, (cx - tm2.Width / 2, cy + 2), tm2));
     }
 
     /// <summary>편집 도형 이름표 — 기준점에서 오른쪽 dx, 글자 블록 높이 + dy 만큼 위.</summary>

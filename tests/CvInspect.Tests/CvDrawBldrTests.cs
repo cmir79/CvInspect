@@ -451,6 +451,14 @@ public class CvDrawBldrTests
         var h = (ViPrimText)two[1];
         NearPt((150 - 13.2, 102), h.Origin, "the hint sits just below the center line");
         Assert.True(h.SizePt == 11f && h.Text == "Open", "the hint is the smaller 11 pt line");
+
+        // 호스트가 준 색(UI 패키지의 안내 글자 색 키)은 두 줄 모두에 간다 — 한 줄만 바뀌면 밝은 바탕에서 힌트만 옅게 남는다.
+        var host = ViPaint.Argb(255, 0x5F, 0x5F, 0x5F);
+        var colored = new List<ViPrim>();
+        ViDrawBldr.Placeholder(colored, 300, 200, "No image", "Open", Tm, host);
+        Assert.True(colored.OfType<ViPrimText>().Count() == 2 && colored.OfType<ViPrimText>().All(x => IsArgb(x.Paint, host)),
+            "a host placeholder color paints both the title and the hint");
+        Assert.True(!IsArgb(host, ViDrawBldr.HintGray), "control: the host color differs from the default gray, so the check above can fail");
     }
 
     // ───────────── Inflate ─────────────

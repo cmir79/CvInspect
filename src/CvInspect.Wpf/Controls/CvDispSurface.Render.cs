@@ -45,7 +45,7 @@ internal sealed partial class CvDispSurface
             // 무이미지 플레이스홀더 — 중앙 안내 문구만 (히트 없음 — 우클릭 메뉴 등 상위 인터랙션 유지).
             // 불러오기가 없는 화면에서는 힌트 문구가 되지도 않는 조작을 시키는 셈이라 제목만 남긴다.
             ViDrawBldr.Placeholder(_prims, ActualWidth, ActualHeight, CvLoc.T("cv:NoImage"),
-                _showLoadHint ? CvLoc.T("cv:NoImageHint") : null, tm);
+                _showLoadHint ? CvLoc.T("cv:NoImageHint") : null, tm, _hintPaint);
             CvDispDrawAdp.Draw(dc, _prims, ppd);
             return;
         }
