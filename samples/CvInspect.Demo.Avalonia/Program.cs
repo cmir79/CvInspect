@@ -12,8 +12,8 @@ internal static class Program
     public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>()
         .UsePlatformDetect()
         .WithInterFont()
-        // 표시 컨트롤 툴바의 이모지(📸 ⏯️ ⛶ 등)와 ↻ ▲ ▼ 같은 기호는 Inter 에 없다. Avalonia 는 글리프 없는 글자의 OS 폰트 자동 대체가
-        // 약해 그대로 두면 두부(□)로 뜬다 — 대체 사슬을 명시한다. 글리프가 없을 때만 쓰이니 본문 글자에는 영향이 없다.
+        // 데모 창 버튼의 ↻ ▲ ▼ 같은 기호는 Inter 에 없다(표시 컨트롤 툴바 아이콘은 벡터 경로라 글꼴과 무관하다). Avalonia 는 글리프 없는
+        // 글자의 OS 폰트 자동 대체가 약해 그대로 두면 두부(□)로 뜬다 — 대체 사슬을 명시한다. 글리프가 없을 때만 쓰이니 본문 글자에는 영향이 없다.
         .With(new FontManagerOptions
         {
             FontFallbacks =

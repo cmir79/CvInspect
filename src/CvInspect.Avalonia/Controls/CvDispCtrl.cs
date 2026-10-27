@@ -33,9 +33,6 @@ namespace CvInspect.Avalonia.Controls;
 /// </summary>
 public sealed partial class CvDispCtrl : Grid
 {
-    // 툴바 이모지 글꼴 — 앱의 글꼴 대체 설정에 기대지 않고 버튼에 컬러 이모지 글꼴 목록을 직접 준다(Windows·macOS·Linux 순).
-    // 다 없으면 기본 글꼴로 떨어지고, 거기서 글리프를 못 찾으면 플랫폼 대체에 맡긴다.
-    private static readonly FontFamily EmojiFont = new("Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji");
     private static readonly FontFamily StatusFont = new(CvDispDrawAdp.DataFontNames);
 
     private readonly CvDispSurface _surface = new();
@@ -84,14 +81,14 @@ public sealed partial class CvDispCtrl : Grid
         // 묻지 않는 이유도 그쪽). 거절하면 버튼 상태도 다시 정한다(⏯ 는 OnPlayToggle 의 되돌림이 같은 일을 한다): 호스트가 CanExecuteChanged
         // 없이 CanExecute 를 false 로 바꿨다면 이 클릭이 그것을 알려 준 유일한 신호이고, 다시 정하지 않으면 버튼이 살아 보이는데 눌러도
         // 아무 일이 없는 채로 남는다.
-        _grabBtn = MakeToolButton(new Button(), "📸", "Grab");
+        _grabBtn = MakeToolButton(new Button(), CvToolIconKind.Camera, "Grab");
         _grabBtn.Click += (_, _) =>
         {
             if (CvCamCmd.Click(GrabCommand) == CvCmdRun.Refused) RefreshCamButtons();
         };
         _camPanel.Children.Add(_grabBtn);
 
-        _playBtn = MakeToolButton(new ToggleButton(), "⏯️", "Play / Stop");
+        _playBtn = MakeToolButton(new ToggleButton(), CvToolIconKind.PlayPause, "Play / Stop");
         _playBtn.Foreground = Brushes.White;   // 바탕(강조색)은 ApplyAccents 가 칠한다
         PinAccent(_playBtn, checkedOnly: false);
         _playBtn.IsCheckedChanged += OnPlayToggle;
@@ -100,15 +97,15 @@ public sealed partial class CvDispCtrl : Grid
 
         _dispPanel = new StackPanel { Orientation = Orientation.Horizontal };
         DockPanel.SetDock(_dispPanel, Dock.Right);
-        var fitBtn = MakeToolButton(new Button(), "⛶", "Fit");
+        var fitBtn = MakeToolButton(new Button(), CvToolIconKind.Fit, "Fit");
         fitBtn.Click += (_, _) => FitToView();
-        var zoomInBtn = MakeToolButton(new Button(), "➕", "Zoom In");
+        var zoomInBtn = MakeToolButton(new Button(), CvToolIconKind.ZoomIn, "Zoom In");
         zoomInBtn.Click += (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep);
-        var zoomOutBtn = MakeToolButton(new Button(), "➖", "Zoom Out");
+        var zoomOutBtn = MakeToolButton(new Button(), CvToolIconKind.ZoomOut, "Zoom Out");
         zoomOutBtn.Click += (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep);
 
         // 팬 모드 토글 — 켜면 드래그가 항상 팬 (편집 도형이 화면을 덮어도 이동/리사이즈 대신 화면 이동)
-        var panBtn = MakeToolButton(new ToggleButton(), "✋", "Pan");
+        var panBtn = MakeToolButton(new ToggleButton(), CvToolIconKind.Hand, "Pan");
         _panBtn = panBtn;
         PinAccent(panBtn, checkedOnly: true);
         panBtn.IsCheckedChanged += (_, _) =>
@@ -130,7 +127,7 @@ public sealed partial class CvDispCtrl : Grid
             }
         };
 
-        var clearBtn = MakeToolButton(new Button(), "🧹", "Clear");
+        var clearBtn = MakeToolButton(new Button(), CvToolIconKind.Broom, "Clear");
         clearBtn.Click += (_, _) => _surface.SetOverlay(null);   // 결과 오버레이만 지움 — 다음 검사가 새 오버레이로 교체
 
         // 버튼 순서/그룹 = 우클릭 메뉴와 동일 (팬 │ 화면 맞춤 → 줌 │ 클리어)
@@ -273,14 +270,13 @@ public sealed partial class CvDispCtrl : Grid
         _statusLeft.Text = CvDispStatus.ProbeText(_pointer is { } p ? _surface.ProbeImage(p) : null);
     }
 
-    // MinWidth 44 — 이모지 글리프마다 어드밴스 폭이 달라(컬러 이모지 vs 텍스트 기호) 버튼 폭이 제각각이 되는 것을 흡수.
-    // 툴팁 문구는 번역하지 않는 고정 영어다 — 회귀가 이 문구로 버튼을 찾는다. 이모지만 있는 버튼이라 같은 문구를 접근성 이름으로도 준다
-    // (안 주면 화면 읽기 프로그램에는 이모지 이름만 읽힌다).
-    private static T MakeToolButton<T>(T btn, string content, string tooltip) where T : Button
+    // 아이콘은 글자가 아니라 벡터 경로(CvToolIcon — 근거는 그 파일 머리)라 버튼 가운데에 같은 크기로 앉는다. MinWidth 44·MinHeight 40 은
+    // WPF 판 툴바와 같은 버튼 크기다.
+    // 툴팁 문구는 번역하지 않는 고정 영어다 — 회귀가 이 문구로 버튼을 찾는다. 그림만 있는 버튼이라 같은 문구를 접근성 이름으로도 준다
+    // (안 주면 화면 읽기 프로그램에는 이름 없는 버튼으로 읽힌다).
+    private static T MakeToolButton<T>(T btn, CvToolIconKind icon, string tooltip) where T : Button
     {
-        btn.Content = content;
-        btn.FontFamily = EmojiFont;
-        btn.FontSize = 16;
+        btn.Content = new CvToolIcon(icon);
         btn.Padding = new Thickness(10, 4, 10, 4);
         btn.MinWidth = 44;
         btn.MinHeight = 40;

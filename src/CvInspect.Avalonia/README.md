@@ -178,9 +178,12 @@ and fall back to fixed colors otherwise. **The Fluent and Simple themes do not d
 with those themes the fixed colors are used unless the application defines them.
 
 Text in the display (status bar, overlay labels) uses the font list
-`Consolas, Cascadia Mono, DejaVu Sans Mono, Menlo`; toolbar icons are emoji and request
-`Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji`. On Linux, install a color emoji font
-(e.g. `fonts-noto-color-emoji`) or the toolbar icons may show as boxes.
+`Consolas, Cascadia Mono, DejaVu Sans Mono, Menlo`. Toolbar icons are vector paths, not text, so
+they need no icon or emoji font. They are drawn in the button's text color, which comes from the
+host theme (normal and disabled); the accented ⏯ and the pressed ✋ are drawn in white.
+**A dark theme must also set `ToolbarBackgroundKey`** (as in the example above): the toolbar's default
+background is the fixed light `#FAFAFA`, while a dark theme's button text is white, so the icons would
+be white on a light bar and all but invisible.
 
 ## Targets
 
@@ -203,7 +206,7 @@ What that does not cover:
   texture would not be seen;
 - real input devices (mouse, touch, touchpads) and real high-DPI screens — render scaling is set by
   the tests, not by a display;
-- macOS, and Linux desktops beyond the CI runner (fonts, emoji, fontconfig set-ups).
+- macOS, and Linux desktops beyond the CI runner (fonts, fontconfig set-ups).
 
 ## Limits
 
