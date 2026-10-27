@@ -7,7 +7,9 @@
 [OpenCvSharp](https://github.com/shimat/opencvsharp). The same controls and contract as
 [CvInspect.Wpf](https://www.nuget.org/packages/CvInspect.Wpf), for Windows and Linux (macOS is not verified).
 
-**First release (0.34).** See [Targets](#targets) for the supported platforms.
+**First release (0.34).** The controls are checked by a headless test suite in CI on Windows and Linux
+— Skia drawing into an off-screen frame, with no window and no GPU. See [Targets](#targets) for what
+that covers and what it does not.
 
 - **`CvDispCtrl`** — an image display control with a dockable toolbar (grab / live toggle / fit /
   zoom / pan / clear), a status bar (cursor position, pixel value, image size, zoom level), and a
@@ -185,6 +187,24 @@ Text in the display (status bar, overlay labels) uses the font list
 `net8.0`, AnyCPU, Avalonia 12.1.4 or later. Windows and Linux are the supported targets; macOS is not
 verified.
 
+What has been checked, and how: `tests/CvInspect.Avalonia.Tests` runs in CI on Windows and on Linux.
+It puts the controls on Avalonia's headless platform with the Skia renderer (`UseHeadlessDrawing =
+false`), reads back the rendered frame and compares pixels — each of the three frame formats
+through `ICvPixelSource` against the `Mat` path, overlays, shapes, theme keys — and drives the
+toolbar, pointer, wheel and property-editor inputs from the tests. Nearest-neighbour zoom and label
+size are also checked at render scalings 1.25 and 1.5. The test
+application's default font is Inter; the display's own monospace list resolves differently per OS,
+so the tests that measure that text compare ratios rather than pixel counts.
+
+What that does not cover:
+
+- a real window — no desktop platform (`Avalonia.Desktop`, Win32, X11) has run these controls yet;
+- the GPU renderer — the headless frame is drawn on the CPU, so a GPU path that shows a stale
+  texture would not be seen;
+- real input devices (mouse, touch, touchpads) and real high-DPI screens — render scaling is set by
+  the tests, not by a display;
+- macOS, and Linux desktops beyond the CI runner (fonts, emoji, fontconfig set-ups).
+
 ## Limits
 
 - **Frame cost is higher than in CvInspect.Wpf.** Gray8 and Bgr24 frames are converted to BGRA before
@@ -197,7 +217,10 @@ verified.
 - **Telemetry.** Avalonia's build tooling (`Avalonia.BuildServices`) sends build statistics, and it
   reaches projects that reference only this library. This package does not turn it off on your
   behalf. Set the environment variable `AVALONIA_TELEMETRY_OPTOUT` (any value) on build machines to
-  opt out; see Avalonia's documentation for what is sent and which license tiers can opt out.
+  opt out. The build task checks only that the variable exists, and ignores it when an Avalonia
+  Accelerate license key of the Community or Trial tier is present (read from the task's code in
+  `Avalonia.BuildServices` 11.3.2; the sending itself was not observed). What is sent is listed in that
+  package's README.
 - Everything listed as a limit of the CvInspect toolkit in the root README also applies.
 
 ## Differences from CvInspect.Wpf
