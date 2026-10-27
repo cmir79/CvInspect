@@ -7,6 +7,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Avalonia 빌드 도구(Avalonia.BuildServices)의 빌드 통계 전송을 끈다 — 값은 무엇이든 된다.
+env:
+  AVALONIA_TELEMETRY_OPTOUT: 1
+
 jobs:
   publish:
     # Windows 인 이유: CvInspect.Wpf 가 net8.0-windows 라 다른 곳에서는 pack 이 안 되고,

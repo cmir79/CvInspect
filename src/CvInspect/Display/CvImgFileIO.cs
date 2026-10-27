@@ -52,9 +52,13 @@ internal static class CvImgFileIO
 
     /// <summary>파일을 읽어 불러오기 명령에 넘긴다. Mat 소유권은 명령 수신자(VM)로 넘어간다 — 받을 곳이 없으면 여기서 해제.
     /// CanExecute 는 묻지 않는다(넘길 Mat 이 대화상자를 닫은 뒤에야 생긴다 — 거절은 Execute 안에서 한다).</summary>
-    internal static void LoadInto(string path, ICommand? loadFrameCommand)
+    internal static void LoadInto(string path, ICommand? loadFrameCommand) => LoadBytesInto(File.ReadAllBytes(path), loadFrameCommand);
+
+    /// <summary>파일 바이트를 디코드해 불러오기 명령에 넘긴다 — 규칙은 <see cref="LoadInto"/> 와 같다. 경로가 없는 저장소(파일 선택기가
+    /// 스트림만 주는 경우)에서 읽은 바이트를 받는 자리다.</summary>
+    internal static void LoadBytesInto(byte[] bytes, ICommand? loadFrameCommand)
     {
-        var mat = Decode(File.ReadAllBytes(path));
+        var mat = Decode(bytes);
         if (loadFrameCommand is { } cmd) cmd.Execute(mat);
         else mat.Dispose();
     }
@@ -87,10 +91,16 @@ internal static class CvImgFileIO
     /// dispose 했을 수 있어 건드리지 않는다.</summary>
     /// <exception cref="InvalidOperationException">표시 중인 프레임이 없다.</exception>
     /// <exception cref="IOException">인코드 실패.</exception>
-    internal static void WriteFrame(string path, CvFrameBuf frame)
+    internal static void WriteFrame(string path, CvFrameBuf frame) => File.WriteAllBytes(path, EncodeFrame(path, frame));
+
+    /// <summary>표시 중인 프레임 → 파일 바이트. 형식은 <paramref name="fileName"/> 의 확장자가 정한다(<see cref="Encode"/>).
+    /// 원본·예외는 <see cref="WriteFrame"/> 와 같다 — 경로가 없는 저장소에 스트림으로 쓰는 자리다.</summary>
+    /// <exception cref="InvalidOperationException">표시 중인 프레임이 없다.</exception>
+    /// <exception cref="IOException">인코드 실패.</exception>
+    internal static byte[] EncodeFrame(string fileName, CvFrameBuf frame)
     {
         using var mat = frame.SnapMat()
             ?? throw new InvalidOperationException("Unsupported frame format");
-        File.WriteAllBytes(path, Encode(path, mat));
+        return Encode(fileName, mat);
     }
 }
