@@ -34,7 +34,8 @@ internal sealed partial class CvDispSurface
 
     protected override void OnRender(DrawingContext dc)
     {
-        dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));   // 히트 영역 확보
+        // 히트 영역 확보 겸 영상 영역 바탕 — 테마 바탕이 없으면 투명(부모 Background 가 비친다).
+        dc.DrawRectangle(_viewBg ?? Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
         var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var tm = new CvDispTextPort(ppd);
         ViDrawBldr.Clear(_prims);

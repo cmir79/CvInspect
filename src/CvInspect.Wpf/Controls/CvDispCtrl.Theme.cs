@@ -1,6 +1,6 @@
-// CvDispCtrl 의 색 표면 — 툴바·상태 줄 색과 ⏯·✋ 강조색을 어디서 가져오는지.
+// CvDispCtrl 의 색 표면 — 툴바·상태 줄·영상 영역 바탕 색과 ⏯·✋ 강조색을 어디서 가져오는지.
 // 먼저 있는 것이 이긴다: 이 인스턴스에 준 속성 값(직접 값·바인딩·스타일 세터) → 호스트 리소스 키(색 사전 한 곳에서 모든
-// 인스턴스) → 고정 기본색. 키는 리소스 참조로 붙잡아 두므로 호스트가 실행 중 사전을 갈아 끼우면 다시 띄우지 않아도 따라온다.
+// 인스턴스) → 고정 기본색(영상 영역 바탕만은 고정색이 아니라 컨트롤의 Background 로 떨어진다). 키는 리소스 참조로 붙잡아 두므로 호스트가 실행 중 사전을 갈아 끼우면 다시 띄우지 않아도 따라온다.
 
 using System.Windows;
 using System.Windows.Media;
@@ -25,6 +25,15 @@ public sealed partial class CvDispCtrl
     /// <summary>구분선 리소스 키 — 툴바 버튼 그룹 사이 구분선(도킹 방향에 따라 세로·가로), 툴바가 영상 영역과 맞닿는 가장자리선,
     /// 상태 줄 위 가장자리선 셋을 함께 칠한다. 없으면 #DDDDDD.</summary>
     public const string SeparatorBrushKey = "CvDispSeparatorBrush";
+
+    /// <summary>영상 영역 바탕 리소스 키 — 이미지 바깥 여백(맞춤 여백·축소 시 주변)과 무이미지 화면을 칠한다. 이미지는 그 위에 그린다
+    /// (불투명 픽셀은 가리고, Bgra32 프레임의 반투명 픽셀은 이 색과 섞인다). 이 브러시 밑에는 늘 컨트롤 Background(#2A2A2A)가 있어
+    /// 반투명 브러시는 호스트가 아니라 그 색과 섞인다. ⚠ 미재현 위험(코드 독해): 배치 반올림이 꺼진 호스트에서 비정수 DPI(125%·150%)면
+    /// 툴바·상태 줄과 맞닿는 한 픽셀 줄에 밑의 어두운 Background 가 섞여 밝은 바탕 위에 옅은 선으로 보일 수 있다.
+    /// 없으면 컨트롤의 <c>Background</c>(기본 #2A2A2A)가 그대로 보인다 — 밝은 테마 사전에만 두면 다크 쪽은 종전 모습이다.
+    /// 무이미지 안내 글자는 #9E9E9E 고정이라 아주 밝은 바탕에서는 옅다. 결과 오버레이의 이름 붙은 색도 어두운 바탕 기준으로 고른 것이라,
+    /// 바탕을 밝게 하면 호스트가 오버레이 색을 거기에 맞춰 고른다.</summary>
+    public const string ViewBackgroundKey = "CvDispViewBackgroundBrush";
 
     public static readonly DependencyProperty ToolbarBackgroundProperty = RegisterChrome(nameof(ToolbarBackground));
 
@@ -68,6 +77,16 @@ public sealed partial class CvDispCtrl
         set => SetValue(SeparatorBrushProperty, value);
     }
 
+    public static readonly DependencyProperty ViewBackgroundProperty = RegisterChrome(nameof(ViewBackground));
+
+    /// <summary>이 인스턴스의 영상 영역 바탕. 주면 <see cref="ViewBackgroundKey"/> 를 이긴다. null(기본)이면 키 → 없으면 컨트롤의
+    /// <c>Background</c>(기본 #2A2A2A — 호스트가 컨트롤에 직접 준 Background 도 여기서 산다). 출처 규칙은 <see cref="ToolbarBackground"/> 와 같다.</summary>
+    public Brush? ViewBackground
+    {
+        get => (Brush?)GetValue(ViewBackgroundProperty);
+        set => SetValue(ViewBackgroundProperty, value);
+    }
+
     // 호스트 키 슬롯 — 생성자에서 요소를 다 만든 뒤(행·자식을 붙이기 전) SetResourceReference 로 키에 묶는다. 키가 없으면 기본값(null)으로 남고, 호스트가 사전을 바꾸면
     // WPF 가 리소스 참조를 다시 풀어 값이 바뀐다 — 그 변경 콜백이 다시 칠한다. 공개 속성과 따로 두는 이유: 공개 속성에 참조를 걸면
     // 그것이 Local 값이라 호스트의 스타일 세터를 조용히 이기고, 호스트가 값을 줬다가 걷으면 참조까지 지워져 키로 돌아오지 않는다.
@@ -78,6 +97,7 @@ public sealed partial class CvDispCtrl
     private static readonly DependencyProperty StatusBarBackgroundSlotProperty = RegisterSlot("StatusBarBackgroundSlot");
     private static readonly DependencyProperty StatusBarForegroundSlotProperty = RegisterSlot("StatusBarForegroundSlot");
     private static readonly DependencyProperty SeparatorBrushSlotProperty = RegisterSlot("SeparatorBrushSlot");
+    private static readonly DependencyProperty ViewBackgroundSlotProperty = RegisterSlot("ViewBackgroundSlot");
 
     // 강조색 — 호스트 테마가 정의한 컨트롤 라이브러리 키(PrimaryBrush/SuccessBrush/DangerBrush)를 있으면 그대로 써서 화면 전체
     // 팔레트를 따르고, 없으면(테마 미병합·콘솔 하네스) 고정색으로 떨어진다. 이 컨트롤은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다.
@@ -114,6 +134,7 @@ public sealed partial class CvDispCtrl
         SetResourceReference(StatusBarBackgroundSlotProperty, StatusBarBackgroundKey);
         SetResourceReference(StatusBarForegroundSlotProperty, StatusBarForegroundKey);
         SetResourceReference(SeparatorBrushSlotProperty, SeparatorBrushKey);
+        SetResourceReference(ViewBackgroundSlotProperty, ViewBackgroundKey);
         SetResourceReference(PrimarySlotProperty, "PrimaryBrush");
         SetResourceReference(SuccessSlotProperty, "SuccessBrush");
         SetResourceReference(DangerSlotProperty, "DangerBrush");
@@ -125,7 +146,8 @@ public sealed partial class CvDispCtrl
         // 남으면 "키가 안 먹는다" 로만 보이므로 알린다. 강조색 키는 호스트 라이브러리의 이름이라 다른 뜻으로 쓰는 정상 구성일 수 있어 조용히 넘긴다.
         if (e.NewValue is not null and not Brush && OwnKeyOf(e.Property) is { } key)
             CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
-                $"Resource '{key}' is a {e.NewValue.GetType().Name}, not a Brush; ignored, the default color is used.");
+                $"Resource '{key}' is a {e.NewValue.GetType().Name}, not a Brush; ignored, "
+                + (key == ViewBackgroundKey ? "the control's Background shows instead." : "the default color is used."));
         ApplyTheme();
     }
 
@@ -134,6 +156,7 @@ public sealed partial class CvDispCtrl
          : slot == StatusBarBackgroundSlotProperty ? StatusBarBackgroundKey
          : slot == StatusBarForegroundSlotProperty ? StatusBarForegroundKey
          : slot == SeparatorBrushSlotProperty ? SeparatorBrushKey
+         : slot == ViewBackgroundSlotProperty ? ViewBackgroundKey
          : null;
 
     /// <summary>현재 출처대로 다시 칠한다 — 속성·슬롯 어느 쪽이 바뀌어도 전부. 몇 개 요소에 브러시를 넣을 뿐이라 나눌 이유가 없다.</summary>
@@ -148,6 +171,8 @@ public sealed partial class CvDispCtrl
         var fg = Pick(StatusBarForegroundProperty, StatusBarForegroundSlotProperty, DefaultStatusFg);
         _statusLeft.Foreground = fg;
         _statusRight.Foreground = fg;
+        // 영상 영역은 기본색으로 떨어지지 않는다 — 둘 다 없으면 null 을 넘겨 컨트롤의 Background 가 비치게 한다(그것이 종전 기본이다).
+        _surface.ViewBackground = GetValue(ViewBackgroundProperty) as Brush ?? GetValue(ViewBackgroundSlotProperty) as Brush;
         ApplyAccents();
     }
 

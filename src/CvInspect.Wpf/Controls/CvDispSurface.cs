@@ -78,6 +78,21 @@ internal sealed partial class CvDispSurface : FrameworkElement
         }
     }
 
+    private Brush? _viewBg;
+
+    /// <summary>영상 영역 바탕(이미지 바깥 여백과 무이미지 화면). null 이면 투명하게 칠해 부모(CvDispCtrl)의 Background 가 비친다 —
+    /// 호스트가 테마 키·속성을 주지 않으면 종전 모습(#2A2A2A, 또는 호스트가 컨트롤에 직접 준 Background) 그대로다.</summary>
+    public Brush? ViewBackground
+    {
+        get => _viewBg;
+        set
+        {
+            if (ReferenceEquals(_viewBg, value)) return;
+            _viewBg = value;
+            InvalidateVisual();
+        }
+    }
+
     public CvDispSurface()
     {
         ClipToBounds = true;
