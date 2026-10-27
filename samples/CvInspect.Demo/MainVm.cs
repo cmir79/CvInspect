@@ -43,6 +43,13 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     private readonly Dictionary<DemoToolEntry, IReadOnlyList<CvEditShape>> _shapeCache = new();
     private readonly IDemoUiPort _ui;
     private readonly string _workDir;
+
+    // 시작 인자 안내(--webcam 이 못 찾음 등) — 곧이어 소스를 여는 상태 문구("opening …", "source: …")가 Status 를 덮으므로
+    // 안내를 따로 들고 있다가 그 문구 뒤에 붙인다. 한 번 보여 준 뒤 사용자가 소스를 바꾸면 지운다.
+    private string? _startNotice;
+    private int _sourceStarts;
+
+    private string WithStartNotice(string status) => _startNotice is null ? status : $"{status}  —  {_startNotice}";
     private readonly string _syntheticDir;
     private ICam? _cam;
     private bool _autoTrain;
@@ -90,7 +97,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         var webcams = Sources.Where(s => !s.IsSynthetic).ToList();
         var hit = key.Length == 0 ? webcams.FirstOrDefault()
                 : webcams.FirstOrDefault(s => s.Key.Contains(key, StringComparison.OrdinalIgnoreCase) || s.Title.Contains(key, StringComparison.OrdinalIgnoreCase));
-        if (hit is null) Status = webcams.Count == 0 ? "--webcam: no USB camera was enumerated on this PC" : $"--webcam: no camera matches '{key}'";
+        if (hit is null) _startNotice = webcams.Count == 0 ? "--webcam: no USB camera was enumerated on this PC" : $"--webcam: no camera matches '{key}'";
         return hit ?? Sources.FirstOrDefault();
     }
 
@@ -110,6 +117,8 @@ public sealed partial class MainVm : ObservableObject, IDisposable
 
     private void StartSource(DemoSource? src)
     {
+        // 시작 인자 안내는 시작 때 고른 소스에만 붙인다 — 사용자가 다른 소스를 고르면 그 안내는 더 이상 지금 화면의 이야기가 아니다.
+        if (_sourceStarts++ > 0) _startNotice = null;
         StopCam();
         _last = null;
         _lastRun?.Dispose();
@@ -123,7 +132,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         cam.FrameAcquired += OnFrameAcquired;
         cam.GrabbingChanged += OnGrabbingChanged;
         _cam = cam;
-        Status = $"opening {src.Title}…";
+        Status = WithStartNotice($"opening {src.Title}…");
         // 웹캠 열기는 초 단위로 걸릴 수 있다(MSMF 첫 열기 ~1 s, 방금 닫은 장치는 더) — UI 를 붙잡지 않는다.
         // 못 열면 예외 메시지에 지금 열거된 장치 목록이 실린다.
         Task.Run(() =>
@@ -141,7 +150,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         }).ContinueWith(t =>
         {
             if (!ReferenceEquals(_cam, cam)) return;   // 그 사이 다른 소스로 바뀜
-            Status = t.Result is null ? $"source: {src.Title}" : $"cannot open {src.Title}: {t.Result}";
+            Status = WithStartNotice(t.Result is null ? $"source: {src.Title}" : $"cannot open {src.Title}: {t.Result}");
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
@@ -382,7 +391,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         var prev = _lastRun;
         _lastRun = DemoRecipeRunner.Run(_recipe, mat);
         prev?.Dispose();
-        Status = (_lastRun.IsOk ? "OK" : "NG") + string.Concat(_lastRun.Tools.Select(t => $"  |  {t.Tool.Key}: {(t.Ok ? "ok" : "NG")}"));
+        Status = WithStartNotice((_lastRun.IsOk ? "OK" : "NG") + string.Concat(_lastRun.Tools.Select(t => $"  |  {t.Tool.Key}: {(t.Ok ? "ok" : "NG")}")));
         Present();
     }
 

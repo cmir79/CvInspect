@@ -68,4 +68,35 @@ public class DemoWindowTests
         }
         Check(!win.Vm.IsLive, "closing the window stops the camera (Closing disposes the view-model)");
     }
+
+    /// <summary>--webcam 이 아무 카메라와도 맞지 않으면 합성으로 시작하되 그 이유가 상태 줄에 남는다 — 종전에는 곧이어 소스를 여는 문구가
+    /// 안내를 덮어 사용자는 왜 웹캠이 아닌지 볼 수 없었다. 첫 레시피가 돌아 상태가 판정으로 바뀐 뒤에도 남아야 한다.</summary>
+    [AvaloniaFact]
+    public void An_unmatched_webcam_argument_keeps_its_notice_after_the_source_opens()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "CvInspect.Avalonia.Tests.Demo." + Guid.NewGuid().ToString("N"));
+        var win = new MainWindow(["--webcam", "NoSuchCamXyzzy"], dir) { Width = 1180, Height = 760 };
+        try
+        {
+            win.Show();
+            var vm = win.Vm;
+            var sw = Stopwatch.StartNew();
+            while (sw.Elapsed < TimeSpan.FromSeconds(20) && !(vm.Frame is CamFrame && vm.Overlay is { Items.Count: > 0 }))
+            {
+                Pump();
+                Thread.Sleep(20);
+            }
+            Check(vm.SelectedSource is { IsSynthetic: true }, "an unmatched --webcam falls back to the synthetic source");
+            Check(vm.Overlay is { Items.Count: > 0 }, $"control: the recipe ran, so the status was rewritten at least twice after the notice (status '{vm.Status}')");
+            Check(vm.Status.Contains("--webcam: no ", StringComparison.Ordinal),
+                $"the --webcam notice survives the 'opening'/'source' and run status lines (status '{vm.Status}')");
+        }
+        finally
+        {
+            win.Close();
+            Pump();
+            try { Directory.Delete(dir, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
 }
