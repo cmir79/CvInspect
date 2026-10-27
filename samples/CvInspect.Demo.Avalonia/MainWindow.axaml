@@ -38,7 +38,8 @@
         </DockPanel>
         <TextBlock Text="{Binding RecipeTitle}" FontWeight="Bold" />
         <WrapPanel Margin="0,4,0,4">
-          <ComboBox x:Name="AddKind" ItemsSource="{Binding Kinds}" SelectedIndex="1" Width="96" Margin="0,0,4,4" />
+          <!-- Fluent 콤보는 여백·화살표 칸이 커서 96 이면 선택한 종류가 "Preproc" 으로 잘린다 — 가장 긴 이름이 읽히는 폭. -->
+          <ComboBox x:Name="AddKind" ItemsSource="{Binding Kinds}" SelectedIndex="1" Width="128" Margin="0,0,4,4" />
           <Button Content="Add" Command="{Binding AddToolCommand}" CommandParameter="{Binding #AddKind.SelectedItem}" Padding="8,2" Margin="0,0,4,4" />
           <Button Content="Remove" Command="{Binding RemoveToolCommand}" Padding="8,2" Margin="0,0,4,4" />
           <Button Content="▲" Command="{Binding MoveUpCommand}" Padding="8,2" Margin="0,0,4,4" />
@@ -47,8 +48,14 @@
           <Button Content="Save…" Command="{Binding SaveCommand}" Padding="8,2" Margin="0,0,4,4" />
           <Button Content="Load…" Command="{Binding LoadCommand}" Padding="8,2" Margin="0,0,4,4" />
         </WrapPanel>
-        <!-- 툴 목록 — 위에서 아래로 실행된다. 선택하면 그 툴의 단계 이미지·도형·파라미터가 아래에 온다. -->
-        <ListBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" Height="118" Margin="0,0,0,8">
+        <!-- 툴 목록 — 위에서 아래로 실행된다. 선택하면 그 툴의 단계 이미지·도형·파라미터가 아래에 온다.
+             Fluent 행은 기본 여백으로 약 38px 라 기본 레시피 4툴 중 3개만 보였다 — 행 여백을 줄이고 높이를 늘려 툴 하나를 더한 5개까지 스크롤 없이 보인다. -->
+        <ListBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" Height="140" Margin="0,0,0,8">
+          <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+              <Setter Property="Padding" Value="8,3" />
+            </Style>
+          </ListBox.Styles>
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="local:DemoToolEntry">
               <TextBlock Text="{Binding Title}" />
