@@ -64,7 +64,7 @@ jobs:
         timeout-minutes: 10
         run: dotnet test --no-build -c Release
 
-      # sln 전체를 pack 한다 — 패키지 넷은 IsPackable 기본값, 테스트·샘플은 IsPackable=false 라 빠진다.
+      # sln 전체를 pack 한다 — 패키지 다섯은 IsPackable 기본값, 테스트·샘플은 IsPackable=false 라 빠진다.
       - name: Pack
         run: dotnet pack -c Release --no-build -o out
 

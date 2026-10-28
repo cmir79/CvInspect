@@ -56,7 +56,7 @@ dotnet add package OpenCvSharp4.runtime.win
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (top/bottom/left/right). |
 | `FitToView()` | method | Same as the ⛶ toolbar button: drop the user's zoom and pan and fit the image. The fit is applied at the next draw, so it can be called while the control is hidden (it shows fitted when it comes back) or before the first frame. Call it on the UI thread. |
-| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` / `PlaceholderForeground` | `Brush` | Per-instance toolbar, status bar, image-area and no-image text colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
+| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` / `PlaceholderForeground` / `ToolbarForeground` | `Brush` | Per-instance toolbar, status bar, image-area, no-image text and toolbar icon colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
 
 ## Property editor
 
@@ -218,7 +218,7 @@ property on the element in the template.
 `ViewBackground` falls back one step further than the others: with neither a value nor the key, the
 image area shows the control's own `Background` (`#2A2A2A` unless the host set it), exactly as before
 0.34. The no-image text defaults to `#9E9E9E`, which reads on both but is faint on a very light
-background (about 2.3:1 on `#E6E6E6`) — set `PlaceholderForegroundKey` alongside. That one takes a
+background (about 2.1:1 on `#E6E6E6`) — set `PlaceholderForegroundKey` alongside. That one takes a
 `SolidColorBrush` only (its `Opacity` multiplies the alpha), because the text is drawn from the core
 draw list's ARGB color; any other brush type keeps the default and logs a warning. The named overlay
 colors were chosen against a dark view — a host that lightens the view should choose its overlay

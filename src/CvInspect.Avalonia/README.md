@@ -88,7 +88,7 @@ project can reference both packages.
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (`Avalonia.Controls.Dock`: top/bottom/left/right). |
 | `FitToView()` | method | Same as the ⛶ toolbar button: drop the user's zoom and pan and fit the image at the next draw. Call it on the UI thread. |
 | `ImageFileFailed` | event | A load or save from the right-click menu failed — see [Differences](#differences-from-cvinspectwpf). |
-| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` / `PlaceholderForeground` | `IBrush` | Per-instance colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
+| `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` / `PlaceholderForeground` / `ToolbarForeground` | `IBrush` | Per-instance colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
 
 The detailed behaviour of each member (fit rules, side handles, command refusal, stroke scaling) is the
 same as in CvInspect.Wpf; its README is the reference for those details.

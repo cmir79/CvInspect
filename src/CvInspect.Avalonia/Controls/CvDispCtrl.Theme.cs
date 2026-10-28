@@ -39,7 +39,7 @@ public sealed partial class CvDispCtrl
     public const string ViewBackgroundKey = CvDispTheme.ViewBackgroundKey;
 
     /// <summary>무이미지 안내 글자(제목·불러오기 힌트) 색 리소스 키. 없으면 #9E9E9E — 어두운 바탕에서도 밝은 바탕에서도 읽히는 중간 회색이지만
-    /// 밝은 바탕(#E6E6E6)에서는 대비가 약 2.3:1 로 낮다. <see cref="ViewBackgroundKey"/> 를 밝게 할 때 함께 둔다.
+    /// 밝은 바탕(#E6E6E6)에서는 대비가 약 2.1:1 로 낮다. <see cref="ViewBackgroundKey"/> 를 밝게 할 때 함께 둔다.
     /// <b>단색 브러시(<see cref="ISolidColorBrush"/>)만 쓴다</b> — 글자는 코어 그리기 목록의 색(ARGB)으로 그려서다. 브러시의 Opacity 는 알파에 곱한다.
     /// 다른 종류(그라데이션 등)는 기본색으로 남고 경고 한 줄을 남긴다.</summary>
     public const string PlaceholderForegroundKey = CvDispTheme.PlaceholderForegroundKey;
