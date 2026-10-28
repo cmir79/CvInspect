@@ -863,14 +863,17 @@ public class CvDispCtrlRenderTests
     // 이 스위트가 재지 않는다 — 리소스 탐색은 부모 요소와 같은 길로 앱 사전에 닿는다.
     // 레이아웃 반올림을 켜고, 시스템 배율대로 그린다 — 1px 선이 장치 화소에 걸쳐 두 줄로 번지면 정확한 색 대조가 안 된다.
 
-    /// <summary>호스트가 고르는 네 색 — 툴바 바탕, 상태 줄 바탕, 상태 줄 글자, 구분선.</summary>
-    private readonly record struct Look(Color Bar, Color Status, Color Text, Color Sep);
+    /// <summary>호스트가 고르는 다섯 색 — 툴바 바탕, 상태 줄 바탕, 상태 줄 글자, 구분선, 영상 영역 바탕(이미지 바깥 여백).</summary>
+    private readonly record struct Look(Color Bar, Color Status, Color Text, Color Sep, Color View);
 
-    private static readonly Look Default = new(Color.FromRgb(0xFA, 0xFA, 0xFA), Color.FromRgb(0xFA, 0xFA, 0xFA), Color.FromRgb(0x55, 0x55, 0x55), Color.FromRgb(0xDD, 0xDD, 0xDD));
+    /// <summary>컨트롤 생성자가 Background 에 넣는 영상 영역 색 — 테마가 없으면 이것이 비친다.</summary>
+    private static readonly Color CtrlBackground = Color.FromRgb(0x2A, 0x2A, 0x2A);
 
-    // 호스트 색 두 벌 — 서로·기본색·영상 영역(0x2A)·버튼 바탕(0xDD)과 겹치지 않게 고른다.
-    private static readonly Look ThemeA = new(Color.FromRgb(0x10, 0x40, 0x80), Color.FromRgb(0x00, 0x00, 0x40), Color.FromRgb(0xFF, 0x00, 0x00), Color.FromRgb(0xF1, 0x07, 0xE3));
-    private static readonly Look ThemeB = new(Color.FromRgb(0x20, 0x80, 0x20), Color.FromRgb(0x40, 0x00, 0x00), Color.FromRgb(0x00, 0xFF, 0x00), Color.FromRgb(0x07, 0xE3, 0xF1));
+    private static readonly Look Default = new(Color.FromRgb(0xFA, 0xFA, 0xFA), Color.FromRgb(0xFA, 0xFA, 0xFA), Color.FromRgb(0x55, 0x55, 0x55), Color.FromRgb(0xDD, 0xDD, 0xDD), CtrlBackground);
+
+    // 호스트 색 두 벌 — 서로·기본색·영상 영역(0x2A)·버튼 바탕(0xDD)·무이미지 안내 글자(0x9E)와 겹치지 않게 고른다.
+    private static readonly Look ThemeA = new(Color.FromRgb(0x10, 0x40, 0x80), Color.FromRgb(0x00, 0x00, 0x40), Color.FromRgb(0xFF, 0x00, 0x00), Color.FromRgb(0xF1, 0x07, 0xE3), Color.FromRgb(0x60, 0x30, 0x10));
+    private static readonly Look ThemeB = new(Color.FromRgb(0x20, 0x80, 0x20), Color.FromRgb(0x40, 0x00, 0x00), Color.FromRgb(0x00, 0xFF, 0x00), Color.FromRgb(0x07, 0xE3, 0xF1), Color.FromRgb(0x10, 0x60, 0x60));
 
     /// <summary>호스트 색 사전. 키는 호스트가 XAML 에 그대로 적는 글자라 상수를 거치지 않고 글자로 둔다 — 이름이 바뀌면 여기서 깨져야 한다.</summary>
     private static ResourceDictionary HostChrome(Look t) => new()
@@ -879,12 +882,14 @@ public class CvDispCtrlRenderTests
         ["CvDispStatusBarBackgroundBrush"] = new SolidColorBrush(t.Status),
         ["CvDispStatusBarForegroundBrush"] = new SolidColorBrush(t.Text),
         ["CvDispSeparatorBrush"] = new SolidColorBrush(t.Sep),
+        ["CvDispViewBackgroundBrush"] = new SolidColorBrush(t.View),
     };
 
-    /// <summary>상태 줄에 글자가 있게 프레임을 넣은 컨트롤을 부모 Grid 에 얹는다 — 부모의 Resources 가 호스트 사전 자리다.</summary>
-    private static (System.Windows.Controls.Grid Host, CvDispCtrl Ctrl) Hosted()
+    /// <summary>상태 줄에 글자가 있게 프레임을 넣은 컨트롤을 부모 Grid 에 얹는다 — 부모의 Resources 가 호스트 사전 자리다.
+    /// withFrame=false 면 무이미지 화면(안내 글자만 있고 상태 줄 글자는 비어 있다 — <see cref="Chrome"/> 이 아니라 <see cref="ViewAt"/> 로 본다).</summary>
+    private static (System.Windows.Controls.Grid Host, CvDispCtrl Ctrl) Hosted(bool withFrame = true)
     {
-        var ctrl = new CvDispCtrl { Frame = Gradient(W * 3) };
+        var ctrl = new CvDispCtrl { Frame = withFrame ? Gradient(W * 3) : null };
         var host = new System.Windows.Controls.Grid { UseLayoutRounding = true };
         host.Children.Add(ctrl);
         return (host, ctrl);
@@ -937,13 +942,49 @@ public class CvDispCtrlRenderTests
 
     private static int Dist2(Color a, Color b) => (a.R - b.R) * (a.R - b.R) + (a.G - b.G) * (a.G - b.G) + (a.B - b.B) * (a.B - b.B);
 
+    /// <summary>영상 표면(툴바·상태 줄 사이) — 표본 좌표를 레이아웃에서 읽는다(툴바 높이를 숫자로 박지 않는다). 반환은 root 기준 DIP 사각.</summary>
+    private static Rect SurfaceRect(DependencyObject root)
+    {
+        CvDispSurface? found = null;
+        void Walk(DependencyObject d)
+        {
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d) && found is null; i++)
+            {
+                var c = VisualTreeHelper.GetChild(d, i);
+                if (c is CvDispSurface s) found = s;
+                else Walk(c);
+            }
+        }
+        Walk(root);
+        var surface = found ?? throw new InvalidOperationException("no CvDispSurface under the root");
+        var tl = surface.TransformToAncestor((Visual)root).Transform(new Point(0, 0));
+        return new Rect(tl, new Size(surface.ActualWidth, surface.ActualHeight));
+    }
+
+    /// <summary>영상 영역 바탕 표본 — 표면 왼쪽 가장자리에서 8 DIP 안쪽, 세로 가운데. 그 자리를 고른 이유:
+    /// 무이미지 안내 글자는 표면 가운데에 가로로 놓여(제목 14pt·힌트 11pt, 폭은 표면의 절반에 못 미친다) 왼쪽 끝에 닿지 않고,
+    /// 이미지가 있으면 맞춤(여백 3%)이 4:3 프레임을 높이에 맞추므로 이 뷰포트(약 800×530 표면)에서 좌우 여백이 50 DIP 남짓이라
+    /// 8 DIP 는 이미지 바깥이다. 위·아래 여백은 몇 DIP 뿐이라 위 모서리는 피한다. 툴바·상태 줄과도 떨어져 있다.</summary>
+    private static (int X, int Y) ViewPoint(Shot s, DependencyObject root)
+    {
+        var r = SurfaceRect(root);
+        return ((int)Math.Round((r.Left + 8) * s.S), (int)Math.Round((r.Top + r.Height / 2) * s.S));
+    }
+
+    private static Color ViewAt(Shot s, DependencyObject root)
+    {
+        var (x, y) = ViewPoint(s, root);
+        return s.At(x, y);
+    }
+
     /// <summary>렌더 결과와 상태 줄 글자 속성을 읽어 한 줄로 적는다(실패 메시지에 그대로 싣는다). 다 맞으면 ok.
     /// 바탕은 버튼·글자가 없는 패딩 자리에서 읽는다 — 툴바는 위 가장자리 안쪽(가운데, 2 DIP), 상태 줄은 맨 아래 줄.
     /// 구분선은 가운데 세로줄에서 툴바 아래 가장자리와 상태 줄 위 가장자리를 각각 찾고, 툴바 높이 가운데에서 선 폭(1 DIP)·위아래로
     /// 17 DIP 이상 이어지는 세로 구분선 둘을 센다(폭과 길이로 거르는 이유: 기본 테마의 버튼 바탕도 0xDD 라 넓은 덩어리로 나오고,
     /// 이모지 획 사이 틈은 좁지만 짧다 — 폭만 보면 다섯이 잡혔다).
     /// 글자는 상태 줄 띠에서 바탕보다 글자색에 가까운 픽셀 수(그려졌다는 증거)와, 두 글자 블록의 Foreground 가 정확히 그 색인지(어느 색인가).
-    /// 띠는 찾은 위 가장자리 아래 — 못 찾으면 맨 아래 18 DIP 로 세고 그렇다고 적는다(구분선만 틀린 것을 글자도 없다고 적지 않게).</summary>
+    /// 띠는 찾은 위 가장자리 아래 — 못 찾으면 맨 아래 18 DIP 로 세고 그렇다고 적는다(구분선만 틀린 것을 글자도 없다고 적지 않게).
+    /// 영상 영역 바탕은 <see cref="ViewPoint"/> 한 점(이미지 바깥 맞춤 여백)에서 읽는다.</summary>
     private static string Chrome(Shot s, DependencyObject root, Look want, out bool ok)
     {
         int cx = s.W / 2;
@@ -979,8 +1020,9 @@ public class CvDispCtrlRenderTests
             }
         var fgs = StatusTexts(root).Select(t => t.Foreground is SolidColorBrush b ? b.Color.ToString() : t.Foreground?.ToString() ?? "null").ToList();
         bool fgOk = fgs.Count == 2 && fgs.All(f => f == want.Text.ToString());
-        ok = tb == want.Bar && st == want.Status && topEdge > 0 && bottomEdge > 0 && groupSepX.Count == 2 && text > 0 && fgOk;
-        return $"scale={s.S}, toolbar={tb} (want {want.Bar}), status={st} (want {want.Status}), separator rows top={topEdge} bottom={bottomEdge}, " +
+        var view = ViewAt(s, root);
+        ok = tb == want.Bar && st == want.Status && topEdge > 0 && bottomEdge > 0 && groupSepX.Count == 2 && text > 0 && fgOk && view == want.View;
+        return $"scale={s.S}, toolbar={tb} (want {want.Bar}), status={st} (want {want.Status}), view margin={view} (want {want.View}), separator rows top={topEdge} bottom={bottomEdge}, " +
                $"group separators={groupSepX.Count} at x=[{string.Join(",", groupSepX)}] (want 2), " +
                $"text pixels={text}{(bottomEdge > 0 ? "" : " (status edge missing — counted in the bottom band)")}, " +
                $"status text brushes=[{string.Join(",", fgs)}] (want 2 × {want.Text})";
@@ -993,7 +1035,7 @@ public class CvDispCtrlRenderTests
     {
         var (host, _) = Hosted();
         var r = Chrome(Shoot(host), host, Default, out var ok);
-        Check(ok, $"without host keys the toolbar and status bar keep their fixed colors: {r}");
+        Check(ok, $"without host keys the toolbar and status bar keep their fixed colors and the view margin shows the control's #2A2A2A: {r}");
     });
 
     /// <summary>호스트가 키를 두면 툴바·상태 줄·글자·구분선이 그 색이다 — 종전에는 코드가 넣은 Local 값이라 어떤 리소스로도 못 덮었다.</summary>
@@ -1003,7 +1045,7 @@ public class CvDispCtrlRenderTests
         var (host, _) = Hosted();
         host.Resources = HostChrome(ThemeA);
         var r = Chrome(Shoot(host), host, ThemeA, out var ok);
-        Check(ok, $"host keys paint the toolbar, the status bar and both of its text blocks, and the separators: {r}");
+        Check(ok, $"host keys paint the toolbar, the status bar and both of its text blocks, the separators, and the view margin: {r}");
     });
 
     /// <summary>실행 중 사전을 갈아 끼우면 다시 띄우지 않아도 따라 바뀌고, 키를 걷으면 종전 색으로 돌아간다 — 한 번 읽어 얼린 브러시면
@@ -1030,15 +1072,23 @@ public class CvDispCtrlRenderTests
         Check(CvDispCtrl.ToolbarBackgroundKey == "CvDispToolbarBackgroundBrush" && CvDispCtrl.StatusBarBackgroundKey == "CvDispStatusBarBackgroundBrush"
               && CvDispCtrl.StatusBarForegroundKey == "CvDispStatusBarForegroundBrush" && CvDispCtrl.SeparatorBrushKey == "CvDispSeparatorBrush",
             "key constants spell the documented strings");
+        Check(CvDispCtrl.ViewBackgroundKey == "CvDispViewBackgroundBrush",
+            $"the view background key spells the README string, so x:Static and a typed key reach the same slot: {CvDispCtrl.ViewBackgroundKey}");
+        Check(CvDispCtrl.PlaceholderForegroundKey == "CvDispPlaceholderForegroundBrush",
+            $"the placeholder text key spells the README string: {CvDispCtrl.PlaceholderForegroundKey}");
+        Check(CvDispCtrl.ToolbarForegroundKey == "CvDispToolbarForegroundBrush",
+            $"the toolbar icon key spells the README string, the same as the Avalonia control's: {CvDispCtrl.ToolbarForegroundKey}");
     }
 
     /// <summary>인스턴스 속성은 키를 이기고, 걷으면 다음 출처로 돌아간다 — 스타일 세터가 있으면 그것, 없으면 키. 키 참조를 공개 속성 자체에
-    /// 걸면 호스트가 값을 줬다 걷는 순간 참조까지 지워져 기본색에 머물고, 스타일 세터는 그 참조(Local)에 조용히 진다. 넷 다 같은 틀로 본다.</summary>
+    /// 걸면 호스트가 값을 줬다 걷는 순간 참조까지 지워져 기본색에 머물고, 스타일 세터는 그 참조(Local)에 조용히 진다. 다섯 다 같은 틀로 본다
+    /// (영상 영역 바탕은 맞춤 여백 한 점으로 — <see cref="Chrome"/>).</summary>
     [Theory]
     [InlineData(nameof(CvDispCtrl.ToolbarBackground))]
     [InlineData(nameof(CvDispCtrl.StatusBarBackground))]
     [InlineData(nameof(CvDispCtrl.StatusBarForeground))]
     [InlineData(nameof(CvDispCtrl.SeparatorBrush))]
+    [InlineData(nameof(CvDispCtrl.ViewBackground))]
     public void InstancePropertiesBeatTheKeysAndFallBackToThem(string prop) => RunSta(() =>
     {
         var (dp, own, styled) = prop switch
@@ -1046,6 +1096,7 @@ public class CvDispCtrlRenderTests
             nameof(CvDispCtrl.ToolbarBackground) => (CvDispCtrl.ToolbarBackgroundProperty, Color.FromRgb(0x12, 0x34, 0x56), Color.FromRgb(0x33, 0x66, 0x99)),
             nameof(CvDispCtrl.StatusBarBackground) => (CvDispCtrl.StatusBarBackgroundProperty, Color.FromRgb(0x12, 0x34, 0x56), Color.FromRgb(0x33, 0x66, 0x99)),
             nameof(CvDispCtrl.StatusBarForeground) => (CvDispCtrl.StatusBarForegroundProperty, Color.FromRgb(0xFF, 0xFF, 0x00), Color.FromRgb(0x00, 0xFF, 0xFF)),
+            nameof(CvDispCtrl.ViewBackground) => (CvDispCtrl.ViewBackgroundProperty, Color.FromRgb(0x5A, 0x12, 0x34), Color.FromRgb(0x34, 0x5A, 0x12)),
             _ => (CvDispCtrl.SeparatorBrushProperty, Color.FromRgb(0x0B, 0xF5, 0x0B), Color.FromRgb(0xF5, 0xA0, 0x0B)),
         };
         Look With(Color c) => prop switch
@@ -1053,6 +1104,7 @@ public class CvDispCtrlRenderTests
             nameof(CvDispCtrl.ToolbarBackground) => ThemeA with { Bar = c },
             nameof(CvDispCtrl.StatusBarBackground) => ThemeA with { Status = c },
             nameof(CvDispCtrl.StatusBarForeground) => ThemeA with { Text = c },
+            nameof(CvDispCtrl.ViewBackground) => ThemeA with { View = c },
             _ => ThemeA with { Sep = c },
         };
 
@@ -1103,21 +1155,166 @@ public class CvDispCtrlRenderTests
                 ["CvDispStatusBarBackgroundBrush"] = Color.FromRgb(1, 2, 4),
                 ["CvDispStatusBarForegroundBrush"] = Color.FromRgb(1, 2, 5),
                 ["CvDispSeparatorBrush"] = Color.FromRgb(1, 2, 6),
+                ["CvDispViewBackgroundBrush"] = Color.FromRgb(1, 2, 7),
+                ["CvDispPlaceholderForegroundBrush"] = Color.FromRgb(1, 2, 8),
                 ["DangerBrush"] = Color.FromRgb(4, 5, 6),
             };
             var r = Chrome(Shoot(host), host, Default, out var ok);
-            Check(ok, $"a Color under each key leaves the fixed colors in place instead of breaking the control: {r}");
+            Check(ok, $"a Color under each key leaves the fixed colors (and the control's #2A2A2A in the view margin) in place instead of breaking the control: {r}");
             var play = FindToggle(ctrl, "Play / Stop")!;
             Check(ColorOf(play.Background) == Color.FromRgb(0xC6, 0x28, 0x28), $"a non-Brush DangerBrush leaves the stopped ⏯ at its fixed color: {ColorOf(play.Background)}");
             lock (warnings)
             {
                 var all = string.Join(" | ", warnings);
-                foreach (var key in new[] { "CvDispToolbarBackgroundBrush", "CvDispStatusBarBackgroundBrush", "CvDispStatusBarForegroundBrush", "CvDispSeparatorBrush" })
+                foreach (var key in new[] { "CvDispToolbarBackgroundBrush", "CvDispStatusBarBackgroundBrush", "CvDispStatusBarForegroundBrush", "CvDispSeparatorBrush", "CvDispViewBackgroundBrush", "CvDispPlaceholderForegroundBrush" })
                     Check(warnings.Any(w => w.Contains("'" + key + "'")), $"the misplaced key {key} is named in a warning: [{all}]");
                 Check(!warnings.Any(w => w.Contains("DangerBrush")), $"a host library key of another type stays quiet: [{all}]");
             }
         }
         finally { CvLog.Sink = before; }
+    });
+
+    /// <summary>무이미지 화면의 영상 영역 바탕 — 밝은 테마에서도 검은 판만 혼자 남던 자리다(소비자 지적). 키가 없으면 컨트롤의 #2A2A2A(대조군이자
+    /// 표본 자리가 안내 글자를 피해 바탕을 찍는다는 증거), 키를 두면 그 색, 실행 중 사전을 갈아 끼우면 따라가고, 걷으면 #2A2A2A 로 돌아온다.
+    /// 인스턴스 속성은 키를 이기고 ClearValue 로 키에 돌아간다. 프레임이 있는 화면은 <see cref="Chrome"/> 을 쓰는 위 절들이 같은 점을 본다.</summary>
+    [Fact]
+    public void ViewBackgroundFollowsKeysWithoutAnImage() => RunSta(() =>
+    {
+        var (host, ctrl) = Hosted(withFrame: false);
+        var s0 = Shoot(host);
+        var surf = SurfaceRect(host);
+        int hint = 0;
+        for (int y = (int)(surf.Top * s0.S); y < (int)(surf.Bottom * s0.S); y++)
+            for (int x = (int)(surf.Left * s0.S); x < (int)(surf.Right * s0.S); x++)
+                if (Dist2(s0.At(x, y), Color.FromRgb(0x9E, 0x9E, 0x9E)) < Dist2(s0.At(x, y), CtrlBackground)) hint++;
+        Check(hint > 0, $"premise: the no-image placeholder text is drawn, so this is the no-image screen: hint pixels={hint}");
+        Check(ViewAt(s0, host) == CtrlBackground,
+            $"without a key or property the empty view shows the control's #2A2A2A (also proves the sample point misses the placeholder text): {ViewAt(s0, host)} at {ViewPoint(s0, host)}");
+
+        host.Resources.MergedDictionaries.Add(HostChrome(ThemeA));
+        var sa = Shoot(host);
+        Check(ViewAt(sa, host) == ThemeA.View, $"the host key paints the empty view — a light theme no longer leaves a dark slab: {ViewAt(sa, host)} (want {ThemeA.View})");
+
+        host.Resources.MergedDictionaries[0] = HostChrome(ThemeB);
+        var sb = Shoot(host);
+        Check(ViewAt(sb, host) == ThemeB.View, $"swapping the host dictionary at run time repaints the empty view without a restart: {ViewAt(sb, host)} (want {ThemeB.View})");
+
+        var own = Color.FromRgb(0x5A, 0x12, 0x34);
+        ctrl.ViewBackground = new SolidColorBrush(own);
+        var sp = Shoot(host);
+        Check(ViewAt(sp, host) == own, $"the instance ViewBackground beats the host key: {ViewAt(sp, host)} (want {own})");
+        ctrl.ClearValue(CvDispCtrl.ViewBackgroundProperty);
+        var sc = Shoot(host);
+        Check(ViewAt(sc, host) == ThemeB.View, $"clearing the instance value goes back to the host key, not to #2A2A2A: {ViewAt(sc, host)} (want {ThemeB.View})");
+
+        host.Resources.MergedDictionaries.Clear();
+        var sd = Shoot(host);
+        Check(ViewAt(sd, host) == CtrlBackground, $"removing the host key brings the control's #2A2A2A back: {ViewAt(sd, host)}");
+    });
+
+    /// <summary>무이미지 안내 글자 색은 키·속성을 따른다 — 밝은 바탕(#E6E6E6)에서 기본 #9E9E9E 는 대비가 약 2.3:1 이라 소비자가 바꿀 길을 요청했다.
+    /// 글자 화소는 "기본 회색보다 지정 색에 가까운 화소" 로 센다(경계는 바탕과 섞이므로 정확히 같은 색만 세면 0 이 될 수 있다).
+    /// 살아 있음: 키가 없을 때 같은 계수는 0 이어야 하고(지정 색이 기본 화면에 없다), 키를 두면 0 보다 커야 한다.
+    /// 단색이 아닌 브러시는 기본색으로 남고 경고한다.</summary>
+    [Fact]
+    public void PlaceholderTextFollowsItsKeyAndProperty() => RunSta(() =>
+    {
+        var warnings = new List<string>();
+        var before = CvLog.Sink;
+        CvLog.Sink = (level, src, msg, ex) => { if (level == CvLogLevel.Warning) lock (warnings) warnings.Add(msg); };
+        lock (warnings) warnings.Clear();
+        try
+        {
+            var gray = Color.FromRgb(0x9E, 0x9E, 0x9E);
+            var keyed = Color.FromRgb(0x10, 0xD0, 0x30);
+            var own = Color.FromRgb(0xD0, 0x20, 0xC0);
+            var (host, ctrl) = Hosted(withFrame: false);
+            int Count(Color want)
+            {
+                var s = Shoot(host);
+                var surf = SurfaceRect(host);
+                int n = 0;
+                for (int y = (int)(surf.Top * s.S); y < (int)(surf.Bottom * s.S); y++)
+                    for (int x = (int)(surf.Left * s.S); x < (int)(surf.Right * s.S); x++)
+                    {
+                        var c = s.At(x, y);
+                        if (Dist2(c, want) < Dist2(c, gray) && Dist2(c, want) < Dist2(c, CtrlBackground)) n++;
+                    }
+                return n;
+            }
+
+            Check(Count(keyed) == 0, "control: without the key no pixel of the empty view is closer to the keyed color than to the default gray");
+            host.Resources.MergedDictionaries.Add(new ResourceDictionary { [CvDispCtrl.PlaceholderForegroundKey] = new SolidColorBrush(keyed) });
+            var nKey = Count(keyed);
+            Check(nKey > 0, $"the host key colors the no-image text: keyed pixels={nKey}");
+
+            ctrl.PlaceholderForeground = new SolidColorBrush(own);
+            Check(Count(own) > 0 && Count(keyed) == 0, "the instance PlaceholderForeground beats the host key");
+            ctrl.ClearValue(CvDispCtrl.PlaceholderForegroundProperty);
+            Check(Count(keyed) > 0, "clearing the instance value goes back to the host key");
+
+            host.Resources.MergedDictionaries.Clear();
+            Check(Count(keyed) == 0, "removing the key brings the default gray back");
+
+            ctrl.PlaceholderForeground = new LinearGradientBrush(own, keyed, 0);
+            Check(Count(own) == 0 && Count(keyed) == 0, "a non-solid brush keeps the default gray instead of breaking the draw");
+            lock (warnings)
+                Check(warnings.Count(w => w.Contains("Placeholder text brush is a LinearGradientBrush")) == 1,
+                    $"a non-solid placeholder brush is named once in a warning, not on every repaint: [{string.Join(" | ", warnings)}]");
+        }
+        finally { CvLog.Sink = before; }
+    });
+
+    /// <summary>키·속성이 없으면 영상 영역은 컨트롤의 Background 가 비친다 — 호스트가 컨트롤에 직접 준 Background 도 종전처럼 보여야 한다.
+    /// 영상 영역 바탕을 고정 기본색(#2A2A2A)으로 떨어뜨리면 그 호스트의 화면이 말없이 바뀐다. 키를 두면 키가 이기고, 걷으면 호스트 색으로 돌아온다.
+    /// 무이미지와 이미지 있는 화면(맞춤 여백) 둘 다 본다.</summary>
+    [Fact]
+    public void AHostSetControlBackgroundStillShowsWithoutTheViewKey() => RunSta(() =>
+    {
+        var hostColor = Color.FromRgb(0x44, 0x22, 0x66);
+        foreach (var withFrame in new[] { false, true })
+        {
+            var (host, ctrl) = Hosted(withFrame);
+            ctrl.Background = new SolidColorBrush(hostColor);
+            var s1 = Shoot(host);
+            Check(ViewAt(s1, host) == hostColor,
+                $"frame={withFrame}: without the view key a Background the host set on the control still shows, as before the key existed: {ViewAt(s1, host)} (want {hostColor})");
+
+            host.Resources.MergedDictionaries.Add(HostChrome(ThemeA));
+            var s2 = Shoot(host);
+            Check(ViewAt(s2, host) == ThemeA.View, $"frame={withFrame}: the view key wins over the control Background: {ViewAt(s2, host)} (want {ThemeA.View})");
+
+            host.Resources.MergedDictionaries.Clear();
+            var s3 = Shoot(host);
+            Check(ViewAt(s3, host) == hostColor, $"frame={withFrame}: removing the key goes back to the host's control Background, not a fixed color: {ViewAt(s3, host)} (want {hostColor})");
+        }
+    });
+
+    /// <summary>영상 영역 바탕은 이미지 바깥(맞춤 여백)만 칠하고 이미지 픽셀은 덮지 않는다 — 바탕을 이미지 위에 칠하면 검사 화면이 단색 판이 된다.
+    /// 표면 가운데 200 DIP 사각(맞춤 이미지 안쪽)을 키 없는 화면과 바이트로 대조하고, 같은 런에서 여백 한 점은 달라져야 한다(대조가 살아 있다는 증거).</summary>
+    [Fact]
+    public void ViewBackgroundPaintsTheFitMarginButNotTheImage() => RunSta(() =>
+    {
+        var (host, _) = Hosted();
+        var bare = Shoot(host);
+        host.Resources = HostChrome(ThemeA);
+        var themed = Shoot(host);
+        Check(ViewAt(bare, host) == CtrlBackground && ViewAt(themed, host) == ThemeA.View,
+            $"the fit margin follows the key: without={ViewAt(bare, host)} with={ViewAt(themed, host)} (want {CtrlBackground} then {ThemeA.View})");
+
+        var surf = SurfaceRect(host);
+        int x0 = (int)((surf.Left + surf.Width / 2 - 100) * bare.S), x1 = (int)((surf.Left + surf.Width / 2 + 100) * bare.S);
+        int y0 = (int)((surf.Top + surf.Height / 2 - 100) * bare.S), y1 = (int)((surf.Top + surf.Height / 2 + 100) * bare.S);
+        var colors = new HashSet<Color>();
+        int differ = 0;
+        for (int y = y0; y < y1; y++)
+            for (int x = x0; x < x1; x++)
+            {
+                colors.Add(bare.At(x, y));
+                if (bare.At(x, y) != themed.At(x, y)) differ++;
+            }
+        Check(colors.Count > 100, $"premise: the sampled square is image (gradient), not background: distinct colors={colors.Count}");
+        Check(differ == 0, $"the view background does not cover the image: {differ} image pixels changed under the key");
     });
 
     /// <summary>⏯·✋ 강조색은 호스트 테마 키(PrimaryBrush / SuccessBrush / DangerBrush)를 따르고, 키가 없으면 고정색이다.
@@ -1278,6 +1475,95 @@ public class CvDispCtrlRenderTests
         public event EventHandler? CanExecuteChanged { add { } remove { } }
         public bool CanExecute(object? parameter) => true;
         public void Execute(object? parameter) => run();
+    }
+
+    /// <summary>툴바 아이콘 색 — 강조색을 쓰지 않는 버튼의 아이콘은 버튼 스타일의 글자색이 아니라 컨트롤이 물려받는 본문 글자색이다(Avalonia 판과 같은 규칙,
+    /// 호스트를 옮겨도 같은 키로 따라온다). 버튼 글자를 브랜드 색으로 칠하는 테마를 호스트 암시 스타일로 흉내 내고, 같은 스타일을 받은 맨 버튼이
+    /// 그 색이 되는 것을 대조군으로 둔다. 출처 순서는 다른 색 표면과 같다(속성 → 키 → 기본). 눌린 ✋ 와 ⏯ 는 흰색.</summary>
+    [Fact]
+    public void ToolbarIconsFollowTheTextColorNotTheButtonStyle() => RunSta(() =>
+    {
+        var text = Color.FromRgb(0x12, 0x34, 0x56);
+        var brand = Color.FromRgb(0x00, 0x41, 0x99);
+        var ctrl = new CvDispCtrl();   // 아이콘만 본다 — 프레임은 필요 없다
+        var host = new System.Windows.Controls.Grid();
+        host.Children.Add(ctrl);
+        host.SetValue(System.Windows.Documents.TextElement.ForegroundProperty, new SolidColorBrush(text));
+        foreach (var t in new[] { typeof(System.Windows.Controls.Button), typeof(System.Windows.Controls.Primitives.ToggleButton) })
+        {
+            var s = new Style(t);
+            s.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, new SolidColorBrush(brand)));
+            host.Resources[t] = s;
+        }
+        var bare = new System.Windows.Controls.Button { Content = "⛶" };
+        host.Children.Add(bare);
+        Shoot(host);
+
+        static Color Fg(System.Windows.Controls.Control b) => b.Foreground is SolidColorBrush s ? s.Color : Colors.Transparent;
+        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out", "Clear"];
+        List<System.Windows.Controls.Control> Plain() => [.. plain.Select(t => (System.Windows.Controls.Control)FindButton(ctrl, t)!), FindToggle(ctrl, "Pan")!];
+        string All(out bool allAre, Color want)
+        {
+            Pump();
+            var got = Plain().Select(b => (b.ToolTip, Fg(b))).ToList();
+            allAre = got.All(g => g.Item2 == want);
+            return string.Join(", ", got.Select(g => $"{g.ToolTip}={g.Item2}")) + $" (want {want})";
+        }
+
+        Check(Fg(bare) == brand, $"control: the host style does paint a plain button with the brand color ({Fg(bare)})");
+        var r0 = All(out var ok0, text);
+        Check(ok0, $"with no key or property the icons use the inherited text color, not the button style's brand color: {r0}");
+        Check(Fg(FindToggle(ctrl, "Play / Stop")!) == Colors.White, "⏯ keeps its white icon on the accent");
+
+        var keyed = Color.FromRgb(0x00, 0xAA, 0x00);
+        host.Resources[CvDispCtrl.ToolbarForegroundKey] = new SolidColorBrush(keyed);
+        var r1 = All(out var ok1, keyed);
+        Check(ok1, $"the host key beats the inherited text color: {r1}");
+        var own = Color.FromRgb(0xAA, 0x00, 0xAA);
+        ctrl.ToolbarForeground = new SolidColorBrush(own);
+        var r2 = All(out var ok2, own);
+        Check(ok2, $"the instance property beats the key: {r2}");
+        ctrl.ClearValue(CvDispCtrl.ToolbarForegroundProperty);
+        var r3 = All(out var ok3, keyed);
+        Check(ok3, $"clearing the property goes back to the key: {r3}");
+        host.Resources.Remove(CvDispCtrl.ToolbarForegroundKey);
+        var r4 = All(out var ok4, text);
+        Check(ok4, $"removing the key goes back to the inherited text color: {r4}");
+        var text2 = Color.FromRgb(0x65, 0x43, 0x21);
+        host.SetValue(System.Windows.Documents.TextElement.ForegroundProperty, new SolidColorBrush(text2));
+        var r5 = All(out var ok5, text2);
+        Check(ok5, $"changing the inherited text color at run time repaints the icons: {r5}");
+
+        var pan = FindToggle(ctrl, "Pan")!;
+        pan.IsChecked = true;
+        Pump();
+        Check(Fg(pan) == Colors.White, $"a checked ✋ shows a white icon on its accent ({Fg(pan)})");
+        pan.IsChecked = false;
+        Pump();
+        Check(Fg(pan) == text2, $"releasing ✋ brings its icon back to the toolbar icon color, not the button style's ({Fg(pan)})");
+
+        // 비활성 — 스타일이 IsEnabled 트리거로 버튼 자신의 Foreground 를 흐리게 바꾸는 테마. 지역 값을 넣으면 그 트리거를 이겨 꺼진 버튼이 살아 보인다.
+        var dim = Color.FromRgb(0x99, 0x99, 0x99);
+        var bs = new Style(typeof(System.Windows.Controls.Button));
+        bs.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, new SolidColorBrush(brand)));
+        var trig = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
+        trig.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, new SolidColorBrush(dim)));
+        bs.Triggers.Add(trig);
+        host.Resources[typeof(System.Windows.Controls.Button)] = bs;
+        ctrl.GrabCommand = new NeverCmd();
+        Pump();
+        var grab = FindButton(ctrl, "Grab")!;
+        Check(!grab.IsEnabled && Fg(grab) == dim, $"a disabled button keeps the style's disabled color — no local icon color beats its trigger (enabled={grab.IsEnabled}, {Fg(grab)})");
+        ctrl.GrabCommand = null;
+        Pump();
+        Check(grab.IsEnabled && Fg(grab) == text2, $"re-enabled, the button takes the toolbar icon color again ({Fg(grab)})");
+    });
+
+    private sealed class NeverCmd : System.Windows.Input.ICommand
+    {
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => false;
+        public void Execute(object? parameter) { }
     }
 
     private static System.Windows.Controls.Primitives.ToggleButton? FindToggle(DependencyObject root, string tooltip)

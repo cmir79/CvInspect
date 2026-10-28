@@ -14,7 +14,8 @@ namespace CvInspect;
 ///   3. 키 원문(스코프 제거) 반환 + <see cref="MissingKey"/> 1회 통지.
 ///
 /// Resolver 가 모르는 키에 null 대신 대체 문자열을 돌려주면 내장 폴백과 누락 진단이 조용히 죽는다.
-/// 값은 캐시하지 않는다 — 언어 전환은 다음 조회부터 반영된다 (라벨을 매번 다시 읽는 소비자 전제).
+/// 값은 캐시하지 않는다 — 언어 전환은 다음 조회부터 반영된다. 조회가 그릴 때만 일어나는 화면(무이미지 안내처럼 다음 그리기가
+/// 언제 올지 모르는 것)은 그것만으로는 옛 언어로 남으므로, <see cref="Changed"/> 를 듣고 다시 그린다.
 /// 적재는 리더 기반(<see cref="JsonDocument"/>)이라 리플렉션 직렬화가 없는 런타임(IL2CPP 등)에서도 동작한다.
 /// </summary>
 public static class CvLoc
@@ -45,6 +46,7 @@ public static class CvLoc
                 _resolver = value;
                 _missingLogged.Clear();
             }
+            RaiseChanged();
         }
     }
 
@@ -63,11 +65,19 @@ public static class CvLoc
                 _culture = value;
                 _missingLogged.Clear();
             }
+            RaiseChanged();   // 값이 실제로 바뀐 때만 — 같은 값을 다시 고르면 위에서 돌아간다
         }
     }
 
     /// <summary>Resolver 와 내장 사전 어디에도 없는 키를 1회씩 통지. 구독자가 없으면 <see cref="CvLog"/> 로 흐른다.</summary>
     public static event Action<string>? MissingKey;
+
+    /// <summary><see cref="T"/> 가 돌려줄 값이 바뀌었을 수 있다는 통지 — <see cref="Culture"/> 가 다른 값으로 바뀔 때,
+    /// <see cref="Resolver"/> 를 대입할 때, <see cref="Reload"/> 때 분다. <b>바꾼 스레드에서 락 밖으로</b> 불리니 화면은 자기 UI 스레드로
+    /// 넘겨 다시 그린다. 구독자 하나가 던져도 나머지는 받고, 예외는 경고 로그로 남을 뿐 문화권을 바꾼 호출자에게 가지 않는다.
+    /// 정적 이벤트라 구독자를 붙잡는다 — 화면 컨트롤은 올라와 있는 동안만 건다. 처리기 안에서 다시 바꾼 것(예: 처리기가 <see cref="Reload"/> 를
+    /// 부름)은 따로 통지하지 않는다 — 되불림이 끝없이 이어지지 않게 막는 것이고, 바깥 통지를 받는 구독자는 그 뒤 최신 값을 읽는다.</summary>
+    public static event Action? Changed;
 
     /// <summary>내장 사전 캐시 파기 — 실행 폴더의 json 을 고친 뒤 재적재용.</summary>
     public static void Reload()
@@ -77,6 +87,29 @@ public static class CvLoc
             _tables.Clear();
             _missingLogged.Clear();
         }
+        RaiseChanged();
+    }
+
+    // 통지 중 재진입 차단 — 구독자가 처리기 안에서 Reload·Resolver·Culture 를 다시 건드리면 통지가 끝없이 되불려 스택이 넘친다(잡을 수 없는
+    // 예외라 프로세스가 죽는다). 안쪽 변경은 통지하지 않는다 — 바깥 통지가 아직 돌고 있고, 구독자는 그 뒤 T 를 다시 읽으니 최신 값을 본다.
+    [ThreadStatic] private static bool _raising;
+
+    private static void RaiseChanged()
+    {
+        if (_raising || Changed is not { } handler) return;
+        _raising = true;
+        try
+        {
+            foreach (var d in handler.GetInvocationList())
+            {
+                try { ((Action)d)(); }
+                catch (Exception ex)
+                {
+                    CvLog.Publish(CvLogLevel.Warning, nameof(CvLoc), "a CvLoc.Changed subscriber threw; the remaining subscribers were still notified.", ex);
+                }
+            }
+        }
+        finally { _raising = false; }
     }
 
     /// <summary>호스트가 <see cref="Culture"/> 를 명시했는가. 기본 "en" 은 "안 골랐다" 와 "en 을 골랐다" 를 구분하지

@@ -19,9 +19,25 @@ namespace CvInspect.Controls;
 /// getter-only 프로퍼티도 지원 타입이면 편집 불가 행으로 표시한다([ReadOnly(true)] 와 동일 렌더).
 /// 그 밖의 타입(훅·바이너리 등)은 편집 표면 계약 밖이라 노출하지 않는다.
 /// 값을 읽다 소스가 던지면 그 행만 빠지고 나머지는 그대로 선다 — 이유는 로그에 남는다.
+/// UI 프레임워크와 무관해 코어에 있다(편집기 컨트롤은 각 UI 패키지 몫). 0.33 까지는 CvInspect.Wpf 에 있었다 — Wpf 어셈블리가 전달한다.
 /// </summary>
 public static class CvPropRowBldr
 {
+    /// <summary>빌드한 행을 떼어 낸다 — 소스 통지 구독과 호스트 훅을 끊는다. 편집기가 Source 를 바꾸거나 화면에서 내릴 때 옛 행에 부른다.
+    /// 떼어진 행은 화면에 남은 시각 트리에서 늦게 커밋이 와도 아무것도 쓰지 않는다(폐기된 POCO 를 오염시키지 않게).
+    /// 중첩 행은 자식까지 떼어 낸다. 같은 행을 두 번 떼어도 된다.
+    /// ⚠ <b>되돌릴 수 없다</b> — 떼어진 행은 다시 붙지 않고, 이후 편집은 오류도 로그도 없이 버려진다.
+    /// 그래서 <b>그 행을 만든 쪽(편집기)만</b> 부른다. 편집기가 아직 보여 주는 그룹(예: 편집기의 공개 Groups)에 부르면
+    /// 화면은 멀쩡한데 편집이 소스에 닿지 않는다.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="groups"/> 가 null.</exception>
+    public static void Detach(IEnumerable<CvPropGroupVm> groups)
+    {
+        if (groups is null) throw new ArgumentNullException(nameof(groups));
+        foreach (var g in groups)
+            foreach (var r in g.Rows)
+                r.Detach();
+    }
+
     /// <summary>프로퍼티별 attribute 인스턴스 캐시 — GetCustomAttribute 는 호출마다 새 인스턴스를 만들므로 프로퍼티당 1회로 고정한다.
     /// ⚠ 카테고리 머리글 문자열은 여기서 읽지 않는다 — 이 캐시가 쥔 인스턴스는 첫 조회 언어로 굳는다(<see cref="CategoryText"/>).
     /// 라벨·설명(DisplayName·Description)은 조회마다 다시 번역되므로 캐시한 인스턴스로 읽어도 된다.</summary>

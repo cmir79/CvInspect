@@ -1,13 +1,10 @@
 using System.Collections.ObjectModel;
 using System.IO;
-using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using CvInspect.Controls;
 using CvInspect.Imaging;
 using CvInspect.Vision.Opts;
 using CvInspect.Vision.Overlay;
-using Microsoft.Win32;
 using OpenCvSharp;
 using CvInspect.Vision.Edit;
 
@@ -19,6 +16,8 @@ namespace CvInspect.Demo;
 /// 수명 계약이 없어 카메라 스레드에서 받아 UI 로 넘겨도, 편집 뒤 다시 검사하려고 붙잡아 둬도 신경 쓸 것이 없다.
 /// Mat 은 쓰는 순간에만 잠깐 만든다. 레시피는 툴 목록으로 편집하고 폴더에 저장·로드한다 — 바뀐 뒤 저장하지 않았으면 제목에 * 가 붙는다.
 /// 소스는 목록에서 바꾼다; 웹캠은 30 fps 로 들어오므로 UI 스레드가 밀리면 마지막 프레임만 처리한다(중간 프레임은 버린다).
+/// UI 프레임워크에 닿는 것(UI 스레드로 넘기기·폴더 고르기)은 <see cref="IDemoUiPort"/> 로만 한다 — WPF 데모와 Avalonia 데모가
+/// 이 파일 하나를 함께 컴파일한다(Avalonia 판은 링크). 여기에 System.Windows·Avalonia 를 들이면 반대쪽이 깨진다.
 /// </summary>
 public sealed partial class MainVm : ObservableObject, IDisposable
 {
@@ -42,6 +41,15 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     public ObservableCollection<DemoToolEntry> Tools => _recipe.Tools;
 
     private readonly Dictionary<DemoToolEntry, IReadOnlyList<CvEditShape>> _shapeCache = new();
+    private readonly IDemoUiPort _ui;
+    private readonly string _workDir;
+
+    // 시작 인자 안내(--webcam 이 못 찾음 등) — 곧이어 소스를 여는 상태 문구("opening …", "source: …")가 Status 를 덮으므로
+    // 안내를 따로 들고 있다가 그 문구 뒤에 붙인다. 한 번 보여 준 뒤 사용자가 소스를 바꾸면 지운다.
+    private string? _startNotice;
+    private int _sourceStarts;
+
+    private string WithStartNotice(string status) => _startNotice is null ? status : $"{status}  —  {_startNotice}";
     private readonly string _syntheticDir;
     private ICam? _cam;
     private bool _autoTrain;
@@ -50,14 +58,20 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     private int _showQueued;
     private DemoRunResult? _lastRun;
 
-    public MainVm()
+    /// <param name="ui">UI 스레드·폴더 선택 포트 — 창이 자기 프레임워크로 채운다.</param>
+    /// <param name="args">명령줄(--webcam 을 찾는다). 실행 파일 경로가 앞에 있어도 없어도 된다.</param>
+    /// <param name="workDir">합성 부품 이미지를 쓰는 폴더이자 저장·로드 대화 상자의 첫 폴더. 그 안의 part*.png 는 시작할 때 지운다 —
+    /// 두 데모가 동시에 떠도 서로의 장면을 지우지 않게 데모마다 다른 폴더를 준다.</param>
+    public MainVm(IDemoUiPort ui, string[] args, string workDir)
     {
+        _ui = ui;
+        _workDir = workDir;
         _recipe = DemoRecipe.Default();
         DemoRecipeRunner.WireTrainHooks(_recipe, () => _last?.AsMat());
 
         // 합성 부품 이미지를 파일로 두고 VirtualCam 이 그 폴더를 재생한다 — 실제 카메라와 같은 ICam 경로를 탄다.
         // 여섯 장은 부품이 조금씩 밀리고 도는 장면이다(첫 장은 기준 자세). 라이브로 돌리면 픽스처가 따라가는 것이 보인다.
-        _syntheticDir = Path.Combine(Path.GetTempPath(), "CvInspect.Demo");
+        _syntheticDir = workDir;
         Directory.CreateDirectory(_syntheticDir);
         foreach (var f in Directory.GetFiles(_syntheticDir, "part*.png")) File.Delete(f);
         var poses = new (double Dx, double Dy, double Deg)[] { (0, 0, 0), (14, -9, 5), (-12, 11, -7), (18, 16, 9), (-9, -15, -4), (6, 4, 12) };
@@ -70,7 +84,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
 
         SelectedTool = Tools.FirstOrDefault();
         RefreshSources();
-        SelectedSource = PickStartupSource(Environment.GetCommandLineArgs());   // 소스 선택이 취득을 시작한다(첫 프레임에서 합성은 자동 학습)
+        SelectedSource = PickStartupSource(args);   // 소스 선택이 취득을 시작한다(첫 프레임에서 합성은 자동 학습)
     }
 
     /// <summary>--webcam 또는 --webcam VID_xxxx&amp;PID_yyyy(인스턴스 ID 도 됨) 로 시작하면 그 웹캠으로 바로 연다. 없으면 합성.</summary>
@@ -83,7 +97,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         var webcams = Sources.Where(s => !s.IsSynthetic).ToList();
         var hit = key.Length == 0 ? webcams.FirstOrDefault()
                 : webcams.FirstOrDefault(s => s.Key.Contains(key, StringComparison.OrdinalIgnoreCase) || s.Title.Contains(key, StringComparison.OrdinalIgnoreCase));
-        if (hit is null) Status = webcams.Count == 0 ? "--webcam: no USB camera was enumerated on this PC" : $"--webcam: no camera matches '{key}'";
+        if (hit is null) _startNotice = webcams.Count == 0 ? "--webcam: no USB camera was enumerated on this PC" : $"--webcam: no camera matches '{key}'";
         return hit ?? Sources.FirstOrDefault();
     }
 
@@ -103,6 +117,8 @@ public sealed partial class MainVm : ObservableObject, IDisposable
 
     private void StartSource(DemoSource? src)
     {
+        // 시작 인자 안내는 시작 때 고른 소스에만 붙인다 — 사용자가 다른 소스를 고르면 그 안내는 더 이상 지금 화면의 이야기가 아니다.
+        if (_sourceStarts++ > 0) _startNotice = null;
         StopCam();
         _last = null;
         _lastRun?.Dispose();
@@ -116,7 +132,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         cam.FrameAcquired += OnFrameAcquired;
         cam.GrabbingChanged += OnGrabbingChanged;
         _cam = cam;
-        Status = $"opening {src.Title}…";
+        Status = WithStartNotice($"opening {src.Title}…");
         // 웹캠 열기는 초 단위로 걸릴 수 있다(MSMF 첫 열기 ~1 s, 방금 닫은 장치는 더) — UI 를 붙잡지 않는다.
         // 못 열면 예외 메시지에 지금 열거된 장치 목록이 실린다.
         Task.Run(() =>
@@ -134,7 +150,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         }).ContinueWith(t =>
         {
             if (!ReferenceEquals(_cam, cam)) return;   // 그 사이 다른 소스로 바뀜
-            Status = t.Result is null ? $"source: {src.Title}" : $"cannot open {src.Title}: {t.Result}";
+            Status = WithStartNotice(t.Result is null ? $"source: {src.Title}" : $"cannot open {src.Title}: {t.Result}");
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
@@ -160,7 +176,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     {
         Interlocked.Exchange(ref _pending, frame);
         if (Interlocked.Exchange(ref _showQueued, 1) == 0)
-            Application.Current.Dispatcher.BeginInvoke(() =>
+            _ui.Post(() =>
             {
                 Interlocked.Exchange(ref _showQueued, 0);
                 var f = Interlocked.Exchange(ref _pending, null);
@@ -169,7 +185,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     }
 
     private void OnGrabbingChanged(object? sender, bool grabbing)
-        => Application.Current.Dispatcher.BeginInvoke(() => { if (ReferenceEquals(_cam, sender)) IsLive = grabbing; });
+        => _ui.Post(() => { if (ReferenceEquals(_cam, sender)) IsLive = grabbing; });
 
     partial void OnSelectedToolChanged(DemoToolEntry? value)
     {
@@ -289,17 +305,19 @@ public sealed partial class MainVm : ObservableObject, IDisposable
 
     [RelayCommand] private void Run() => Rerun();
 
+    // 폴더 선택은 포트 너머다 — WPF 판은 동기 대화 상자를 끝난 작업으로 돌려주고, Avalonia 판은 정말 비동기다(창을 붙잡지 않는다).
+    // 비동기 커맨드는 도는 동안 CanExecute 가 false 라, 대화 상자가 떠 있는 사이 같은 버튼을 다시 눌러 두 개가 겹치지 않는다.
     [RelayCommand]
-    private void Save()
+    private async Task Save()
     {
-        var dlg = new OpenFolderDialog { Title = "Save recipe into folder", InitialDirectory = RecipePath ?? Path.Combine(Path.GetTempPath(), "CvInspect.Demo") };
-        if (dlg.ShowDialog() != true) return;
+        var folder = await _ui.PickFolderAsync("Save recipe into folder", RecipePath ?? _workDir);
+        if (folder is null) return;
         try
         {
-            _recipe.Save(dlg.FolderName);
-            RecipePath = dlg.FolderName;
+            _recipe.Save(folder);
+            RecipePath = folder;
             IsDirty = false;
-            Status = $"saved {Tools.Count} tool(s) to {dlg.FolderName}";
+            Status = $"saved {Tools.Count} tool(s) to {folder}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -308,22 +326,22 @@ public sealed partial class MainVm : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void Load()
+    private async Task Load()
     {
-        var dlg = new OpenFolderDialog { Title = "Load recipe from folder", InitialDirectory = RecipePath ?? Path.Combine(Path.GetTempPath(), "CvInspect.Demo") };
-        if (dlg.ShowDialog() != true) return;
+        var folder = await _ui.PickFolderAsync("Load recipe from folder", RecipePath ?? _workDir);
+        if (folder is null) return;
         try
         {
-            var loaded = DemoRecipe.Load(dlg.FolderName);
+            var loaded = DemoRecipe.Load(folder);
             _recipe = loaded;
             _shapeCache.Clear();
             DemoRecipeRunner.WireTrainHooks(_recipe, () => _last?.AsMat());
             OnPropertyChanged(nameof(Tools));
-            RecipePath = dlg.FolderName;
+            RecipePath = folder;
             IsDirty = loaded.MovedLegacyCrop;   // 옮긴 크롭은 다시 저장해야 옛 키가 빠진다 — 제목의 * 로 알린다
             SelectedTool = Tools.FirstOrDefault();
             Rerun();
-            Status = $"loaded {Tools.Count} tool(s) from {dlg.FolderName}"
+            Status = $"loaded {Tools.Count} tool(s) from {folder}"
                      + (loaded.MovedLegacyCrop ? " — moved a pre-0.27 crop into a Crop tool, save to keep it" : "");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
@@ -373,7 +391,7 @@ public sealed partial class MainVm : ObservableObject, IDisposable
         var prev = _lastRun;
         _lastRun = DemoRecipeRunner.Run(_recipe, mat);
         prev?.Dispose();
-        Status = (_lastRun.IsOk ? "OK" : "NG") + string.Concat(_lastRun.Tools.Select(t => $"  |  {t.Tool.Key}: {(t.Ok ? "ok" : "NG")}"));
+        Status = WithStartNotice((_lastRun.IsOk ? "OK" : "NG") + string.Concat(_lastRun.Tools.Select(t => $"  |  {t.Tool.Key}: {(t.Ok ? "ok" : "NG")}")));
         Present();
     }
 

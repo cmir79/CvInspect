@@ -4,6 +4,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using CvInspect.Display;
 using CvInspect.Vision.Overlay;
 using OpenCvSharp;
 using CvInspect.Vision.Edit;
@@ -27,26 +28,8 @@ public sealed partial class CvDispCtrl
         set => SetValue(FrameProperty, value);
     }
 
-    private void OnFrameChanged(object? value)
-    {
-        switch (value)
-        {
-            case null:
-                _surface.SetFrame((Mat?)null);
-                break;
-            case Mat mat:
-                _surface.SetFrame(mat);
-                break;
-            case ICvPixelSource src:
-                _surface.SetFrame(src);
-                break;
-            default:
-                CvLog.Publish(CvLogLevel.Warning, nameof(CvDispCtrl),
-                    $"Frame ignored: expected Mat or ICvPixelSource, got {value.GetType().FullName}.");
-                _surface.SetFrame((Mat?)null);
-                break;
-        }
-    }
+    // 형 분기(두 형이 아니면 경고 + 빈 화면)와 공급자 계약 검사는 코어 CvFrameBuf.Set 이 한다.
+    private void OnFrameChanged(object? value) => _surface.SetFrame(value);
 
     public static readonly DependencyProperty OverlayProperty = DependencyProperty.Register(
         nameof(Overlay), typeof(object), typeof(CvDispCtrl),
@@ -135,7 +118,7 @@ public sealed partial class CvDispCtrl
     // 거절된 클릭 뒤에도 다시 묻는다 — 알림 없이 false 가 된 명령이면 그 클릭에서 회색이 된다. CanExecute 가 던지면 실행 가능으로 보고
     // 명령 인스턴스마다 한 번 경고한다. 구독은 약한 구독이라 명령이 컨트롤보다 오래 살아도 컨트롤을 붙잡지 않는다. null 이면 버튼은
     // 살아 있고 누르면 아무 일도 없다.
-    // 근거와 세부는 CvDispCtrl.cs 의 SwapCamCommand·RefreshCamButtons·CanRun.
+    // 근거와 세부는 CvDispCtrl.cs 의 SwapCamCommand·RefreshCamButtons, 판정은 코어 CvCamCmd.
     private static void CamCommandChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         => ((CvDispCtrl)d).SwapCamCommand(e.OldValue as ICommand, e.NewValue as ICommand);
 
@@ -211,7 +194,14 @@ public sealed partial class CvDispCtrl
     private void SyncLoadAvailability(bool canLoad)
     {
         _surface.ShowLoadHint = canLoad;
-        _loadItem.Visibility = canLoad ? Visibility.Visible : Visibility.Collapsed;
+        ApplyMenuGroups(canLoad, IsToolbarVisible);
+    }
+
+    /// <summary>우클릭 메뉴의 묶음(불러오기 / 툴바와 짝인 지우기·구분선)을 여닫는다 — 어떤 묶음이 언제 보이는지는 코어 CvDispMenu.IsVisible.</summary>
+    private void ApplyMenuGroups(bool canLoad, bool isToolbarVisible)
+    {
+        foreach (var (group, elem) in _menuGroupItems)
+            elem.Visibility = CvDispMenu.IsVisible(group, canLoad, isToolbarVisible) ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public static readonly DependencyProperty IsCamControlVisibleProperty = DependencyProperty.Register(
@@ -242,9 +232,8 @@ public sealed partial class CvDispCtrl
     /// 팬·맞춤·확대·축소는 여기에 딸리지 않는다 — 툴바를 감춰도 메뉴에 남는 조작이다.</summary>
     private void SyncToolbarVisibility(bool visible)
     {
-        var vis = visible ? Visibility.Visible : Visibility.Collapsed;
-        _toolbarBorder.Visibility = vis;
-        foreach (var item in _toolMenuItems) item.Visibility = vis;
+        _toolbarBorder.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        ApplyMenuGroups(LoadFrameCommand is not null, visible);
     }
 
     public static readonly DependencyProperty ToolbarDockProperty = DependencyProperty.Register(

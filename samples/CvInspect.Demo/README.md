@@ -88,7 +88,9 @@ attached to every [GitHub release](https://github.com/cmir79/CvInspect/releases/
 dotnet run --project samples/CvInspect.Demo
 ```
 
-Windows only (WPF). A USB webcam is optional — without one the source list holds only the synthetic
+Windows only (WPF). The same window on Avalonia (from source only; on Linux it has only been run headless by the test suite) is
+`dotnet run --project samples/CvInspect.Demo.Avalonia` — it compiles this folder's view-model,
+recipe and synthetic part, so both show the same thing. A USB webcam is optional — without one the source list holds only the synthetic
 part. The recipe runner (`DemoRecipeRunner`) is pure and deterministic — the WPF test
 suite trains the default recipe on the reference part, runs it on a shifted-and-rotated one and checks
 that the pose angle, the followed line, circle and blob all land within a pixel of where the geometry

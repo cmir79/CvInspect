@@ -1,0 +1,71 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:cv="using:CvInspect.Avalonia.Controls"
+        xmlns:local="using:CvInspect.Demo"
+        x:Class="CvInspect.Demo.MainWindow"
+        x:DataType="local:MainVm"
+        Title="CvInspect Demo (Avalonia) — recipe: pattern fixture, line, circle and blob on a moving synthetic part"
+        Width="1180" Height="760">
+  <!-- WPF 데모 창(samples/CvInspect.Demo/MainWindow.xaml)과 같은 구성 — 왼쪽 표시 컨트롤, 오른쪽 소스·레시피·편집기·상태 줄.
+       VM 은 두 데모가 같은 소스를 쓴다. 바꿀 때는 두 창을 함께 맞춘다. -->
+  <Grid ColumnDefinitions="*,380">
+
+    <!-- 표시 컨트롤 — Frame 에는 선택한 툴의 단계 이미지(원본이면 취득 프레임 CamFrame 그대로, 복사 없음)가 들어간다.
+         툴바의 📸/⏯️ 는 VM 커맨드로, 우클릭 불러오기는 LoadFrameCommand 로 이어진다. Shapes 는 선택한 툴의 도형 — 드래그하면 Opt 에 되쓰인다. -->
+    <cv:CvDispCtrl x:Name="Disp"
+                   Frame="{Binding Frame}"
+                   Overlay="{Binding Overlay}"
+                   Shapes="{Binding Shapes}"
+                   GrabCommand="{Binding GrabCommand}"
+                   ContinuousCommand="{Binding LiveCommand}"
+                   StopCommand="{Binding StopCommand}"
+                   LoadFrameCommand="{Binding LoadFrameCommand}"
+                   IsRunning="{Binding IsLive}" />
+
+    <DockPanel Grid.Column="1" Margin="8">
+      <StackPanel DockPanel.Dock="Top">
+        <!-- 소스 — 합성 부품(VirtualCam) 또는 이 PC 의 USB 웹캠(VID/PID 로 연다). ↻ 는 꽂거나 뺀 뒤 다시 열거. -->
+        <DockPanel Margin="0,0,0,6">
+          <TextBlock DockPanel.Dock="Left" Text="Source" VerticalAlignment="Center" Margin="0,0,6,0" />
+          <Button DockPanel.Dock="Right" Content="↻" Command="{Binding RefreshSourcesCommand}" ToolTip.Tip="Re-enumerate USB cameras" Padding="6,2" />
+          <ComboBox x:Name="SourceBox" ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSource}" HorizontalAlignment="Stretch" Margin="0,0,4,0">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="local:DemoSource">
+                <TextBlock Text="{Binding Title}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </DockPanel>
+        <TextBlock Text="{Binding RecipeTitle}" FontWeight="Bold" />
+        <WrapPanel Margin="0,4,0,4">
+          <!-- Fluent 콤보는 여백·화살표 칸이 커서 96 이면 선택한 종류가 "Preproc" 으로 잘린다 — 가장 긴 이름이 읽히는 폭. -->
+          <ComboBox x:Name="AddKind" ItemsSource="{Binding Kinds}" SelectedIndex="1" Width="128" Margin="0,0,4,4" />
+          <Button Content="Add" Command="{Binding AddToolCommand}" CommandParameter="{Binding #AddKind.SelectedItem}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="Remove" Command="{Binding RemoveToolCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="▲" Command="{Binding MoveUpCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="▼" Command="{Binding MoveDownCommand}" Padding="8,2" Margin="0,0,12,4" />
+          <Button Content="Run" Command="{Binding RunCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="Save…" Command="{Binding SaveCommand}" Padding="8,2" Margin="0,0,4,4" />
+          <Button Content="Load…" Command="{Binding LoadCommand}" Padding="8,2" Margin="0,0,4,4" />
+        </WrapPanel>
+        <!-- 툴 목록 — 위에서 아래로 실행된다. 선택하면 그 툴의 단계 이미지·도형·파라미터가 아래에 온다.
+             Fluent 행은 기본 여백으로 약 38px 라 기본 레시피 4툴 중 3개만 보였다 — 행 여백을 줄이고 높이를 늘려 툴 하나를 더한 5개까지 스크롤 없이 보인다. -->
+        <ListBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" Height="140" Margin="0,0,0,8">
+          <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+              <Setter Property="Padding" Value="8,3" />
+            </Style>
+          </ListBox.Styles>
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="local:DemoToolEntry">
+              <TextBlock Text="{Binding Title}" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </StackPanel>
+      <TextBlock DockPanel.Dock="Bottom" x:Name="StatusText" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,8,0,0" />
+      <!-- 파라미터 편집기 — 선택한 툴의 Opt POCO 를 그대로 넣는다. 커밋·액션마다 VM 이 다시 검사하고 dirty 를 표시한다(처리기는 코드 숨김). -->
+      <cv:CvPropEditCtrl x:Name="Editor" Source="{Binding ToolOpt}" />
+    </DockPanel>
+  </Grid>
+</Window>

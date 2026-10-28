@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- CvInspect.Avalonia 를 창·GPU 없이 헤드리스 플랫폼(Skia 그리기)에 띄워 화면 픽셀과 입력을 재는 묶음. 크로스플랫폼이라
+         CI 의 Windows·Linux 양쪽에서 돈다. xunit v3 — 헤드리스 시험 확장(Avalonia.Headless.XUnit)이 v3 위에 서 있어 v2 스위트와
+         한 프로젝트에 섞지 못한다. v3 시험 프로젝트는 실행 파일이다. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <!-- 3.2.2 — Avalonia.Headless.XUnit 12.1.4 가 xunit.v3.extensibility.core 3.2.2 를 대상으로 지어졌다. 4.x 는 주 판이 바뀌어
+         그 확장과의 짝이 확인되지 않았다 — 헤드리스 확장이 4.x 를 대상으로 나올 때 함께 올린다. -->
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="$(AvaloniaVersion)" />
+    <!-- 렌더러·테마·글꼴은 앱이 고르는 것 — 시험도 앱이다. Skia 가 있어야 그린 화면을 잡을 수 있고(헤드리스 그리기는 픽셀이 없다),
+         표준 컨트롤(툴바 버튼·편집기 입력칸)은 테마가 있어야 템플릿이 생긴다. Inter 는 기본 글꼴을 OS 와 무관하게 고정하려고. -->
+    <PackageReference Include="Avalonia.Skia" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CvInspect.Avalonia\CvInspect.Avalonia.csproj" />
+    <!-- 취득 프레임(CamFrame)이 표시 계약(ICvPixelSource)의 실제 공급자다 — Mat 경로와 같은 그림인지 그것으로 잰다. -->
+    <ProjectReference Include="..\..\src\CvInspect.Imaging\CvInspect.Imaging.csproj" />
+    <!-- Avalonia 데모 창의 연기 시험(DemoWindowTests) — 실행 파일 참조다. 데모가 Avalonia.Desktop 을 끌고 오지만 시험 앱은 TestApp 의
+         헤드리스 플랫폼으로 서므로 데스크톱 백엔드는 쓰이지 않는다. 화면 VM 은 WPF 데모와 같은 소스라 이 시험이 그 VM 도 덮는다. -->
+    <ProjectReference Include="..\..\samples\CvInspect.Demo.Avalonia\CvInspect.Demo.Avalonia.csproj" />
+    <!-- 네이티브 런타임은 소비자가 고른다는 계약의 실증 — 시험도 소비자다(Mat 경로 비교에 필요). 빌드하는 OS 의 것만 받는다. -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />
+  </ItemGroup>
+
+</Project>

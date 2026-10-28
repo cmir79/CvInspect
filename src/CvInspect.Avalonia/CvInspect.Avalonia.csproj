@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Avalonia 컨트롤 — 크로스플랫폼. net8.0 단독: Avalonia 12 는 netstandard 판이 없다(lib 가 net8.0·net10.0 뿐).
+         RID·SelfContained 는 넣지 않는다 — 라이브러리가 정할 일이 아니고, 넣으면 소비자 디자이너 미리보기가 깨진다. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- 화면 비트맵 잠금 버퍼(비관리 주소)를 바이트 구간으로 보고 코어 변환(CvPixConv)에 넘긴다 — 중간 관리 사본 없이. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>CvInspect.Avalonia</PackageId>
+    <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
+    <Description>Avalonia display and shape-editing controls for the CvInspect machine-vision toolkit — Mat image display with zoom/pan/pixel probe, renderer-neutral overlay drawing, and draggable teaching shapes that write back to tool option POCOs. For Windows and Linux, checked by a headless test suite in CI on both and in one consumer's real window on Windows (no Linux desktop run yet; macOS is not verified). Based on OpenCvSharp; the native OpenCV runtime is chosen by the consumer.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>avalonia;opencvsharp;machine-vision;inspection;display;overlay;roi;teaching;cross-platform</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Avalonia 본체 하나만 — 플랫폼(Desktop)·렌더러(Skia)·글자 셰이퍼(HarfBuzz)·테마(Fluent 등)는 앱이 고른다.
+         하한은 루트 Directory.Build.props 의 AvaloniaVersion(시험과 같은 값). 앱은 모든 Avalonia.* 패키지를 같은 판으로 맞춰야 한다(낮은 판의 Avalonia.Desktop 을 경유하면 경고 없이 판이 섞인다). -->
+    <PackageReference Include="Avalonia" Version="$(AvaloniaVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 코어(알고리즘·오버레이·번역 seam) — 같은 솔루션이라 프로젝트 참조. pack 시 CvInspect 패키지
+         의존성으로 변환된다. OpenCvSharp4 관리 어셈블리는 이 참조로 전이되고,
+         네이티브 런타임(OpenCvSharp4.runtime.*)은 여기서 정하지 않는다 — 소비자(앱) 선택. -->
+    <ProjectReference Include="..\CvInspect\CvInspect.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 코어 Display\ 의 UI 중립 계층(아직 internal)을 소스로 들인다. 코어 어셈블리의 internal 을 IVT 로 빌려 쓰면
+         소비자가 코어만 올린 조합에서 시그니처가 어긋나 실행 중에 MissingMethodException 이 난다 — 소스 링크는 그 의존을 만들지 않는다.
+         공개로 열면 이 링크를 걷고 코어의 public 을 쓴다. -->
+    <Compile Include="..\CvInspect\Display\*.cs" Link="Display\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- 링크 사본이 코어 타입을 조용히 가리는 것을 막는다 — 코어가 Display 를 public 으로 열거나 이 어셈블리에 IVT 를 주는데
+         위 링크를 안 걷으면 CS0436(같은 이름 타입이 둘, 사본이 이김)이 경고로만 나고 지나간다. 오류로 올려 그 판에서 멈추게 한다. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS0436</WarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 회귀가 표면 조작(누름·끌기·놓기)을 좌표로 부른다 — 입력 장치 흉내 없이 자리를 주려고. -->
+    <InternalsVisibleTo Include="CvInspect.Avalonia.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,17 +1,17 @@
-// CvDispSurface 의 그리기 — OnRender 파이프라인(이미지·결과 오버레이·편집 도형)과
-// 도형 기하 계산, 텍스트·화살촉·핸들 등 렌더 헬퍼.
+// CvDispSurface 의 그리기 — OnRender 파이프라인. 이미지는 여기서 직접 그리고, 결과 오버레이·편집 도형·무이미지 안내는
+// UI 중립 계층(ViDrawBldr)이 만든 그리기 목록을 WPF 어댑터(CvDispDrawAdp)가 그린다.
 
-using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
-using CvInspect.Vision.Overlay;
-using CvInspect.Vision.Edit;
+using CvInspect.Display;
 
 namespace CvInspect.Controls;
 
 internal sealed partial class CvDispSurface
 {
-    private const double HandleScreenPx = 7;   // 핸들 화면 크기(줌 무관)
+    // 그리기 목록 — 그릴 때마다 비우고 다시 채운다. 목록 객체와 폴리라인 점 배열(풀)은 다시 쓰지만 프리미티브는 프레임마다 새로 만든다.
+    // 비우는 것은 다음 그리기 때라 그 사이 지난 프레임의 프리미티브·글자 객체가 살아 있다(목록 하나 분량).
+    private readonly List<ViPrim> _prims = new();
 
     // === 렌더 ===
 
@@ -34,516 +34,39 @@ internal sealed partial class CvDispSurface
 
     protected override void OnRender(DrawingContext dc)
     {
-        dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));   // 히트 영역 확보
-        if (_bitmap is null || _imgW == 0)
+        // 히트 영역 확보 겸 영상 영역 바탕 — 테마 바탕이 없으면 투명(부모 Background 가 비친다).
+        dc.DrawRectangle(_viewBg ?? Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
+        var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        var tm = new CvDispTextPort(ppd);
+        ViDrawBldr.Clear(_prims);
+
+        if (_bitmap is null || _frame.Width == 0)
         {
-            RenderPlaceholder(dc);
+            // 무이미지 플레이스홀더 — 중앙 안내 문구만 (히트 없음 — 우클릭 메뉴 등 상위 인터랙션 유지).
+            // 불러오기가 없는 화면에서는 힌트 문구가 되지도 않는 조작을 시키는 셈이라 제목만 남긴다.
+            ViDrawBldr.Placeholder(_prims, ActualWidth, ActualHeight, CvLoc.T("cv:NoImage"),
+                _showLoadHint ? CvLoc.T("cv:NoImageHint") : null, tm, _hintPaint);
+            CvDispDrawAdp.Draw(dc, _prims, ppd);
             return;
         }
 
         if (_fitPending) ApplyFit();
 
-        dc.PushTransform(new MatrixTransform(_view));
-        dc.DrawImage(_bitmap, new Rect(0, 0, _imgW, _imgH));
+        dc.PushTransform(new MatrixTransform(new Matrix(_view.Scale, 0, 0, _view.Scale, _view.OffsetX, _view.OffsetY)));
+        dc.DrawImage(_bitmap, new Rect(0, 0, _frame.Width, _frame.Height));
         dc.Pop();
 
-        if (_overlay is not null)
-        {
-            // 켜면 이미지가 차지한 화면 사각으로 자른다(근거·실측은 CvDispCtrl.ClipOverlayToImage 주석). 끄면(기본) 이 표면의
-            // 경계가 유일한 클립이라 맞춤 여백에도 그려진다.
-            // 모서리 HUD 는 켜도 자르지 않고 그 뒤에 그린다 — 글자가 화면 고정 크기라 이미지가 작게 그려지면 블록이 이미지보다
-            // 커지는데, 자르면 판정 사유 줄이 사라지고 남은 헤더 한 줄이 온전한 HUD 처럼 보인다(게시 전 검토 실측:
-            // 1000×60 띠를 400×400 칸에 → HUD 픽셀 83% 소실). 편집 도형도 자르지 않는다 — 가장자리 핸들을 잡을 수 있어야 한다.
-            if (_clipOverlayToImage)
-            {
-                dc.PushClip(new RectangleGeometry(Rect.Transform(new Rect(0, 0, _imgW, _imgH), _view)));
-                RenderOverlay(dc, _overlay, item => !IsCornerHud(item));
-                dc.Pop();
-                RenderOverlay(dc, _overlay, IsCornerHud);
-            }
-            else
-            {
-                RenderOverlay(dc, _overlay, null);
-            }
-        }
-        if (_shapes is not null) RenderShapes(dc, _shapes);
+        // 클립(ClipOverlayToImage)의 근거·실측은 CvDispCtrl.ClipOverlayToImage 주석. 편집 도형은 자르지 않는다 — 가장자리 핸들을 잡을 수 있어야 한다.
+        if (_overlay is not null) ViDrawBldr.Overlay(_prims, _overlay, _view, tm, _overlayLabelScale, _clipOverlayToImage, _frame.Width, _frame.Height);
+        if (_shapeSub.Shapes is { } shapes) ViDrawBldr.Shapes(_prims, shapes, _view, tm);
+        CvDispDrawAdp.Draw(dc, _prims, ppd);
     }
-
-    /// <summary>무이미지 플레이스홀더 — 중앙 안내 문구만 그린다 (히트 없음 — 우클릭 메뉴 등 상위 인터랙션 유지).</summary>
-    private void RenderPlaceholder(DrawingContext dc)
-    {
-        if (ActualWidth < 60 || ActualHeight < 40) return;
-        var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        var gray = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
-        // 안내 문구는 UI 폰트(Segoe UI) — 데이터 표기용 오버레이 라벨(Consolas Bold, Format 헬퍼)과 구분.
-        var title = FormatUi(CvLoc.T("cv:NoImage"), 14, gray, ppd);
-        var cx = ActualWidth / 2;
-        var cy = ActualHeight / 2;
-
-        if (!_showLoadHint)
-        {
-            // 힌트가 빠지면 제목 혼자 남으므로 두 줄 기준의 위쪽 자리가 아니라 정가운데로 온다.
-            dc.DrawText(title, new System.Windows.Point(cx - title.Width / 2, cy - title.Height / 2));
-            return;
-        }
-
-        var hint = FormatUi(CvLoc.T("cv:NoImageHint"), 11, gray, ppd);
-        dc.DrawText(title, new System.Windows.Point(cx - title.Width / 2, cy - title.Height - 2));
-        dc.DrawText(hint, new System.Windows.Point(cx - hint.Width / 2, cy + 2));
-    }
-
-    private static FormattedText FormatUi(string text, float sizePt, Brush brush, double ppd)
-        => new(text, CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
-            new Typeface(new System.Windows.Media.FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal),
-            sizePt * 96.0 / 72.0, brush, ppd);
 
     private void ApplyFit()
     {
-        _fitPending = false;
-        if (ActualWidth < 8 || ActualHeight < 8 || _imgW == 0) return;
-        var scale = Math.Min(ActualWidth / _imgW, ActualHeight / _imgH) * 0.97;
-        scale = Math.Clamp(scale, MinScale, MaxScale);
-        var m = Matrix.Identity;
-        m.Scale(scale, scale);
-        m.Translate((ActualWidth - _imgW * scale) / 2, (ActualHeight - _imgH * scale) / 2);
-        _view = m;
+        _fitPending = false;   // 맞추지 못해도(표면이 너무 작음) 예약은 소화한다 — 다음 크기 변경이 다시 세운다
+        if (!CvViewXform.TryFit(ActualWidth, ActualHeight, _frame.Width, _frame.Height, out var fit)) return;
+        _view = fit;
         StatusChanged?.Invoke();   // 컨트롤이 디스패처 경유로 갱신 — OnRender 중 호출 안전
     }
-
-    /// <summary>이미지 모서리에 붙은 요약 HUD — <c>ViOverlay.CropTo</c> 가 같은 모서리로 다시 붙이는 것과 같은 판정.</summary>
-    private static bool IsCornerHud(ViOverlayItem item)
-        => item is ViOverlayLabel
-        {
-            IsHud: true,
-            Align: ViOverlayAlign.TopLeft or ViOverlayAlign.TopRight or ViOverlayAlign.BottomLeft or ViOverlayAlign.BottomRight,
-        };
-
-    /// <summary>오버레이 항목을 목록 순서대로 그린다. <paramref name="include"/> 가 있으면 그것이 참인 항목만.</summary>
-    private void RenderOverlay(DrawingContext dc, ViOverlay overlay, Func<ViOverlayItem, bool>? include)
-    {
-        var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        foreach (var item in overlay.Items)
-        {
-            if (include is not null && !include(item)) continue;
-            var brush = MapBrush(item.Color);
-            // 굵기 배수 — 화면 고정 기본 굵기에 곱한다(줌과 무관). 이상한 값은 기본 굵기로, 범위 밖은 끝값으로(ViOverlayItem.StrokeScale 설명).
-            var stroke = item.StrokeScale is > 0 and < double.PositiveInfinity
-                ? Math.Clamp(item.StrokeScale, MinStrokeScale, MaxStrokeScale)
-                : 1.0;
-            var pen = new Pen(brush, 2 * stroke);
-            if (item.IsDashed) pen.DashStyle = DashStyles.Dash;
-            pen.Freeze();   // 렌더 중 변경되지 않는 펜 — 얼려 두면 변경 추적 비용이 빠진다
-            switch (item)
-            {
-                case ViOverlaySeg seg:
-                {
-                    var p1 = ToScreen(seg.X1, seg.Y1);
-                    var p2 = ToScreen(seg.X2, seg.Y2);
-                    dc.DrawLine(pen, p1, p2);
-                    if (seg.HasEndArrow) DrawArrowHead(dc, brush, p1, p2, stroke);
-                    break;
-                }
-                case ViOverlayLabel label:
-                {
-                    // 글자 크기만 키운다 — 기준점·정렬은 그대로, 배경 상자는 아래에서 글자의 잉크 경계를 따라간다. 모서리 요약 HUD 는 그대로다
-                    // (자르기와 같은 판정 — HUD 표식이 있어도 모서리 정렬이 아니면 붙은 모서리가 없으므로 다른 라벨처럼 다룬다).
-                    var sizePt = IsCornerHud(label) ? label.FontSize : (float)(label.FontSize * _overlayLabelScale);
-                    var ft = Format(label.Text, sizePt, brush, ppd);
-                    var anchor = ToScreen(label.X, label.Y);
-                    var x = label.Align switch
-                    {
-                        ViOverlayAlign.TopLeft or ViOverlayAlign.BottomLeft => anchor.X,
-                        ViOverlayAlign.TopRight or ViOverlayAlign.BottomRight => anchor.X - ft.Width,
-                        _ => anchor.X - ft.Width / 2,
-                    };
-                    var y = label.Align is ViOverlayAlign.BottomCenter or ViOverlayAlign.BottomLeft or ViOverlayAlign.BottomRight
-                        ? anchor.Y - ft.Height
-                        : anchor.Y;
-                    if (label.HasBackground)
-                    {
-                        // 검은 배경 박스 — FormattedText.Height 는 줄높이(행간 포함)라 헐렁하므로
-                        // 실제 잉크 경계(BuildGeometry.Bounds) 기준 + 소폭 패딩으로 타이트하게.
-                        var ink = ft.BuildGeometry(new System.Windows.Point(x, y)).Bounds;
-                        if (!ink.IsEmpty)
-                        {
-                            var back = new SolidColorBrush(System.Windows.Media.Color.FromArgb(200, 0, 0, 0));
-                            back.Freeze();
-                            ink.Inflate(2, 2);
-                            dc.DrawRectangle(back, null, ink);
-                        }
-                    }
-                    if (label.LineColors is null)
-                    {
-                        dc.DrawText(ft, new System.Windows.Point(x, y));
-                    }
-                    else
-                    {
-                        // 줄마다 색이 다르면 한 번에 못 그린다 — 줄 단위로 나눠 그린다.
-                        // 줄 높이는 블록 높이를 줄 수로 나눠 쓴다(같은 폰트·같은 행간이라 균일).
-                        var textLines = label.Text.Split('\n');
-                        var lineH = ft.Height / Math.Max(1, textLines.Length);
-                        for (var li = 0; li < textLines.Length; li++)
-                        {
-                            var lc = li < label.LineColors.Count ? label.LineColors[li] : null;
-                            var lineFt = Format(textLines[li], sizePt, lc is null ? brush : MapBrush(lc.Value), ppd);
-                            dc.DrawText(lineFt, new System.Windows.Point(x, y + li * lineH));
-                        }
-                    }
-                    break;
-                }
-                case ViOverlayRect rect:
-                {
-                    var rad = rect.AngleDeg * Math.PI / 180.0;
-                    var cos = Math.Cos(rad);
-                    var sin = Math.Sin(rad);
-                    var hw = rect.Width / 2;
-                    var hh = rect.Height / 2;
-                    var corners = new[] { (-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh) };
-                    var pts = new System.Windows.Point[4];
-                    for (var i = 0; i < 4; i++)
-                    {
-                        var (ox, oy) = corners[i];
-                        pts[i] = ToScreen(rect.CenterX + cos * ox - sin * oy, rect.CenterY + sin * ox + cos * oy);
-                    }
-                    // 닫힌 도형 하나로 그린다 — 변마다 DrawLine 이면 끝이 평평해 모서리 바깥 (굵기/2)² 칸이 비어, 굵게 한 NG 박스의
-                    // 네 모서리가 이 빠진 것처럼 보였다(배수 3 이면 3×3). 닫힌 도형은 모서리를 이어 그린다(마이터).
-                    var box = new StreamGeometry();
-                    using (var ctx = box.Open())
-                    {
-                        ctx.BeginFigure(pts[0], isFilled: false, isClosed: true);
-                        for (var i = 1; i < 4; i++) ctx.LineTo(pts[i], isStroked: true, isSmoothJoin: false);
-                    }
-                    box.Freeze();
-                    dc.DrawGeometry(null, pen, box);
-                    break;
-                }
-                case ViOverlayPoly poly when poly.Points.Count >= 2:
-                {
-                    // 폴리라인은 <b>지오메트리 하나</b>로 낸다 — 점마다 DrawLine 을 부르면 드로잉 명령이
-                    // 점 수만큼 쌓인다. 에지 블랍 윤곽은 한 장에 수천 점이 나오므로(실측 평균 3.2천·최대 5.6천),
-                    // 줌·팬처럼 전체를 다시 그리는 조작마다 그 수만큼의 명령이 재생성돼 화면이 끊긴다.
-                    // 점선은 선분마다 dash 를 계산하느라 그 비용이 더 커진다.
-                    var thin = new Pen(brush, 1.2 * stroke);
-                    if (poly.IsDashed) thin.DashStyle = DashStyles.Dash;
-                    thin.Freeze();
-
-                    var geo = new StreamGeometry();
-                    using (var ctx = geo.Open())
-                    {
-                        ctx.BeginFigure(ToScreen(poly.Points[0].X, poly.Points[0].Y),
-                            isFilled: false, isClosed: poly.IsClosed && poly.Points.Count >= 3);
-                        for (var i = 1; i < poly.Points.Count; i++)
-                            ctx.LineTo(ToScreen(poly.Points[i].X, poly.Points[i].Y), isStroked: true, isSmoothJoin: false);
-                    }
-                    geo.Freeze();
-
-                    dc.DrawGeometry(null, thin, geo);
-                    break;
-                }
-            }
-        }
-    }
-
-    private void RenderShapes(DrawingContext dc, IReadOnlyList<CvEditShape> shapes)
-    {
-        var ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        foreach (var shape in shapes)
-        {
-            var brush = MapBrush(shape.Color);
-            var pen = new Pen(brush, 2) { DashStyle = DashStyles.Dash };
-            switch (shape)
-            {
-                case CvEditRect r:
-                {
-                    var corners = RectCorners(r);
-                    var scr = new System.Windows.Point[4];
-                    for (var i = 0; i < 4; i++) scr[i] = ToScreen(corners[i].X, corners[i].Y);
-                    for (var i = 0; i < 4; i++) dc.DrawLine(pen, scr[i], scr[(i + 1) % 4]);
-                    // 크기 고정 사각(IsResizable=false)은 그립 미표시 — 히트 판정과 짝 (이동만 가능함을 시각화).
-                    if (r.IsResizable)
-                    {
-                        foreach (var (hx, hy) in corners)
-                            DrawHandle(dc, brush, ToScreen(hx, hy));
-                        // 면 핸들 — 외곽선(점선) 위 변 가운데만 실선으로 조금 굵게. 잡으면 그 변만 움직인다(반대 변 고정).
-                        var edgePen = new Pen(brush, EdgeHandleThickPx);
-                        edgePen.Freeze();
-                        foreach (var (_, e1, e2) in RectEdgeHandles(r)) dc.DrawLine(edgePen, e1, e2);
-                    }
-
-                    if (r.IsResizable && r.IsRotatable)
-                    {
-                        // 회전 그립 — 상변 중앙에서 바깥으로 화면 고정 길이만큼 뻗은 원형 핸들
-                        var (gx, gy) = RectGrip(r, GripScreenPx / Scale);
-                        var topMid = ToScreen((corners[0].X + corners[1].X) / 2, (corners[0].Y + corners[1].Y) / 2);
-                        var grip = ToScreen(gx, gy);
-                        dc.DrawLine(new Pen(brush, 1.2), topMid, grip);
-                        dc.DrawEllipse(brush, null, grip, HandleScreenPx / 2 + 1, HandleScreenPx / 2 + 1);
-                    }
-
-                    if (shape.Label.Length > 0)
-                    {
-                        var ft = Format(shape.Label, 12, brush, ppd);
-                        dc.DrawText(ft, new System.Windows.Point(scr[0].X, scr[0].Y - ft.Height - 2));
-                    }
-                    break;
-                }
-                case CvEditSeg s:
-                {
-                    var p1 = ToScreen(s.X1, s.Y1);
-                    var p2 = ToScreen(s.X2, s.Y2);
-                    dc.DrawLine(pen, p1, p2);
-                    // 방향 화살표(P1→P2) — 스캔 진행/에지 극성 해석이 세그먼트 방향에 걸려 있어 티칭 중 시인 필요
-                    DrawArrowHead(dc, brush, p1, p2);
-                    DrawHandle(dc, brush, p1);
-                    DrawHandle(dc, brush, p2);
-                    if (shape.Label.Length > 0)
-                    {
-                        var ft = Format(shape.Label, 12, brush, ppd);
-                        dc.DrawText(ft, new System.Windows.Point((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2 - ft.Height - 4));
-                    }
-                    break;
-                }
-                case CvEditCircle circle:
-                {
-                    // 원주 + 중심 십자 + 반경 그립(우측 0°, 중심 연결선).
-                    DrawCirclePolyline(dc, pen, circle.CenterX, circle.CenterY, circle.Radius);
-
-                    var c = ToScreen(circle.CenterX, circle.CenterY);
-                    dc.DrawLine(new Pen(brush, 1.2), new System.Windows.Point(c.X - 7, c.Y), new System.Windows.Point(c.X + 7, c.Y));
-                    dc.DrawLine(new Pen(brush, 1.2), new System.Windows.Point(c.X, c.Y - 7), new System.Windows.Point(c.X, c.Y + 7));
-
-                    var pRad = ToScreen(circle.CenterX + circle.Radius, circle.CenterY);
-                    dc.DrawLine(new Pen(brush, 1.2), c, pRad);
-                    DrawHandle(dc, brush, pRad);
-
-                    if (shape.Label.Length > 0)
-                    {
-                        var ft = Format(shape.Label, 12, brush, ppd);
-                        dc.DrawText(ft, new System.Windows.Point(pRad.X + 6, pRad.Y - ft.Height - 2));
-                    }
-                    break;
-                }
-                case CvEditRing ring:
-                {
-                    // min/max 동심원 쌍 — 안(밝은 대시)/바깥 원 + 중심 십자 + 반경 그립 (안=좌측 180°, 바깥=우측 0°).
-                    var c = ToScreen(ring.CenterX, ring.CenterY);
-                    DrawCirclePolyline(dc, pen, ring.CenterX, ring.CenterY, ring.RMin);
-                    DrawCirclePolyline(dc, pen, ring.CenterX, ring.CenterY, ring.RMax);
-
-                    dc.DrawLine(new Pen(brush, 1.2), new System.Windows.Point(c.X - 7, c.Y), new System.Windows.Point(c.X + 7, c.Y));
-                    dc.DrawLine(new Pen(brush, 1.2), new System.Windows.Point(c.X, c.Y - 7), new System.Windows.Point(c.X, c.Y + 7));
-
-                    var pIn = ToScreen(ring.CenterX - ring.RMin, ring.CenterY);
-                    var pOut = ToScreen(ring.CenterX + ring.RMax, ring.CenterY);
-                    DrawHandle(dc, brush, pIn);
-                    DrawHandle(dc, brush, pOut);
-
-                    if (shape.Label.Length > 0)
-                    {
-                        var ft = Format(shape.Label, 12, brush, ppd);
-                        dc.DrawText(ft, new System.Windows.Point(pOut.X + 6, pOut.Y - ft.Height - 2));
-                    }
-                    break;
-                }
-                case CvEditArc arc:
-                {
-                    // 원호 폴리라인 — 스팬 비례 분할. 시작→끝(+방향) 순서로 그려 화살촉이 진행 방향을 가리킴.
-                    var segs = Math.Max(12, (int)Math.Round(arc.SpanDeg / 5.0));
-                    var prev = ToScreen(ArcPoint(arc, 0).X, ArcPoint(arc, 0).Y);
-                    var beforeEnd = prev;
-                    for (var i = 1; i <= segs; i++)
-                    {
-                        var t = arc.SpanDeg * i / segs;
-                        var cur = ToScreen(ArcPoint(arc, t).X, ArcPoint(arc, t).Y);
-                        dc.DrawLine(pen, prev, cur);
-                        beforeEnd = prev;
-                        prev = cur;
-                    }
-                    // 스팬 끝 화살촉 — 진행(+deg) 방향 시인 (라인 파인더 화살표와 동일 목적)
-                    DrawArrowHead(dc, brush, beforeEnd, prev);
-
-                    // 중심 십자 (이동 히트 지점 겸)
-                    var c = ToScreen(arc.CenterX, arc.CenterY);
-                    dc.DrawLine(new Pen(brush, 1.2), new System.Windows.Point(c.X - 7, c.Y), new System.Windows.Point(c.X + 7, c.Y));
-                    dc.DrawLine(new Pen(brush, 1.2), new System.Windows.Point(c.X, c.Y - 7), new System.Windows.Point(c.X, c.Y + 7));
-
-                    // 그립 — 0=시작각, 1=스팬 끝, 2=반경(중간각, 중심 연결선)
-                    var pStart = ToScreen(ArcPoint(arc, 0).X, ArcPoint(arc, 0).Y);
-                    var pEnd = ToScreen(ArcPoint(arc, arc.SpanDeg).X, ArcPoint(arc, arc.SpanDeg).Y);
-                    var pRad = ToScreen(ArcPoint(arc, arc.SpanDeg / 2).X, ArcPoint(arc, arc.SpanDeg / 2).Y);
-                    dc.DrawLine(new Pen(brush, 1.2), c, pRad);
-                    DrawHandle(dc, brush, pStart);
-                    DrawHandle(dc, brush, pEnd);
-                    dc.DrawEllipse(brush, null, pRad, HandleScreenPx / 2 + 1, HandleScreenPx / 2 + 1);
-
-                    if (shape.Label.Length > 0)
-                    {
-                        var ft = Format(shape.Label, 12, brush, ppd);
-                        dc.DrawText(ft, new System.Windows.Point(pStart.X + 4, pStart.Y - ft.Height - 4));
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    /// <summary>원호 위 점(이미지 공간) — spanOffsetDeg 는 시작각으로부터의 + 방향 오프셋.</summary>
-    private static (double X, double Y) ArcPoint(CvEditArc arc, double spanOffsetDeg)
-    {
-        var rad = (arc.StartDeg + spanOffsetDeg) * Math.PI / 180.0;
-        return (arc.CenterX + arc.Radius * Math.Cos(rad), arc.CenterY + arc.Radius * Math.Sin(rad));
-    }
-
-    /// <summary>전체 원 폴리라인 (72 분할) — 링 도형 등 비편집 원주 표시용.</summary>
-    private void DrawCirclePolyline(DrawingContext dc, Pen pen, double cx, double cy, double r)
-    {
-        const int segs = 72;
-        var prev = ToScreen(cx + r, cy);
-        for (var i = 1; i <= segs; i++)
-        {
-            var t = i * Math.PI * 2 / segs;
-            var cur = ToScreen(cx + r * Math.Cos(t), cy + r * Math.Sin(t));
-            dc.DrawLine(pen, prev, cur);
-            prev = cur;
-        }
-    }
-
-    private const double GripScreenPx = 26;   // 회전 그립의 상변 이탈 거리(화면 고정)
-
-    /// <summary>사각 중심(이미지 공간).</summary>
-    private static (double X, double Y) RectCenter(CvEditRect r) => (r.X + r.W / 2, r.Y + r.H / 2);
-
-    /// <summary>회전 적용된 4 모서리(이미지 공간) — 좌상/우상/우하/좌하 순 (핸들 인덱스 0..3).</summary>
-    private static (double X, double Y)[] RectCorners(CvEditRect r)
-    {
-        var (cx, cy) = RectCenter(r);
-        var rad = r.AngleDeg * Math.PI / 180.0;
-        var cos = Math.Cos(rad);
-        var sin = Math.Sin(rad);
-        var hw = r.W / 2;
-        var hh = r.H / 2;
-        var local = new[] { (-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh) };
-        var pts = new (double X, double Y)[4];
-        for (var i = 0; i < 4; i++)
-        {
-            var (lx, ly) = local[i];
-            pts[i] = (cx + cos * lx - sin * ly, cy + sin * lx + cos * ly);
-        }
-        return pts;
-    }
-
-    /// <summary>회전 그립 위치(이미지 공간) — 상변 중앙에서 로컬 −y 방향으로 gripImgLen 만큼.</summary>
-    private static (double X, double Y) RectGrip(CvEditRect r, double gripImgLen)
-    {
-        var (cx, cy) = RectCenter(r);
-        var rad = r.AngleDeg * Math.PI / 180.0;
-        var cos = Math.Cos(rad);
-        var sin = Math.Sin(rad);
-        var ly = -(r.H / 2 + gripImgLen);
-        return (cx - sin * ly, cy + cos * ly);
-    }
-
-    // 면 핸들 — 각 변 가운데를 조금 굵게 그린 짧은 선. 길이는 변의 1/3 이되 화면 고정 상한이 있어, 큰 사각이면 변 가운데만
-    // 살짝 굵어 보인다. 변이 화면에서 짧으면 아예 내지 않는다 — 모서리 핸들과 겹쳐 어느 것을 잡았는지 알 수 없게 된다.
-    private const double EdgeHandleMaxScreenPx = 24;
-    private const double EdgeHandleThickPx = 5;
-    private const double EdgeHandleMinEdgeScreenPx = 3 * HandleScreenPx;
-
-    /// <summary>사각의 면 핸들(화면 좌표 선분) — 핸들 인덱스 5..8 = 위/오른쪽/아래/왼쪽 변(회전 전 로컬 기준). 화면에서 짧은
-    /// 변은 빠진다. 그리기와 잡기 판정이 같은 목록을 쓴다 — 따로 계산하면 보이는 자리와 잡히는 자리가 어긋난다.</summary>
-    private List<(int Handle, System.Windows.Point P1, System.Windows.Point P2)> RectEdgeHandles(CvEditRect r)
-    {
-        var handles = new List<(int, System.Windows.Point, System.Windows.Point)>(4);
-        var corners = RectCorners(r);
-        for (var e = 0; e < 4; e++)
-        {
-            var a = ToScreen(corners[e].X, corners[e].Y);
-            var b = ToScreen(corners[(e + 1) % 4].X, corners[(e + 1) % 4].Y);
-            var dx = b.X - a.X;
-            var dy = b.Y - a.Y;
-            var len = Math.Sqrt(dx * dx + dy * dy);
-            if (len < EdgeHandleMinEdgeScreenPx) continue;
-            var half = Math.Min(EdgeHandleMaxScreenPx, len / 3) / 2 / len;
-            var mx = (a.X + b.X) / 2;
-            var my = (a.Y + b.Y) / 2;
-            // 변 가운데가 모서리 판정 칸(화면 축 정렬 ±HitScreenPx) 안이면 낸다 해도 잡히지 않는다 — 모서리가 먼저 잡힌다.
-            // 길이 하한만으로는 45° 사각에서 빠진다(칸의 대각 거리 √2·8 ≈ 11.3 이 21~22.6 px 변 가운데까지 닿는다, 독립 검토 지적).
-            if ((Math.Abs(mx - a.X) <= HitScreenPx && Math.Abs(my - a.Y) <= HitScreenPx)
-                || (Math.Abs(mx - b.X) <= HitScreenPx && Math.Abs(my - b.Y) <= HitScreenPx)) continue;
-            handles.Add((5 + e, new System.Windows.Point(mx - dx * half, my - dy * half), new System.Windows.Point(mx + dx * half, my + dy * half)));
-        }
-        return handles;
-    }
-
-    /// <summary>이미지 좌표 → 사각 로컬 좌표 (중심 원점, 회전 해제).</summary>
-    private static (double X, double Y) ToRectLocal(CvEditRect r, double imgX, double imgY)
-    {
-        var (cx, cy) = RectCenter(r);
-        var rad = -r.AngleDeg * Math.PI / 180.0;
-        var cos = Math.Cos(rad);
-        var sin = Math.Sin(rad);
-        var dx = imgX - cx;
-        var dy = imgY - cy;
-        return (cos * dx - sin * dy, sin * dx + cos * dy);
-    }
-
-    private static void DrawHandle(DrawingContext dc, Brush brush, System.Windows.Point p)
-        => dc.DrawRectangle(brush, null,
-            new Rect(p.X - HandleScreenPx / 2, p.Y - HandleScreenPx / 2, HandleScreenPx, HandleScreenPx));
-
-    /// <summary>끝점의 채운 화살촉. <paramref name="scale"/> 은 선 굵기 배수 — 굵은 선에 기본 크기 촉을 달면 촉이 선에 묻힌다.</summary>
-    private static void DrawArrowHead(DrawingContext dc, Brush brush, System.Windows.Point from, System.Windows.Point to, double scale = 1.0)
-    {
-        var dx = to.X - from.X;
-        var dy = to.Y - from.Y;
-        var len = Math.Sqrt(dx * dx + dy * dy);
-        if (len < 2) return;
-        var ux = dx / len;
-        var uy = dy / len;
-        // 촉이 선분보다 길면 선분 길이로 줄인다(비율 유지) — 짧은 선분에 키운 촉이 시작점 뒤 빈 곳에서 튀어나오지 않게.
-        var shrink = Math.Min(1.0, len / (12 * scale));
-        var headLen = 12 * scale * shrink;
-        var headHalf = 4.5 * scale * shrink;
-        var bx = to.X - ux * headLen;
-        var by = to.Y - uy * headLen;
-        var geo = new StreamGeometry();
-        using (var ctx = geo.Open())
-        {
-            ctx.BeginFigure(to, true, true);
-            ctx.LineTo(new System.Windows.Point(bx - uy * headHalf, by + ux * headHalf), false, false);
-            ctx.LineTo(new System.Windows.Point(bx + uy * headHalf, by - ux * headHalf), false, false);
-        }
-        geo.Freeze();
-        dc.DrawGeometry(brush, null, geo);
-    }
-
-    // 글자 크기(포인트)의 그릴 수 있는 범위 — FormattedText 는 0 이하나 35791 DIP(≈ 26843 pt) 넘는 크기를 던지는데, 그 예외는 OnRender
-    // 안이라 레이아웃 패스를 타고 앱의 처리되지 않은 예외로 올라간다. 라벨 글자 크기는 검사 코드가 정하고(검사하지 않는다) 화면 배율이
-    // 곱해지므로(검토 실측: 20 pt 라벨이 배율 1500 에서, 아주 작은 배율은 float 로 0 이 되어 던졌다) 그리는 자리에서 잡는다.
-    // 선 굵기 배수(ViOverlayItem.StrokeScale)의 그릴 수 있는 범위. 아래 끝: 0 에 가까운 배수는 선을 사실상 지운다 — 0 은 1.0 으로
-    // 바꾸면서 1e-6 은 안 보이게 두면 같은 실수가 값에 따라 갈린다. 위 끝: 아주 큰 유한값은 기본 굵기와 곱해 무한대가 되고, 화살촉
-    // 좌표는 0×∞ 로 NaN 이 된다(독립 검토 지적). 50 배면 선분 굵기 100 DIP — "눈에 띄게" 의 쓰임은 그 한참 안쪽이다.
-    private const double MinStrokeScale = 0.25;
-    private const double MaxStrokeScale = 50;
-
-    private const float MinLabelPt = 0.5f;
-    private const float MaxLabelPt = 26000f;
-
-    private static FormattedText Format(string text, float sizePt, Brush brush, double ppd)
-        => new(text, CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
-            new Typeface(new System.Windows.Media.FontFamily("Consolas"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
-            (float.IsNaN(sizePt) ? MinLabelPt : Math.Clamp(sizePt, MinLabelPt, MaxLabelPt)) * 96.0 / 72.0, brush, ppd);
-
-    private static Brush MapBrush(ViOverlayColor color) => color switch
-    {
-        // Green/Teal 은 어두운 톤 — 조명으로 하얗게 뜨는 제품 위에서 순색이 씻겨 안 보임.
-        // Cyan(순색) 은 검사 결과 측정 기하용, Teal 은 티칭 편집 도형(Search/Band)용 — 용도별 분리.
-        ViOverlayColor.Green => Brushes.Green,
-        ViOverlayColor.Red => Brushes.Red,
-        ViOverlayColor.Cyan => Brushes.Cyan,
-        ViOverlayColor.Teal => Brushes.Teal,
-        ViOverlayColor.Orange => Brushes.Orange,
-        ViOverlayColor.Yellow => Brushes.Yellow,
-        _ => Brushes.White,
-    };
 }

@@ -6,6 +6,7 @@
 [![NuGet CvInspect.Imaging](https://img.shields.io/nuget/v/CvInspect.Imaging?logo=nuget&label=CvInspect.Imaging)](https://www.nuget.org/packages/CvInspect.Imaging)
 [![NuGet CvInspect.Imaging.Gev](https://img.shields.io/nuget/v/CvInspect.Imaging.Gev?logo=nuget&label=CvInspect.Imaging.Gev)](https://www.nuget.org/packages/CvInspect.Imaging.Gev)
 [![NuGet CvInspect.Wpf](https://img.shields.io/nuget/v/CvInspect.Wpf?logo=nuget&label=CvInspect.Wpf)](https://www.nuget.org/packages/CvInspect.Wpf)
+[![NuGet CvInspect.Avalonia](https://img.shields.io/nuget/v/CvInspect.Avalonia?logo=nuget&label=CvInspect.Avalonia)](https://www.nuget.org/packages/CvInspect.Avalonia)
 
 Machine-vision inspection toolkit for .NET, based on [OpenCvSharp](https://github.com/shimat/opencvsharp).
 
@@ -47,9 +48,9 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
 - **Pure and deterministic.** Tools are static functions over `Mat`: same input, same output.
   Recipes can be replayed offline and the test suite pins real defects that were observed.
 - **Teaching UI without boilerplate.** Option POCOs carry attributes and supply their own teaching
-  shapes (`ICvShapeSource`, in the core); from those alone the WPF package builds the property
-  editor, draws the draggable search shapes and shows the localized labels, and `System.Text.Json`
-  persists them with string enums.
+  shapes (`ICvShapeSource`, in the core); from those alone the WPF and Avalonia packages build the
+  property editor, draw the draggable search shapes and show the localized labels, and
+  `System.Text.Json` persists them with string enums.
 - **Acquisition without vendor SDKs.** `CamFrame` is a GC-owned buffer with no lifetime contract,
   GigE cameras are driven by a managed protocol implementation (no drivers, no vendor DLLs), and
   virtual/video sources make offline work identical to live work.
@@ -79,10 +80,12 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   `new ViOverlayLabel(label) { FontSize = label.FontSize * 1.5f }` — and keeps up when a property is added
 
 Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display control,
-shape dragging, property editor), **CvInspect.Imaging** (camera acquisition contract with virtual /
-VideoCapture sources, and a factory that vendor adapters register into) and
+shape dragging, property editor), **CvInspect.Avalonia** (the same display control and property
+editor for [Avalonia](https://avaloniaui.net/), for Windows and Linux — first released in 0.34; see
+[Limits](#limits) for how far it has been checked), **CvInspect.Imaging** (camera acquisition
+contract with virtual / VideoCapture sources, and a factory that vendor adapters register into) and
 **CvInspect.Imaging.Gev** (GigE Vision cameras spoken to directly — no vendor SDK, no
-proprietary DLLs).
+proprietary DLLs). The five packages share one version number; upgrade them as a set.
 
 ## Install
 
@@ -148,6 +151,16 @@ file name — that is the manifest, not the file.
 The library itself never uses reflection-based JSON serialization (translation files are read
 with `JsonDocument`), so it is IL2CPP/AOT friendly.
 
+| Package | Targets |
+|---|---|
+| `CvInspect`, `CvInspect.Imaging`, `CvInspect.Imaging.Gev` | `netstandard2.1`, `net8.0` |
+| `CvInspect.Wpf` | `net8.0-windows` |
+| `CvInspect.Avalonia` | `net8.0` (Avalonia 12 has no `netstandard` build), Avalonia 12.1.4 or later |
+
+**With CvInspect.Avalonia, keep every `Avalonia.*` package on the same version.** Referencing a lower
+`Avalonia` directly stops the restore (NU1605), but a lower `Avalonia.Desktop` mixes versions
+without any warning.
+
 ## Localization
 
 Property metadata (`[CvCategory]`, `[CvName]`, `[CvDesc]`) derives from the standard
@@ -179,7 +192,8 @@ via `CvCategoryAttribute.ScopedKey` + `CvLoc.T` rather than the cached `Category
 `ICvPixelSource` is the core's small interop contract for 8-bit pixel buffers (`Pixels`, `Width`,
 `Height`, `Stride`, `Channels`). The core itself never consumes it; it exists so sibling packages
 can meet without referencing each other — `CvInspect.Imaging`'s `CamFrame` implements it and
-`CvInspect.Wpf`'s `CvDispCtrl` accepts it, holding the array by reference instead of copying.
+`CvDispCtrl` (in both `CvInspect.Wpf` and `CvInspect.Avalonia`) accepts it, holding the array by
+reference instead of copying.
 Implementations must treat `Pixels` as immutable once published.
 
 ## Logging
@@ -244,6 +258,15 @@ Roll recipes back together with the host (keep a copy from before the first 0.27
   multi-camera PC: enumerates devices, snaps one frame per index and backend, then reopens each
   camera by VID/PID through `CamOpt.SerialNumber` so the two pictures can be compared.
 
+- `samples/CvInspect.Demo.Avalonia` — the same window built on CvInspect.Avalonia (same view-model,
+  recipe and synthetic part, compiled from the WPF demo's files). From source only:
+  `dotnet run --project samples/CvInspect.Demo.Avalonia`; the release exe is the WPF demo. The Avalonia
+  test suite opens the window headless and checks that the synthetic part is shown and the recipe
+  runs; not yet run on macOS (no OpenCV runtime is referenced there — add one).
+
+The Avalonia controls' usage is in the
+[CvInspect.Avalonia README](https://github.com/cmir79/CvInspect/blob/main/src/CvInspect.Avalonia/README.md).
+
 ## Tests
 
 ```
@@ -257,10 +280,17 @@ exists. It needs no camera and no network.
 
 `tests/CvInspect.Wpf.Tests` renders `CvDispCtrl` off-screen (no window) and compares pixels: the
 `ICvPixelSource` path against the `Mat` path, row padding, and what happens when the pixel
-contract is violated. It is WPF, so it builds and runs on Windows only — on other platforms run
-the core suite alone with `dotnet test tests/CvInspect.Tests`. CI runs that core suite on both
-Windows and Linux (the Linux leg uses `OpenCvSharp4.official.runtime.linux-x64`), and the WPF suite
-on Windows.
+contract is violated. It is WPF, so it builds and runs on Windows only.
+
+`tests/CvInspect.Avalonia.Tests` puts the Avalonia controls on Avalonia's headless platform with
+Skia drawing — no window, no GPU — reads back the rendered frame, and drives the toolbar, pointer
+and editor inputs. It is an xunit v3 project (the headless test extension is built on v3), so it is
+a separate project from the v2 suites.
+
+On platforms other than Windows run the core and Avalonia suites by project:
+`dotnet test tests/CvInspect.Tests` and `dotnet test tests/CvInspect.Avalonia.Tests`. CI runs the
+core suite and the Avalonia headless suite on both Windows and Linux (the Linux leg uses
+`OpenCvSharp4.official.runtime.linux-x64`), and the WPF suite on Windows.
 
 ## Limits
 
@@ -281,8 +311,14 @@ Read these before adopting — they are real, and they are not going away soon.
   one-camera PC, the Linux path has no hardware run at all, and macOS is unsupported. Backend availability
   differs per PC: on the one-camera PC the DirectShow backend could not open the camera by index at all
   while Media Foundation (what `any` picks) could — leave `backend=` at its default unless you have measured.
-- **Display is WPF, so Windows only.** The core and Imaging packages are cross-platform; the WPF
-  package and its off-screen test suite build on Windows alone.
+- **The Avalonia display is new.** The core and Imaging packages are
+  cross-platform; `CvInspect.Wpf` and its off-screen test suite build on Windows alone.
+  `CvInspect.Avalonia` is first released in 0.34. Its test suite runs headless in CI on Windows and
+  Linux: Skia drawing into an off-screen frame, input raised by the tests. Beyond that, one consumer
+  has run it in a real window on one Windows development PC, with a live camera and the mouse. It has
+  not been run on a Linux desktop, on a known GPU renderer or on a high-DPI screen, and macOS is not
+  verified at all. Its own limits (frame upload cost, Smart App Control, Avalonia's build telemetry)
+  are in its [README](https://github.com/cmir79/CvInspect/blob/main/src/CvInspect.Avalonia/README.md#limits).
 - **GigE has hours, not years, behind it.** Monochrome and colour cameras from two vendors have been
   streamed end-to-end — a monochrome pair on a bench, a colour pair on an inspection line — but that
   is hours of run time, not months. Bayer is demosaiced to Bgr24, packed 10/12-bit is folded to 8,

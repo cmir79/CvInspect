@@ -97,6 +97,64 @@ public class SmokeTests
 
     }
 
+    /// <summary>번역이 바뀌었다는 통지 — 그릴 때만 번역을 읽는 화면(무이미지 안내)이 이것을 듣고 다시 그린다. 실제 변경에만 불어야
+    /// 같은 값을 거듭 고르는 호스트가 화면을 헛되이 다시 그리지 않고, 구독자 하나가 던져도 나머지와 호출자는 멀쩡해야 한다.</summary>
+    [Fact]
+    public void LocChangedFiresOnRealChangesOnly()
+    {
+        var before = CvLoc.Culture;
+        int hits = 0;
+        Action thrower = () => throw new InvalidOperationException("subscriber failure");
+        Action counter = () => hits++;
+        CvLoc.Culture = "en";
+        CvLoc.Changed += thrower;
+        CvLoc.Changed += counter;
+        try
+        {
+            CvLoc.Culture = "ko";
+            Check(hits == 1, $"a real culture change notifies once, even after an earlier subscriber threw: {hits}");
+            CvLoc.Culture = "KO";
+            Check(hits == 1, $"re-selecting the same culture (case-insensitive) does not notify: {hits}");
+            CvLoc.Resolver = k => null;
+            Check(hits == 2, $"assigning a resolver notifies — it changes what T returns: {hits}");
+            CvLoc.Resolver = null;
+            Check(hits == 3, $"removing the resolver notifies too: {hits}");
+            CvLoc.Reload();
+            Check(hits == 4, $"Reload notifies — the edited loose files change what T returns: {hits}");
+        }
+        finally
+        {
+            CvLoc.Changed -= thrower;
+            CvLoc.Changed -= counter;
+            CvLoc.Resolver = null;
+            CvLoc.Culture = before;
+        }
+    }
+
+    /// <summary>처리기 안에서 다시 바꿔도(Reload 를 부르는 구독자) 통지가 되불리지 않는다 — 막지 않으면 Changed → Reload → Changed … 로
+    /// 스택이 넘쳐 프로세스가 죽는다(잡을 수 없는 예외). 바깥 통지는 그대로 한 번 간다.</summary>
+    [Fact]
+    public void LocChangedDoesNotRecurseFromItsOwnHandler()
+    {
+        var before = CvLoc.Culture;
+        int hits = 0;
+        Action reloader = () => { hits++; if (hits < 50) CvLoc.Reload(); };
+        CvLoc.Culture = "en";
+        CvLoc.Changed += reloader;
+        try
+        {
+            CvLoc.Culture = "ko";
+            Check(hits == 1, $"a handler that calls Reload is notified once, not again from inside itself: {hits}");
+            CvLoc.Reload();
+            Check(hits == 2, $"control: the guard is released afterwards, so the next change still notifies: {hits}");
+        }
+        finally
+        {
+            CvLoc.Changed -= reloader;
+            CvLoc.Culture = before;
+        }
+    }
+
     /// <summary>표준 System.ComponentModel 베이스로 조회되는지 — 프로퍼티 그리드가 이 라이브러리를 몰라도 되어야 한다.</summary>
     [Fact]
     public void PropertyMetadata()

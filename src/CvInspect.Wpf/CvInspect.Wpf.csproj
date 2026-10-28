@@ -27,6 +27,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 코어 Display\ 의 UI 중립 계층(아직 internal)을 소스로 들인다. 코어 어셈블리의 internal 을 IVT 로 빌려 쓰면
+         소비자가 코어만 올린 조합에서 시그니처가 어긋나 실행 중에 MissingMethodException 이 난다 — 소스 링크는 그 의존을 만들지 않는다.
+         공개로 열면 이 링크를 걷고 코어의 public 을 쓴다. -->
+    <Compile Include="..\CvInspect\Display\*.cs" Link="Display\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- 링크 사본이 코어 타입을 조용히 가리는 것을 막는다 — 코어가 Display 를 public 으로 열거나 이 어셈블리에 IVT 를 주는데
+         위 링크를 안 걷으면 CS0436(같은 이름 타입이 둘, 사본이 이김)이 경고로만 나고 지나간다. 오류로 올려 그 판에서 멈추게 한다. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS0436</WarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 

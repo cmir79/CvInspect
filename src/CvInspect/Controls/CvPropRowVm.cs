@@ -1,14 +1,15 @@
 // 프로퍼티 편집기 행 VM 계층 — typed POCO 를 리플렉션으로 펼쳐 카테고리 그룹/행으로 만든다(빌드는 CvPropRowBldr).
 // 편집은 backing 인스턴스의 PropertyInfo.SetValue 직행 — 커밋마다 OnCommitted(프로퍼티명) 통지가 호스트 dirty
 // 마킹의 채널이다. 소스의 INotifyPropertyChanged 는 표시 갱신에만 쓴다(코어 Opt 도 일부 값만 통지하고 호스트 POCO 는 없을 수 있다).
-// 이 계층은 MVVM 라이브러리를 참조하지 않는다 — 통지와 커맨드는 이 파일 안에서 자족한다.
+// 이 계층은 MVVM 라이브러리도 UI 프레임워크도 참조하지 않는다 — 통지와 커맨드는 이 파일 안에서 자족한다
+// (ICommand 는 System.ObjectModel 의 것이라 WPF·Avalonia 버튼이 같은 타입을 받는다). 그래서 코어에 있다.
+// 0.33 까지는 CvInspect.Wpf 에 있었다 — Wpf 어셈블리가 같은 이름으로 전달(TypeForwardedTo)하므로 그 판에 대고 컴파일한 코드도 그대로 돈다.
 
 using System.Collections;
 using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Windows;
 using System.Windows.Input;
 
 namespace CvInspect.Controls;
@@ -58,31 +59,29 @@ public abstract class CvPropRowVm : INotifyPropertyChanged
     public bool IsReadOnly { get; internal set; }
     public bool IsEditable => !IsReadOnly;
 
-    private INotifyPropertyChanged? _inpc;
-    private bool _detached;
+    private CvPropWeakSub? _sub;
+    // 통지 스레드가 읽고 UI 스레드가 쓴다 — 캐시된 옛 값으로 떼어진 행을 갱신하지 않게 volatile.
+    private volatile bool _detached;
 
-    // 약한 구독(PropertyChangedEventManager) — 화면 이탈로 Detach 가 안 돌아도 오래 사는 소스
-    // (검사 인스턴스 소유 POCO)가 죽은 행/컨트롤을 붙잡지 못하게 한다.
+    // 약한 구독 — 화면 이탈로 Detach 가 안 돌아도 오래 사는 소스(검사 인스턴스 소유 POCO)가 죽은 행/컨트롤을 붙잡지 못하게 한다.
     internal void Attach()
     {
-        if (Source is INotifyPropertyChanged inpc)
-        {
-            _inpc = inpc;
-            PropertyChangedEventManager.AddHandler(inpc, OnSourceChanged, string.Empty);
-        }
+        if (Source is INotifyPropertyChanged inpc) _sub = new CvPropWeakSub(inpc, this);
     }
 
     internal virtual void Detach()
     {
         _detached = true;
         OnCommitted = null;
-        if (_inpc is null) return;
-        PropertyChangedEventManager.RemoveHandler(_inpc, OnSourceChanged, string.Empty);
-        _inpc = null;
+        _sub?.Dispose();
+        _sub = null;
     }
 
-    private void OnSourceChanged(object? sender, PropertyChangedEventArgs e)
+    internal void OnSourceChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // Detach 직전에 이미 출발한 통지(다른 스레드)가 떼어진 행을 갱신하지 않게 — 중첩 행이면 새 자식을 세워
+        // 아무도 떼지 않는 구독을 남긴다. 창을 좁힐 뿐 닫지는 않는다(검사와 Detach 사이는 여전히 열려 있다).
+        if (_detached) return;
         if (!string.IsNullOrEmpty(e.PropertyName) && e.PropertyName != Prop.Name) return;
         // 통지 경로에서 새면 소스가 PropertyChanged 를 낸 자리에서 터진다 — 편집기가 호스트 코드를 깨뜨리는 꼴이다.
         // 여기서는 행을 뺄 수 없으니 마지막으로 읽은 값을 그대로 남긴다.
