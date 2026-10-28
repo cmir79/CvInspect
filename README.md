@@ -311,11 +311,12 @@ Read these before adopting — they are real, and they are not going away soon.
   one-camera PC, the Linux path has no hardware run at all, and macOS is unsupported. Backend availability
   differs per PC: on the one-camera PC the DirectShow backend could not open the camera by index at all
   while Media Foundation (what `any` picks) could — leave `backend=` at its default unless you have measured.
-- **The Avalonia display is new and checked headless only.** The core and Imaging packages are
+- **The Avalonia display is new.** The core and Imaging packages are
   cross-platform; `CvInspect.Wpf` and its off-screen test suite build on Windows alone.
   `CvInspect.Avalonia` is first released in 0.34. Its test suite runs headless in CI on Windows and
-  Linux: Skia drawing into an off-screen frame, input raised by the tests. It has not been run in a
-  real window, on a GPU renderer, with real input devices or on a high-DPI screen, and macOS is not
+  Linux: Skia drawing into an off-screen frame, input raised by the tests. Beyond that, one consumer
+  has run it in a real window on one Windows development PC, with a live camera and the mouse. It has
+  not been run on a Linux desktop, on a known GPU renderer or on a high-DPI screen, and macOS is not
   verified at all. Its own limits (frame upload cost, Smart App Control, Avalonia's build telemetry)
   are in its [README](https://github.com/cmir79/CvInspect/blob/main/src/CvInspect.Avalonia/README.md#limits).
 - **GigE has hours, not years, behind it.** Monochrome and colour cameras from two vendors have been

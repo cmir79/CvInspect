@@ -209,7 +209,10 @@ so the tests that measure that text compare ratios rather than pixel counts.
 
 What that does not cover:
 
-- a real window — no desktop platform (`Avalonia.Desktop`, Win32, X11) has run these controls yet;
+- a real window, except one consumer's report: on one Windows development PC their host ran these
+  controls in a real Win32 window, with a live camera and the mouse (toolbar, theme keys, a language
+  switch, live frames), but not the right-click menu, the property editor's action rows or shape
+  dragging, and which renderer that window used was not recorded. No Linux desktop (X11) has run them;
 - the GPU renderer — the headless frame is drawn on the CPU, so a GPU path that shows a stale
   texture would not be seen;
 - real input devices (mouse, touch, touchpads) and real high-DPI screens — render scaling is set by

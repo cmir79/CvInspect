@@ -16,7 +16,7 @@
   <PropertyGroup>
     <PackageId>CvInspect.Avalonia</PackageId>
     <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
-    <Description>Avalonia display and shape-editing controls for the CvInspect machine-vision toolkit — Mat image display with zoom/pan/pixel probe, renderer-neutral overlay drawing, and draggable teaching shapes that write back to tool option POCOs. For Windows and Linux, checked by a headless test suite in CI on both (no window or GPU run yet; macOS is not verified). Based on OpenCvSharp; the native OpenCV runtime is chosen by the consumer.</Description>
+    <Description>Avalonia display and shape-editing controls for the CvInspect machine-vision toolkit — Mat image display with zoom/pan/pixel probe, renderer-neutral overlay drawing, and draggable teaching shapes that write back to tool option POCOs. For Windows and Linux, checked by a headless test suite in CI on both and in one consumer's real window on Windows (no Linux desktop run yet; macOS is not verified). Based on OpenCvSharp; the native OpenCV runtime is chosen by the consumer.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>avalonia;opencvsharp;machine-vision;inspection;display;overlay;roi;teaching;cross-platform</PackageTags>
   </PropertyGroup>
