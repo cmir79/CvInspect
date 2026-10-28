@@ -1690,8 +1690,24 @@ public class CvDispCtrlRenderTests
         ctrl.GrabCommand = new NeverCmd();
         var grab = FindButton(ctrl, "Grab")!;
         Settle(win);
-        Check(!grab.IsEnabled && IconFg(grab) != text2,
-            $"a disabled button keeps the theme's disabled look — the icon color is not forced there (enabled={grab.IsEnabled}, icon={IconFg(grab)})");
+        // 비활성을 버튼 자신의 Foreground 로 칠하는 테마 — Fluent 는 안쪽 글자를 직접 칠해 지역 값이 있어도 흐리게 나오므로(대조 없이는 이 절이
+        // 고치기 전에도 통과했다), 안쪽을 버튼 Foreground 에 잇는 호스트 스타일을 더해 그 테마 모양을 만든다.
+        var dim = Color.FromRgb(0x99, 0x99, 0x99);
+        host.Styles.Add(new Style(x => x.OfType<Button>().Class(":disabled")) { Setters = { new Setter(TemplatedControl.ForegroundProperty, new SolidColorBrush(dim)) } });
+        host.Styles.Add(new Style(x => x.OfType<Button>().Class(":disabled").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+        {
+            Setters = { new Setter(ContentPresenter.ForegroundProperty, new TemplateBinding(TemplatedControl.ForegroundProperty)) },
+        });
+        bare.IsEnabled = false;
+        Pseudo(bare, ":pointerover", false);
+        Settle(win);
+        Check(IconFg(bare) == dim, $"control: a disabled plain button under these styles shows the theme's disabled color ({IconFg(bare)})");
+        Check(!grab.IsEnabled && IconFg(grab) == dim,
+            $"a disabled toolbar button keeps the theme's disabled color — no local icon color, which would beat the theme's :disabled setter on the button " +
+            $"(enabled={grab.IsEnabled}, icon={IconFg(grab)}, want {dim})");
+        ctrl.GrabCommand = null;
+        Settle(win);
+        Check(grab.IsEnabled && IconFg(grab) == text2, $"re-enabled, the button takes the toolbar icon color again ({IconFg(grab)})");
     }
 
     private sealed class NeverCmd : System.Windows.Input.ICommand

@@ -187,7 +187,10 @@ dictionary at run time (a light/dark switch) repaints every display without a re
 
 Toolbar icons without an accent use the text color the control inherits from its window or theme, not
 the button style's text color — a theme that paints button text in its brand color would otherwise turn
-every icon into an accent. The accented ⏯ and the pressed ✋ stay white. A dark theme whose text color
+every icon into an accent. A disabled button is left to its style's disabled look. The accented ⏯ and the pressed ✋ stay white.
+In WPF the inherited text color is often not themed: a theme library that styles controls but not your
+`Window` leaves it at the system text color (black), and the icons follow it. If your dark theme does
+that, set `ToolbarForegroundKey` or the window's `Foreground`. A dark theme whose text color
 is light should set `ToolbarBackgroundKey` too, or give the icons a dark color through
 `ToolbarForegroundKey`, because the default toolbar background is the fixed light `#FAFAFA`.
 CvInspect.Avalonia follows the same rule with the same key.

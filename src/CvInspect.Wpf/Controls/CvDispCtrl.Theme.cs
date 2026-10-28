@@ -230,7 +230,10 @@ public sealed partial class CvDispCtrl
     }
 
     /// <summary>강조색을 쓰지 않는 버튼의 아이콘 색 — 속성 → 키 → 물려받는 글자색. 버튼 Foreground 에 지역 값으로 넣어 버튼 스타일의 글자색 세터를
-    /// 이긴다(비활성 모양은 템플릿 트리거가 안쪽 글자에 직접 주므로 그대로 남는다). 눌린 ✋ 는 흰색(강조)이 이미 들어가 있어 건너뛴다 — 풀릴 때 여기로 돌아온다.</summary>
+    /// 이긴다. 물려받는 글자색은 늘 값이 있다(아무도 안 주면 시스템 글자색) — 창 글자색을 칠하지 않고 컨트롤 스타일에만 글자색을 두는 어두운 테마에서는
+    /// 아이콘이 시스템 글자색(검정)이 되니, 그런 호스트는 이 키나 창 Foreground 를 준다.
+    /// <b>비활성 버튼에는 넣지 않는다</b> — 지역 값은 스타일의 IsEnabled 트리거(버튼 자신의 Foreground 를 흐리게 바꾸는 테마도 있다)까지 이겨
+    /// 꺼진 📸 가 살아 보인다. 활성이 바뀔 때마다 다시 부른다(IsEnabledChanged). 눌린 ✋ 는 흰색(강조)이 이미 들어가 있어 건너뛴다 — 풀릴 때 여기로 돌아온다.</summary>
     private void ApplyToolbarForeground()
     {
         var fg = CvDispTheme.Pick<Brush>(GetValue(ToolbarForegroundProperty), GetValue(ToolbarForegroundSlotProperty))
@@ -241,7 +244,7 @@ public sealed partial class CvDispCtrl
 
     private static void SetIconForeground(Control b, Brush? fg)
     {
-        if (fg is null) b.ClearValue(Control.ForegroundProperty);
+        if (fg is null || !b.IsEnabled) b.ClearValue(Control.ForegroundProperty);
         else b.Foreground = fg;
     }
 

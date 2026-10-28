@@ -142,8 +142,13 @@ public sealed partial class CvDispCtrl : Grid
         _dispPanel.Children.Add(clearBtn);
         toolbar.Children.Add(_dispPanel);
         _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, clearBtn];
-        foreach (var b in _plainToolBtns) PinForeground(b);
+        foreach (var b in _plainToolBtns)
+        {
+            PinForeground(b);
+            b.PropertyChanged += OnToolButtonEnabledChanged;
+        }
         PinForeground(panBtn);
+        panBtn.PropertyChanged += OnToolButtonEnabledChanged;
 
         // 툴바·상태 줄의 바탕·글자·구분선 색은 ApplyTheme 가 칠한다(속성 → 호스트 키 → 기본색).
         _toolbarBorder = new Border

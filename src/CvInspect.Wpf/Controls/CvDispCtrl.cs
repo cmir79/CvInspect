@@ -135,6 +135,9 @@ public sealed partial class CvDispCtrl : Grid
         dispPanel.Children.Add(clearBtn);
         toolbar.Children.Add(dispPanel);
         _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, clearBtn];
+        // 활성이 바뀌면(명령의 CanExecute·부모가 꺼짐) 아이콘 색을 다시 정한다 — 꺼지면 지역 값을 걷어 스타일의 비활성 모양에 맡긴다(ApplyToolbarForeground).
+        foreach (var b in _plainToolBtns) b.IsEnabledChanged += (_, _) => ApplyToolbarForeground();
+        panBtn.IsEnabledChanged += (_, _) => ApplyToolbarForeground();
 
         // 툴바·상태 줄의 바탕·글자·구분선 색은 ApplyTheme 가 칠한다(속성 → 호스트 키 → 기본색) — 여기서 브러시를 박으면 호스트가 못 덮는다.
         _toolbarBorder = new Border

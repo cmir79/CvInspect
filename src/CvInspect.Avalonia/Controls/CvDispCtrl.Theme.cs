@@ -224,7 +224,9 @@ public sealed partial class CvDispCtrl
 
     /// <summary>강조색을 쓰지 않는 버튼의 아이콘 색 — 속성 → 키 → 물려받는 글자색. 버튼 Foreground 에 지역 값으로 넣어 버튼 테마의 글자색 세터를
     /// 이기고, PinForeground 가 단 스타일이 템플릿 안쪽 글자를 이 값에 묶어 둔다(포인터 올림·눌림 상태 포함, 비활성 제외 — CvDispCtrl.cs).
-    /// 셋 다 없으면(테마 없는 창) 지역 값을 걷어 버튼 테마에 맡긴다. 눌린 ✋ 는 흰색(강조)이 이미 들어가 있어 건너뛴다 — 풀릴 때 여기로 돌아온다.</summary>
+    /// 물려받는 글자색은 늘 값이 있다(아무도 안 주면 속성 기본값 검정) — 테마 없는 창에서는 검정이 된다.
+    /// <b>비활성 버튼에는 넣지 않는다</b> — 지역 값은 테마의 :disabled 세터(버튼 자신의 Foreground 를 흐리게 칠하는 테마도 있다)까지 이겨
+    /// 꺼진 📸 가 살아 보인다. 활성이 바뀔 때마다 다시 부른다(OnToolButtonEnabledChanged). 눌린 ✋ 는 흰색(강조)이 이미 들어가 있어 건너뛴다 — 풀릴 때 여기로 돌아온다.</summary>
     private void ApplyToolbarForeground()
     {
         var fg = CvDispTheme.Pick<IBrush>(GetValue(ToolbarForegroundProperty), GetValue(ToolbarForegroundSlotProperty))
@@ -235,8 +237,14 @@ public sealed partial class CvDispCtrl
 
     private static void SetIconForeground(Button b, IBrush? fg)
     {
-        if (fg is null) b.ClearValue(TemplatedControl.ForegroundProperty);
+        if (fg is null || !b.IsEffectivelyEnabled) b.ClearValue(TemplatedControl.ForegroundProperty);
         else b.Foreground = fg;
+    }
+
+    /// <summary>툴바 버튼의 실제 활성(부모가 꺼져도 꺼진다)이 바뀌면 아이콘 색을 다시 정한다 — 꺼지면 지역 값을 걷어 테마의 비활성 모양에 맡긴다.</summary>
+    private void OnToolButtonEnabledChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == IsEffectivelyEnabledProperty) ApplyToolbarForeground();
     }
 
     private IBrush? _warnedHintBrush;

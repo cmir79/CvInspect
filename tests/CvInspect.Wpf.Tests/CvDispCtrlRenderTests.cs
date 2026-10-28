@@ -1541,7 +1541,30 @@ public class CvDispCtrlRenderTests
         pan.IsChecked = false;
         Pump();
         Check(Fg(pan) == text2, $"releasing ✋ brings its icon back to the toolbar icon color, not the button style's ({Fg(pan)})");
+
+        // 비활성 — 스타일이 IsEnabled 트리거로 버튼 자신의 Foreground 를 흐리게 바꾸는 테마. 지역 값을 넣으면 그 트리거를 이겨 꺼진 버튼이 살아 보인다.
+        var dim = Color.FromRgb(0x99, 0x99, 0x99);
+        var bs = new Style(typeof(System.Windows.Controls.Button));
+        bs.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, new SolidColorBrush(brand)));
+        var trig = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
+        trig.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, new SolidColorBrush(dim)));
+        bs.Triggers.Add(trig);
+        host.Resources[typeof(System.Windows.Controls.Button)] = bs;
+        ctrl.GrabCommand = new NeverCmd();
+        Pump();
+        var grab = FindButton(ctrl, "Grab")!;
+        Check(!grab.IsEnabled && Fg(grab) == dim, $"a disabled button keeps the style's disabled color — no local icon color beats its trigger (enabled={grab.IsEnabled}, {Fg(grab)})");
+        ctrl.GrabCommand = null;
+        Pump();
+        Check(grab.IsEnabled && Fg(grab) == text2, $"re-enabled, the button takes the toolbar icon color again ({Fg(grab)})");
     });
+
+    private sealed class NeverCmd : System.Windows.Input.ICommand
+    {
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => false;
+        public void Execute(object? parameter) { }
+    }
 
     private static System.Windows.Controls.Primitives.ToggleButton? FindToggle(DependencyObject root, string tooltip)
     {
