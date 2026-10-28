@@ -13,6 +13,7 @@ internal static class CvDispTheme
     internal const string SeparatorBrushKey = "CvDispSeparatorBrush";
     internal const string ViewBackgroundKey = "CvDispViewBackgroundBrush";
     internal const string PlaceholderForegroundKey = "CvDispPlaceholderForegroundBrush";
+    internal const string ToolbarForegroundKey = "CvDispToolbarForegroundBrush";
 
     /// <summary>강조색 — 호스트 테마가 정의한 컨트롤 라이브러리 키 이름. 있으면 그대로 써서 화면 전체 팔레트를 따르고, 없으면
     /// (테마 미병합·콘솔 하네스) 고정색으로 떨어진다. 이 계층은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다.

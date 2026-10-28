@@ -48,6 +48,7 @@ public sealed partial class CvDispCtrl : Grid
     private readonly Button _grabBtn;
     private readonly ToggleButton _playBtn;
     private readonly ToggleButton _panBtn;
+    private readonly Button[] _plainToolBtns;   // 강조색을 쓰지 않는 버튼 — 아이콘 색은 ApplyToolbarForeground 가 칠한다
     private readonly TextBlock _statusLeft;
     private readonly TextBlock _statusRight;
     private readonly CamCmdSub _grabSub;
@@ -121,9 +122,9 @@ public sealed partial class CvDispCtrl : Grid
             {
                 _surface.IsPanMode = false;
                 _surface.ClearValue(CursorProperty);
-                // 강조색을 걷어 버튼 스타일 색으로 돌린다
+                // 강조 바탕을 걷어 버튼 스타일 색으로 돌리고, 아이콘은 다른 버튼과 같은 툴바 아이콘 색으로 돌린다
                 panBtn.ClearValue(TemplatedControl.BackgroundProperty);
-                panBtn.ClearValue(TemplatedControl.ForegroundProperty);
+                ApplyToolbarForeground();
             }
         };
 
@@ -140,6 +141,9 @@ public sealed partial class CvDispCtrl : Grid
         _dispPanel.Children.Add(_toolSeps[1]);
         _dispPanel.Children.Add(clearBtn);
         toolbar.Children.Add(_dispPanel);
+        _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, clearBtn];
+        foreach (var b in _plainToolBtns) PinForeground(b);
+        PinForeground(panBtn);
 
         // 툴바·상태 줄의 바탕·글자·구분선 색은 ApplyTheme 가 칠한다(속성 → 호스트 키 → 기본색).
         _toolbarBorder = new Border
@@ -309,6 +313,19 @@ public sealed partial class CvDispCtrl : Grid
                 new Setter(ContentPresenter.BackgroundProperty, new TemplateBinding(TemplatedControl.BackgroundProperty)),
                 new Setter(ContentPresenter.ForegroundProperty, new TemplateBinding(TemplatedControl.ForegroundProperty)),
             },
+        });
+    }
+
+    /// <summary>아이콘 색 고정 — 버튼 템플릿 안쪽 글자를 버튼 자신의 Foreground(ApplyToolbarForeground 가 넣은 툴바 아이콘 색)에 묶는 스타일을 단다.
+    /// 이유는 <see cref="PinAccent"/> 와 같다: 테마가 포인터 올림·눌림 상태에서 <c>PART_ContentPresenter</c> 의 Foreground 를 직접 칠해
+    /// 버튼 Foreground 만으로는 그 상태에서 테마 색(Semi 는 브랜드 색)이 다시 나온다. :disabled 는 건드리지 않는다(테마의 비활성 모양을 둔다).
+    /// ✋ 의 눌린 상태에서는 PinAccent 의 묶음과 같은 값(버튼 Foreground = 흰색)이라 겹쳐도 다투지 않는다.</summary>
+    private static void PinForeground(Button btn)
+    {
+        btn.Styles.Add(new Style(s => s.OfType(btn.GetType()).Not(x => x.Class(":disabled"))
+            .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+        {
+            Setters = { new Setter(ContentPresenter.ForegroundProperty, new TemplateBinding(TemplatedControl.ForegroundProperty)) },
         });
     }
 

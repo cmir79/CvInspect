@@ -155,6 +155,7 @@ a dictionary at run time **or switching the theme variant** (light/dark, includi
 | `SeparatorBrushKey` | `CvDispSeparatorBrush` | `#DDDDDD` | Separators and edge lines |
 | `ViewBackgroundKey` | `CvDispViewBackgroundBrush` | the control's `Background` (`#2A2A2A`) | Image area and the no-image screen |
 | `PlaceholderForegroundKey` | `CvDispPlaceholderForegroundBrush` | `#9E9E9E` | No-image text (`ISolidColorBrush` only) |
+| `ToolbarForegroundKey` | `CvDispToolbarForegroundBrush` | the inherited text color (`TextElement.Foreground`) | Toolbar icons that carry no accent |
 
 ```xml
 <Application.Resources>
@@ -163,6 +164,7 @@ a dictionary at run time **or switching the theme variant** (light/dark, includi
       <ResourceDictionary x:Key="Dark">
         <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}" Color="#2D2D30" />
         <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.StatusBarForegroundKey}" Color="#B4B4B4" />
+        <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarForegroundKey}" Color="#DCDCDC" />
       </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
   </ResourceDictionary>
@@ -170,7 +172,9 @@ a dictionary at run time **or switching the theme variant** (light/dark, includi
 ```
 
 Write the key through `x:Static`; a mistyped key string is silently ignored. A value under one of the
-six keys that is not an `IBrush` is ignored and logged as a `CvLog` warning naming the key.
+seven keys that is not an `IBrush` is ignored and logged as a `CvLog` warning naming the key.
+Each key also has an instance property of the same name without `Key` (`ToolbarBackground`, …,
+`ToolbarForeground`) that wins over it.
 
 Toolbar accents use the host's `PrimaryBrush` / `SuccessBrush` / `DangerBrush` keys and
 `CvPropEditCtrl` uses `SecondaryTextBrush` / `PrimaryBrush` — the same names as in CvInspect.Wpf —
@@ -179,11 +183,15 @@ with those themes the fixed colors are used unless the application defines them.
 
 Text in the display (status bar, overlay labels) uses the font list
 `Consolas, Cascadia Mono, DejaVu Sans Mono, Menlo`. Toolbar icons are vector paths, not text, so
-they need no icon or emoji font. They are drawn in the button's text color, which comes from the
-host theme (normal and disabled); the accented ⏯ and the pressed ✋ are drawn in white.
-**A dark theme must also set `ToolbarBackgroundKey`** (as in the example above): the toolbar's default
-background is the fixed light `#FAFAFA`, while a dark theme's button text is white, so the icons would
-be white on a light bar and all but invisible.
+they need no icon or emoji font. Icons without an accent are drawn in `ToolbarForegroundKey` or, by
+default, in the text color the control inherits from the window — not in the button theme's text color,
+which some themes (Semi, for example) set to the brand color, so every icon came out as an accent. The
+same color holds with the pointer over a button and while it is pressed. A disabled button keeps the
+theme's disabled look, and the accented ⏯ and the pressed ✋ are drawn in white. CvInspect.Wpf follows
+the same rule with the same key.
+**A dark theme must also set `ToolbarBackgroundKey`** (as in the example above), or give the icons a dark
+color through `ToolbarForegroundKey`: the toolbar's default background is the fixed light `#FAFAFA`,
+while a dark theme's text color is light, so the icons would be all but invisible on the default bar.
 
 ## Targets
 

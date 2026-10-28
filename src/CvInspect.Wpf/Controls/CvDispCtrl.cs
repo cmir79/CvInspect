@@ -35,6 +35,7 @@ public sealed partial class CvDispCtrl : Grid
     private readonly Button _grabBtn;
     private readonly ToggleButton _playBtn;
     private readonly ToggleButton _panBtn;
+    private readonly Button[] _plainToolBtns;   // 강조색을 쓰지 않는 버튼 — 아이콘 색은 ApplyToolbarForeground 가 칠한다
     private readonly TextBlock _statusLeft;
     private readonly TextBlock _statusRight;
     private readonly EventHandler<EventArgs> _onCamCommandCanExecuteChanged;
@@ -114,9 +115,10 @@ public sealed partial class CvDispCtrl : Grid
         {
             _surface.IsPanMode = false;
             _surface.ClearValue(CursorProperty);
-            // Grid(this)의 Panel.BackgroundProperty 가 아닌 버튼(Control) DP 를 명시 — 스타일 기본색 복원
+            // Grid(this)의 Panel.BackgroundProperty 가 아닌 버튼(Control) DP 를 명시 — 스타일 기본색 복원.
+            // 아이콘은 다른 버튼과 같은 툴바 아이콘 색으로 돌린다.
             panBtn.ClearValue(Control.BackgroundProperty);
-            panBtn.ClearValue(Control.ForegroundProperty);
+            ApplyToolbarForeground();
         };
 
         var clearBtn = MakeToolButton("🧹", "Clear");
@@ -132,6 +134,7 @@ public sealed partial class CvDispCtrl : Grid
         dispPanel.Children.Add(_toolSeps[1]);
         dispPanel.Children.Add(clearBtn);
         toolbar.Children.Add(dispPanel);
+        _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, clearBtn];
 
         // 툴바·상태 줄의 바탕·글자·구분선 색은 ApplyTheme 가 칠한다(속성 → 호스트 키 → 기본색) — 여기서 브러시를 박으면 호스트가 못 덮는다.
         _toolbarBorder = new Border

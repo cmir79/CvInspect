@@ -3,6 +3,8 @@
 // 인스턴스) → 고정 기본색(영상 영역 바탕만은 고정색이 아니라 컨트롤의 Background 로 떨어진다). 키는 리소스 참조로 붙잡아 두므로 호스트가 실행 중 사전을 갈아 끼우면 다시 띄우지 않아도 따라온다.
 
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Media;
 using CvInspect.Display;
 
@@ -41,6 +43,14 @@ public sealed partial class CvDispCtrl
     /// <b>단색 브러시(SolidColorBrush)만 쓴다</b> — 글자는 코어 그리기 목록의 색(ARGB)으로 그려서다. 브러시의 Opacity 는 알파에 곱한다.
     /// 다른 종류(그라데이션 등)는 기본색으로 남고 경고 한 줄을 남긴다.</summary>
     public const string PlaceholderForegroundKey = CvDispTheme.PlaceholderForegroundKey;
+
+    /// <summary>툴바 아이콘 색 리소스 키 — 강조색을 쓰지 않는 버튼(📸·⛶·➕·➖·🧹, 풀린 ✋)의 아이콘 글자를 칠한다.
+    /// 없으면 이 컨트롤이 물려받는 글자색(<c>TextElement.Foreground</c> — 창이나 테마가 준 본문 글자색)이다. 버튼 스타일의 글자색을 그대로 두지
+    /// 않는 이유: 버튼 글자를 브랜드 색으로 칠하는 테마에서는 아이콘이 전부 강조색이 되어 툴바가 지나치게 튀었다(소비자 실제 창, Avalonia 판).
+    /// Avalonia 판과 같은 규칙이라 호스트를 옮겨도 같은 키 한 줄로 따라온다. 비활성 버튼은 버튼 템플릿의 비활성 모양 그대로다.
+    /// ⏯ 와 눌린 ✋ 는 강조 바탕 위 흰색이라 이 키와 무관하다. 툴바 바탕(<see cref="ToolbarBackgroundKey"/>, 기본 #FAFAFA)은 테마를 따라가지
+    /// 않는다 — 어두운 테마의 밝은 본문 글자색은 기본 바탕 위에서 보이지 않으니, 어두운 테마에서는 바탕 키를 함께 두거나 이 키로 어두운 색을 준다.</summary>
+    public const string ToolbarForegroundKey = CvDispTheme.ToolbarForegroundKey;
 
     public static readonly DependencyProperty ToolbarBackgroundProperty = RegisterChrome(nameof(ToolbarBackground));
 
@@ -104,6 +114,16 @@ public sealed partial class CvDispCtrl
         set => SetValue(PlaceholderForegroundProperty, value);
     }
 
+    public static readonly DependencyProperty ToolbarForegroundProperty = RegisterChrome(nameof(ToolbarForeground));
+
+    /// <summary>이 인스턴스의 툴바 아이콘 색. 주면 <see cref="ToolbarForegroundKey"/> 를 이긴다. null(기본)이면 키 → 없으면 물려받는 글자색.
+    /// 출처 규칙은 <see cref="ToolbarBackground"/> 와 같다.</summary>
+    public Brush? ToolbarForeground
+    {
+        get => (Brush?)GetValue(ToolbarForegroundProperty);
+        set => SetValue(ToolbarForegroundProperty, value);
+    }
+
     // 호스트 키 슬롯 — 생성자에서 요소를 다 만든 뒤(행·자식을 붙이기 전) SetResourceReference 로 키에 묶는다. 키가 없으면 기본값(null)으로 남고, 호스트가 사전을 바꾸면
     // WPF 가 리소스 참조를 다시 풀어 값이 바뀐다 — 그 변경 콜백이 다시 칠한다. 공개 속성과 따로 두는 이유: 공개 속성에 참조를 걸면
     // 그것이 Local 값이라 호스트의 스타일 세터를 조용히 이기고, 호스트가 값을 줬다가 걷으면 참조까지 지워져 키로 돌아오지 않는다.
@@ -116,6 +136,7 @@ public sealed partial class CvDispCtrl
     private static readonly DependencyProperty SeparatorBrushSlotProperty = RegisterSlot("SeparatorBrushSlot");
     private static readonly DependencyProperty ViewBackgroundSlotProperty = RegisterSlot("ViewBackgroundSlot");
     private static readonly DependencyProperty PlaceholderForegroundSlotProperty = RegisterSlot("PlaceholderForegroundSlot");
+    private static readonly DependencyProperty ToolbarForegroundSlotProperty = RegisterSlot("ToolbarForegroundSlot");
 
     // 강조색 — 호스트 테마가 정의한 컨트롤 라이브러리 키(PrimaryBrush/SuccessBrush/DangerBrush)를 있으면 그대로 써서 화면 전체
     // 팔레트를 따르고, 없으면(테마 미병합·콘솔 하네스) 고정색으로 떨어진다. 이 컨트롤은 UI 라이브러리를 참조하지 않는다 — 키 이름만 안다.
@@ -157,6 +178,7 @@ public sealed partial class CvDispCtrl
         SetResourceReference(SeparatorBrushSlotProperty, SeparatorBrushKey);
         SetResourceReference(ViewBackgroundSlotProperty, ViewBackgroundKey);
         SetResourceReference(PlaceholderForegroundSlotProperty, PlaceholderForegroundKey);
+        SetResourceReference(ToolbarForegroundSlotProperty, ToolbarForegroundKey);
         SetResourceReference(PrimarySlotProperty, CvDispTheme.PrimaryHostKey);
         SetResourceReference(SuccessSlotProperty, CvDispTheme.SuccessHostKey);
         SetResourceReference(DangerSlotProperty, CvDispTheme.DangerHostKey);
@@ -177,6 +199,7 @@ public sealed partial class CvDispCtrl
          : slot == SeparatorBrushSlotProperty ? SeparatorBrushKey
          : slot == ViewBackgroundSlotProperty ? ViewBackgroundKey
          : slot == PlaceholderForegroundSlotProperty ? PlaceholderForegroundKey
+         : slot == ToolbarForegroundSlotProperty ? ToolbarForegroundKey
          : null;
 
     /// <summary>현재 출처대로 다시 칠한다 — 속성·슬롯 어느 쪽이 바뀌어도 전부. 몇 개 요소에 브러시를 넣을 뿐이라 나눌 이유가 없다.</summary>
@@ -194,7 +217,32 @@ public sealed partial class CvDispCtrl
         // 영상 영역은 기본색으로 떨어지지 않는다 — 둘 다 없으면 null 을 넘겨 컨트롤의 Background 가 비치게 한다(그것이 종전 기본이다).
         _surface.ViewBackground = CvDispTheme.Pick<Brush>(GetValue(ViewBackgroundProperty), GetValue(ViewBackgroundSlotProperty));
         _surface.PlaceholderPaint = HintPaintOf(CvDispTheme.Pick<Brush>(GetValue(PlaceholderForegroundProperty), GetValue(PlaceholderForegroundSlotProperty)));
+        ApplyToolbarForeground();
         ApplyAccents();
+    }
+
+    /// <summary>물려받는 글자색이 바뀌면(창·테마가 본문 글자색을 바꿈) 아이콘 기본색이 그것이라 아이콘만 다시 칠한다.
+    /// 생성자 도중(버튼 목록을 만들기 전)에 오는 통지는 건너뛴다 — 생성자 끝의 ApplyTheme 가 칠한다.</summary>
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == TextElement.ForegroundProperty && _plainToolBtns is not null) ApplyToolbarForeground();
+    }
+
+    /// <summary>강조색을 쓰지 않는 버튼의 아이콘 색 — 속성 → 키 → 물려받는 글자색. 버튼 Foreground 에 지역 값으로 넣어 버튼 스타일의 글자색 세터를
+    /// 이긴다(비활성 모양은 템플릿 트리거가 안쪽 글자에 직접 주므로 그대로 남는다). 눌린 ✋ 는 흰색(강조)이 이미 들어가 있어 건너뛴다 — 풀릴 때 여기로 돌아온다.</summary>
+    private void ApplyToolbarForeground()
+    {
+        var fg = CvDispTheme.Pick<Brush>(GetValue(ToolbarForegroundProperty), GetValue(ToolbarForegroundSlotProperty))
+                 ?? GetValue(TextElement.ForegroundProperty) as Brush;
+        foreach (var b in _plainToolBtns) SetIconForeground(b, fg);
+        if (_panBtn.IsChecked != true) SetIconForeground(_panBtn, fg);
+    }
+
+    private static void SetIconForeground(Control b, Brush? fg)
+    {
+        if (fg is null) b.ClearValue(Control.ForegroundProperty);
+        else b.Foreground = fg;
     }
 
     private Brush? _warnedHintBrush;

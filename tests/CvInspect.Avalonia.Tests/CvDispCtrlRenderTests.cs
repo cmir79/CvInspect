@@ -1153,6 +1153,8 @@ public class CvDispCtrlRenderTests
             $"the view background key spells the README string, so x:Static and a typed key reach the same slot: {CvDispCtrl.ViewBackgroundKey}");
         Check(CvDispCtrl.PlaceholderForegroundKey == "CvDispPlaceholderForegroundBrush",
             $"the placeholder text key spells the README string: {CvDispCtrl.PlaceholderForegroundKey}");
+        Check(CvDispCtrl.ToolbarForegroundKey == "CvDispToolbarForegroundBrush",
+            $"the toolbar icon key spells the README string, the same as the WPF control's: {CvDispCtrl.ToolbarForegroundKey}");
     }
 
     /// <summary>인스턴스 속성은 키를 이기고, 걷으면 다음 출처로 돌아간다 — 스타일 세터가 있으면 그것, 없으면 키. 키 관찰을 공개 속성 자체에
@@ -1602,6 +1604,101 @@ public class CvDispCtrlRenderTests
                 $"switching CvLoc.Culture repaints the shown placeholder in the new language without any other trigger ({Diff(after.Px, en.Px)} bytes changed, {Diff(after.Px, fresh.Px)} still differ from a control opened in Korean)");
         }
         finally { CvLoc.Culture = before; }
+    }
+
+    /// <summary>툴바 아이콘 색 — 강조색을 쓰지 않는 버튼의 아이콘은 버튼 테마의 글자색이 아니라 컨트롤이 물려받는 본문 글자색으로 그린다(포인터 올림 포함).
+    /// 버튼 글자를 브랜드 색으로 칠하는 테마(Semi)에서 아이콘 일곱 개가 전부 강조색이 되어 툴바가 튀었다(소비자 실제 창). 그 테마를 여기서는 호스트 스타일
+    /// 두 줄(버튼 Foreground·포인터 올림 때 안쪽 글자)로 흉내 내고, 같은 스타일을 받은 맨 버튼이 실제로 그 색이 되는 것을 대조군으로 둔다.
+    /// 출처 순서는 다른 색 표면과 같다(속성 → 키 → 기본). 비활성은 테마 모양, 눌린 ✋ 와 ⏯ 는 흰색.</summary>
+    [AvaloniaFact]
+    public void ToolbarIconsFollowTheTextColorNotTheButtonTheme()
+    {
+        var text = Color.FromRgb(0x12, 0x34, 0x56);
+        var brand = Color.FromRgb(0x00, 0x41, 0x99);
+        var ctrl = new CvDispCtrl();   // 아이콘만 본다 — 프레임은 필요 없다
+        var host = new Grid();
+        host.Children.Add(ctrl);
+        host.SetValue(global::Avalonia.Controls.Documents.TextElement.ForegroundProperty, new SolidColorBrush(text));
+        host.Styles.Add(new Style(x => x.OfType<Button>()) { Setters = { new Setter(TemplatedControl.ForegroundProperty, new SolidColorBrush(brand)) } });
+        host.Styles.Add(new Style(x => x.OfType<ToggleButton>()) { Setters = { new Setter(TemplatedControl.ForegroundProperty, new SolidColorBrush(brand)) } });
+        host.Styles.Add(new Style(x => x.OfType<Button>().Class(":pointerover").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+        {
+            Setters = { new Setter(ContentPresenter.ForegroundProperty, new SolidColorBrush(brand)) },
+        });
+        var bare = new Button { Content = new CvToolIcon(CvToolIconKind.Fit) };
+        host.Children.Add(bare);
+        Shoot(host);
+        var win = (Window)host.Parent!;
+
+        static Color IconFg(Button b) => ColorOf(b.GetVisualDescendants().OfType<CvToolIcon>().First()
+            .GetValue(global::Avalonia.Controls.Documents.TextElement.ForegroundProperty));
+        void Pseudo(Button b, string pc, bool on)
+            => ((IPseudoClasses)typeof(StyledElement).GetProperty("PseudoClasses", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .GetValue(b)!).Set(pc, on);
+        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out", "Clear"];
+        List<Button> Plain() => [.. plain.Select(t => FindButton(ctrl, t)!), FindToggle(ctrl, "Pan")!];
+        string All(out bool allAre, Color want)
+        {
+            Settle(win);
+            var got = Plain().Select(b => (ToolTip.GetTip(b), IconFg(b))).ToList();
+            allAre = got.All(g => g.Item2 == want);
+            return string.Join(", ", got.Select(g => $"{g.Item1}={g.Item2}")) + $" (want {want})";
+        }
+
+        Check(IconFg(bare) == brand, $"control: the host styles do paint a plain button's icon with the brand color ({IconFg(bare)})");
+        Pseudo(bare, ":pointerover", true);
+        Settle(win);
+        Check(IconFg(bare) == brand, $"control: ...also with the pointer over it ({IconFg(bare)})");
+
+        var r0 = All(out var ok0, text);
+        Check(ok0, $"with no key or property the icons use the inherited text color, not the button theme's brand color: {r0}");
+        var fit = FindButton(ctrl, "Fit")!;
+        Pseudo(fit, ":pointerover", true);
+        Settle(win);
+        Check(IconFg(fit) == text, $"...also with the pointer over a button, where the theme paints the inside of the template directly ({IconFg(fit)})");
+        Pseudo(fit, ":pointerover", false);
+        var play = FindToggle(ctrl, "Play / Stop")!;
+        Check(IconFg(play) == Colors.White, $"⏯ keeps its white icon on the accent ({IconFg(play)})");
+
+        var keyed = Color.FromRgb(0x00, 0xAA, 0x00);
+        host.Resources[CvDispCtrl.ToolbarForegroundKey] = new SolidColorBrush(keyed);
+        var r1 = All(out var ok1, keyed);
+        Check(ok1, $"the host key beats the inherited text color: {r1}");
+        var own = Color.FromRgb(0xAA, 0x00, 0xAA);
+        ctrl.ToolbarForeground = new SolidColorBrush(own);
+        var r2 = All(out var ok2, own);
+        Check(ok2, $"the instance property beats the key: {r2}");
+        ctrl.ClearValue(CvDispCtrl.ToolbarForegroundProperty);
+        var r3 = All(out var ok3, keyed);
+        Check(ok3, $"clearing the property goes back to the key: {r3}");
+        host.Resources.Remove(CvDispCtrl.ToolbarForegroundKey);
+        var r4 = All(out var ok4, text);
+        Check(ok4, $"removing the key goes back to the inherited text color: {r4}");
+        var text2 = Color.FromRgb(0x65, 0x43, 0x21);
+        host.SetValue(global::Avalonia.Controls.Documents.TextElement.ForegroundProperty, new SolidColorBrush(text2));
+        var r5 = All(out var ok5, text2);
+        Check(ok5, $"changing the inherited text color at run time (a theme variant switch does this) repaints the icons: {r5}");
+
+        var pan = FindToggle(ctrl, "Pan")!;
+        pan.IsChecked = true;
+        Settle(win);
+        Check(IconFg(pan) == Colors.White, $"a checked ✋ shows a white icon on its accent ({IconFg(pan)})");
+        pan.IsChecked = false;
+        Settle(win);
+        Check(IconFg(pan) == text2, $"releasing ✋ brings its icon back to the toolbar icon color, not the button theme's ({IconFg(pan)})");
+
+        ctrl.GrabCommand = new NeverCmd();
+        var grab = FindButton(ctrl, "Grab")!;
+        Settle(win);
+        Check(!grab.IsEnabled && IconFg(grab) != text2,
+            $"a disabled button keeps the theme's disabled look — the icon color is not forced there (enabled={grab.IsEnabled}, icon={IconFg(grab)})");
+    }
+
+    private sealed class NeverCmd : System.Windows.Input.ICommand
+    {
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => false;
+        public void Execute(object? parameter) { }
     }
 
     private sealed class Cmd(Action run) : System.Windows.Input.ICommand

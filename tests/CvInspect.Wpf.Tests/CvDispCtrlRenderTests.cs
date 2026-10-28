@@ -1076,6 +1076,8 @@ public class CvDispCtrlRenderTests
             $"the view background key spells the README string, so x:Static and a typed key reach the same slot: {CvDispCtrl.ViewBackgroundKey}");
         Check(CvDispCtrl.PlaceholderForegroundKey == "CvDispPlaceholderForegroundBrush",
             $"the placeholder text key spells the README string: {CvDispCtrl.PlaceholderForegroundKey}");
+        Check(CvDispCtrl.ToolbarForegroundKey == "CvDispToolbarForegroundBrush",
+            $"the toolbar icon key spells the README string, the same as the Avalonia control's: {CvDispCtrl.ToolbarForegroundKey}");
     }
 
     /// <summary>인스턴스 속성은 키를 이기고, 걷으면 다음 출처로 돌아간다 — 스타일 세터가 있으면 그것, 없으면 키. 키 참조를 공개 속성 자체에
@@ -1474,6 +1476,72 @@ public class CvDispCtrlRenderTests
         public bool CanExecute(object? parameter) => true;
         public void Execute(object? parameter) => run();
     }
+
+    /// <summary>툴바 아이콘 색 — 강조색을 쓰지 않는 버튼의 아이콘은 버튼 스타일의 글자색이 아니라 컨트롤이 물려받는 본문 글자색이다(Avalonia 판과 같은 규칙,
+    /// 호스트를 옮겨도 같은 키로 따라온다). 버튼 글자를 브랜드 색으로 칠하는 테마를 호스트 암시 스타일로 흉내 내고, 같은 스타일을 받은 맨 버튼이
+    /// 그 색이 되는 것을 대조군으로 둔다. 출처 순서는 다른 색 표면과 같다(속성 → 키 → 기본). 눌린 ✋ 와 ⏯ 는 흰색.</summary>
+    [Fact]
+    public void ToolbarIconsFollowTheTextColorNotTheButtonStyle() => RunSta(() =>
+    {
+        var text = Color.FromRgb(0x12, 0x34, 0x56);
+        var brand = Color.FromRgb(0x00, 0x41, 0x99);
+        var ctrl = new CvDispCtrl();   // 아이콘만 본다 — 프레임은 필요 없다
+        var host = new System.Windows.Controls.Grid();
+        host.Children.Add(ctrl);
+        host.SetValue(System.Windows.Documents.TextElement.ForegroundProperty, new SolidColorBrush(text));
+        foreach (var t in new[] { typeof(System.Windows.Controls.Button), typeof(System.Windows.Controls.Primitives.ToggleButton) })
+        {
+            var s = new Style(t);
+            s.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, new SolidColorBrush(brand)));
+            host.Resources[t] = s;
+        }
+        var bare = new System.Windows.Controls.Button { Content = "⛶" };
+        host.Children.Add(bare);
+        Shoot(host);
+
+        static Color Fg(System.Windows.Controls.Control b) => b.Foreground is SolidColorBrush s ? s.Color : Colors.Transparent;
+        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out", "Clear"];
+        List<System.Windows.Controls.Control> Plain() => [.. plain.Select(t => (System.Windows.Controls.Control)FindButton(ctrl, t)!), FindToggle(ctrl, "Pan")!];
+        string All(out bool allAre, Color want)
+        {
+            Pump();
+            var got = Plain().Select(b => (b.ToolTip, Fg(b))).ToList();
+            allAre = got.All(g => g.Item2 == want);
+            return string.Join(", ", got.Select(g => $"{g.ToolTip}={g.Item2}")) + $" (want {want})";
+        }
+
+        Check(Fg(bare) == brand, $"control: the host style does paint a plain button with the brand color ({Fg(bare)})");
+        var r0 = All(out var ok0, text);
+        Check(ok0, $"with no key or property the icons use the inherited text color, not the button style's brand color: {r0}");
+        Check(Fg(FindToggle(ctrl, "Play / Stop")!) == Colors.White, "⏯ keeps its white icon on the accent");
+
+        var keyed = Color.FromRgb(0x00, 0xAA, 0x00);
+        host.Resources[CvDispCtrl.ToolbarForegroundKey] = new SolidColorBrush(keyed);
+        var r1 = All(out var ok1, keyed);
+        Check(ok1, $"the host key beats the inherited text color: {r1}");
+        var own = Color.FromRgb(0xAA, 0x00, 0xAA);
+        ctrl.ToolbarForeground = new SolidColorBrush(own);
+        var r2 = All(out var ok2, own);
+        Check(ok2, $"the instance property beats the key: {r2}");
+        ctrl.ClearValue(CvDispCtrl.ToolbarForegroundProperty);
+        var r3 = All(out var ok3, keyed);
+        Check(ok3, $"clearing the property goes back to the key: {r3}");
+        host.Resources.Remove(CvDispCtrl.ToolbarForegroundKey);
+        var r4 = All(out var ok4, text);
+        Check(ok4, $"removing the key goes back to the inherited text color: {r4}");
+        var text2 = Color.FromRgb(0x65, 0x43, 0x21);
+        host.SetValue(System.Windows.Documents.TextElement.ForegroundProperty, new SolidColorBrush(text2));
+        var r5 = All(out var ok5, text2);
+        Check(ok5, $"changing the inherited text color at run time repaints the icons: {r5}");
+
+        var pan = FindToggle(ctrl, "Pan")!;
+        pan.IsChecked = true;
+        Pump();
+        Check(Fg(pan) == Colors.White, $"a checked ✋ shows a white icon on its accent ({Fg(pan)})");
+        pan.IsChecked = false;
+        Pump();
+        Check(Fg(pan) == text2, $"releasing ✋ brings its icon back to the toolbar icon color, not the button style's ({Fg(pan)})");
+    });
 
     private static System.Windows.Controls.Primitives.ToggleButton? FindToggle(DependencyObject root, string tooltip)
     {

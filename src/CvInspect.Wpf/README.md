@@ -172,6 +172,7 @@ dictionary at run time (a light/dark switch) repaints every display without a re
 | `SeparatorBrushKey` | `CvDispSeparatorBrush` | `SeparatorBrush` | `#DDDDDD` | Toolbar group separators, the toolbar's edge line, the status bar's edge line |
 | `ViewBackgroundKey` | `CvDispViewBackgroundBrush` | `ViewBackground` | the control's `Background` (`#2A2A2A`) | Image area around the picture and the no-image screen; opaque image pixels are drawn over it (a Bgra32 frame's transparent pixels show it through) |
 | `PlaceholderForegroundKey` | `CvDispPlaceholderForegroundBrush` | `PlaceholderForeground` | `#9E9E9E` | No-image title and load hint (`SolidColorBrush` only) |
+| `ToolbarForegroundKey` | `CvDispToolbarForegroundBrush` | `ToolbarForeground` | the inherited text color (`TextElement.Foreground`) | Toolbar icons that carry no accent (📸 ⛶ ➕ ➖ 🧹 and ✋ when released) |
 
 ```xml
 <!-- the host's dark color dictionary — one place covers every CvDispCtrl, including those made by a DataTemplate -->
@@ -180,8 +181,16 @@ dictionary at run time (a light/dark switch) repaints every display without a re
                     xmlns:cv="clr-namespace:CvInspect.Controls;assembly=CvInspect.Wpf">
   <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarBackgroundKey}" Color="#2D2D30" />
   <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.StatusBarForegroundKey}" Color="#B4B4B4" />
+  <SolidColorBrush x:Key="{x:Static cv:CvDispCtrl.ToolbarForegroundKey}" Color="#DCDCDC" />
 </ResourceDictionary>
 ```
+
+Toolbar icons without an accent use the text color the control inherits from its window or theme, not
+the button style's text color — a theme that paints button text in its brand color would otherwise turn
+every icon into an accent. The accented ⏯ and the pressed ✋ stay white. A dark theme whose text color
+is light should set `ToolbarBackgroundKey` too, or give the icons a dark color through
+`ToolbarForegroundKey`, because the default toolbar background is the fixed light `#FAFAFA`.
+CvInspect.Avalonia follows the same rule with the same key.
 
 The image area is dark by default, which suits a dark theme. A light theme can lighten it in its own dictionary:
 
@@ -193,7 +202,7 @@ The image area is dark by default, which suits a dark theme. A light theme can l
 Write the key through `x:Static`: a typo then fails loudly when the dictionary loads (a
 `XamlParseException` whose inner exception names the member) — the build does not check it — while a mistyped key string
 is silently ignored and the default stays. The value must be a `Brush`. A non-`null` value of another
-type under one of these six keys is ignored, and each display logs a `CvLog` warning naming the key
+type under one of these seven keys is ignored, and each display logs a `CvLog` warning naming the key
 when it picks the value up.
 
 The instance properties take a direct value, a binding, a `DynamicResource` or a style setter, and win
