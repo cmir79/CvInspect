@@ -214,6 +214,13 @@ What that does not cover:
   upload. Measured on one development PC with a 2448×2048 frame: about 1.9 ms (Gray8) and 3.5 ms
   (Bgr24) when frames are converted back to back, and 2.9 ms / 4.7 ms with idle gaps between frames,
   against 0.08–1.6 ms for the WPF upload on the same PC. The cost grows with frame size and frame rate.
+  One consumer measured it in a real window on their development PC (Semi theme, 1400×976 window,
+  2448×2048 Gray8 at 15 fps for 10 s): setting `Frame` took 2.23 ms on average on the UI thread, 3.27 ms
+  at p95, and 17.5 ms for the first frame, which creates the bitmap. A Bgra32 frame took 2.63 ms, so
+  skipping the conversion did not make it cheaper there. In a live A/B run on the same PC (2592×1944
+  Mono8 camera at 14.6 fps, 130 s, Debug build), process CPU was 30.4% against 42.7% for the WPF host,
+  and resident memory was about 200 MB higher. None of these numbers cover the render thread, GPU
+  upload, high DPI or a production PC.
 - **Smart App Control.** Avalonia's native and managed assemblies, including the text shaper
   (`Avalonia.HarfBuzz`), are not signed; on a Windows PC where Smart App Control is enforcing, they can
   be blocked and the application may not draw text. WPF is not affected.
