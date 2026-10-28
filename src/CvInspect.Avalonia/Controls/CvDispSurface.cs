@@ -124,11 +124,15 @@ internal sealed partial class CvDispSurface : Control
     {
         base.OnLoaded(e);
         _shapeSub.Attach(true, true);   // 올라옴 통지 안이다 — IsLoaded 가 이 시점에 이미 섰는지에 기대지 않는다(늦으면 구독이 조용히 빠진다)
+        CvLoc.Changed -= OnLocChanged;
+        CvLoc.Changed += OnLocChanged;
+        if (_bitmap is null) InvalidateVisual();   // 내려가 있던 사이 바뀐 언어 — 그동안은 통지를 듣지 않았다
     }
 
     protected override void OnUnloaded(RoutedEventArgs e)
     {
         base.OnUnloaded(e);
+        CvLoc.Changed -= OnLocChanged;   // 정적 이벤트 — 내려간 컨트롤을 붙잡지 않게 놓는다
         _shapeSub.Attach(false, false);
         _editDrag.Cancel();   // 내려가며 잃은 포인터 캡처 — 다시 올라왔을 때 옛 드래그가 이어지지 않게
     }
@@ -236,6 +240,13 @@ internal sealed partial class CvDispSurface : Control
         if (Dispatcher.UIThread.CheckAccess()) InvalidateVisual();
         else Dispatcher.UIThread.Post(InvalidateVisual);
     }
+
+    /// <summary>언어 전환 통지 — 무이미지 안내는 그릴 때만 번역을 읽어, 다시 그리지 않으면 다음 그리기(영상 도착·테마 전환)까지 옛 언어로
+    /// 남는다. 바꾼 스레드에서 오고, UI 스레드에서 바꿨더라도 그리기 도중일 수 있으니 언제나 디스패처로 미룬다.</summary>
+    private void OnLocChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        if (_bitmap is null) InvalidateVisual();
+    });
 
     /// <summary>맞춤을 예약만 하고 다음 그리기에서 한다 — 숨긴 채 불러도, 첫 프레임 전에 불러도 된다.</summary>
     public void FitToView()

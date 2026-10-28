@@ -1579,6 +1579,31 @@ public class CvDispCtrlRenderTests
         finally { app.Styles.Remove(style); }
     }
 
+    /// <summary>영상 없는 화면에 떠 있는 채 언어를 바꾸면 무이미지 안내가 곧바로 새 언어로 다시 그려진다 — 종전에는 그릴 때만 번역을 읽어
+    /// 다음 그리기(테마 전환·영상 도착)까지 옛 언어로 남았다(소비자 실제 창에서 본 결함). 기준 화면은 처음부터 새 언어로 띄운 컨트롤이다.</summary>
+    [AvaloniaFact]
+    public void ThePlaceholderRepaintsWhenTheCultureChanges()
+    {
+        var before = CvLoc.Culture;
+        try
+        {
+            CvLoc.Culture = "en";
+            var live = new CvDispCtrl();
+            var en = Shoot(live, VW, VH);
+
+            CvLoc.Culture = "ko";
+            var fresh = Shoot(new CvDispCtrl(), VW, VH);
+            Check(Diff(en.Px, fresh.Px) > 0, "control: the English and Korean placeholders draw differently, so comparing them can tell the two apart");
+
+            var win = (Window)live.Parent!;
+            Settle(win);   // 다시 그리기 요청은 하지 않는다 — 언어 전환 통지만으로 다시 그려져야 한다
+            var after = Capture(win);
+            Check(Diff(after.Px, fresh.Px) == 0,
+                $"switching CvLoc.Culture repaints the shown placeholder in the new language without any other trigger ({Diff(after.Px, en.Px)} bytes changed, {Diff(after.Px, fresh.Px)} still differ from a control opened in Korean)");
+        }
+        finally { CvLoc.Culture = before; }
+    }
+
     private sealed class Cmd(Action run) : System.Windows.Input.ICommand
     {
         public event EventHandler? CanExecuteChanged { add { } remove { } }

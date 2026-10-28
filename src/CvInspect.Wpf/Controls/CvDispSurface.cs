@@ -106,9 +106,26 @@ internal sealed partial class CvDispSurface : FrameworkElement
 
         // 화면에서 내려가면 도형 구독을 놓고 다시 붙을 때 되건다 — 근거(누수 실측)는 코어 CvShapeSub.
         _shapeSub = new CvShapeSub(OnShapeChanged);
-        Loaded += (_, _) => _shapeSub.Attach(true, IsLoaded);
-        Unloaded += (_, _) => _shapeSub.Attach(false, IsLoaded);
+        Loaded += (_, _) =>
+        {
+            _shapeSub.Attach(true, IsLoaded);
+            CvLoc.Changed -= OnLocChanged;
+            CvLoc.Changed += OnLocChanged;
+            if (_bitmap is null) InvalidateVisual();   // 내려가 있던 사이 바뀐 언어 — 그동안은 통지를 듣지 않았다
+        };
+        Unloaded += (_, _) =>
+        {
+            CvLoc.Changed -= OnLocChanged;   // 정적 이벤트 — 내려간 컨트롤을 붙잡지 않게 놓는다
+            _shapeSub.Attach(false, IsLoaded);
+        };
     }
+
+    /// <summary>언어 전환 통지 — 무이미지 안내는 그릴 때만 번역을 읽어, 다시 그리지 않으면 다음 그리기(영상 도착·테마 전환)까지 옛 언어로
+    /// 남는다. 바꾼 스레드에서 오니 디스패처로 넘긴다.</summary>
+    private void OnLocChanged() => Dispatcher.InvokeAsync(() =>
+    {
+        if (_bitmap is null) InvalidateVisual();
+    });
 
     // === 외부 상태 주입 (CvDispCtrl DP 콜백) ===
 
