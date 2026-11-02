@@ -384,29 +384,78 @@ public class CvDispCoreTests
 
     // ───────────── 메뉴 ─────────────
 
-    /// <summary>메뉴 순서·묶음 — 불러오기가 맨 위(회귀가 첫 항목으로 찾는다), 지우기가 맨 아래. 팬·맞춤·확대·축소는 툴바를 감춰도 남는다
-    /// (되돌릴 유일한 수단). 감출 때는 딸린 구분선까지 한 묶음이다.</summary>
+    /// <summary>메뉴 순서·묶음 — 불러오기가 맨 위(회귀가 첫 항목으로 찾는다), 그래픽 숨기기가 맨 아래(툴바 짝 묶음 — 회귀가 끝 항목으로 찾는다).
+    /// 그래픽 포함 저장은 저장 바로 뒤(사용자 결정 0.35). 팬·맞춤·확대·축소는 툴바를 감춰도 남는다(되돌릴 유일한 수단).
+    /// 감출 때는 딸린 구분선까지 한 묶음이다.</summary>
     [Fact]
     public void MenuLayoutGroupsAndKeys()
     {
         var shape = string.Join(" ", CvDispMenu.Layout.Select(e => e.Cmd is { } c ? $"{c}:{e.Group}" : $"-:{e.Group}"));
-        Check(shape == "Load:Load Save:Always -:Always Pan:Always -:Always Fit:Always ZoomIn:Always ZoomOut:Always -:Toolbar Clear:Toolbar",
-            $"menu order and groups (got '{shape}')");
+        Check(shape == "Load:Load Save:Always SaveWithGraphics:Always -:Always Pan:Always -:Always Fit:Always ZoomIn:Always ZoomOut:Always -:Toolbar HideGraphics:Toolbar",
+            $"menu order and groups — save-with-graphics right after save, the hide toggle last with its separator in the toolbar group as clear was (got '{shape}')");
 
         var keys = string.Join(" ", Enum.GetValues(typeof(CvDispMenuCmd)).Cast<CvDispMenuCmd>().Select(CvDispMenu.LabelKey));
-        Check(keys == "cv:LoadImage cv:SaveImage cv:Pan cv:FitView cv:ZoomIn cv:ZoomOut cv:ClearGraphics",
-            $"label keys are the shipped translation keys (got '{keys}')");
+        Check(keys == "cv:LoadImage cv:SaveImage cv:SaveImageWithGraphics cv:Pan cv:FitView cv:ZoomIn cv:ZoomOut cv:HideGraphics",
+            $"label keys are the shipped translation keys — clear became hide, and the removed ClearGraphics key is no longer asked for (got '{keys}')");
+        foreach (var key in new[] { "cv:SaveImageWithGraphics", "cv:HideGraphics" })
+            Check(CvLoc.T(key) != key.Substring(key.IndexOf(':') + 1) && !string.IsNullOrEmpty(CvLoc.T(key)),
+                $"the new menu keys resolve in the shipped translations, else the menu shows the bare key ('{key}' -> '{CvLoc.T(key)}')");
 
         Check(CvDispMenu.IsVisible(CvDispMenuGroup.Always, false, false), "the always group survives a hidden toolbar and no load command");
         Check(!CvDispMenu.IsVisible(CvDispMenuGroup.Load, false, true) && CvDispMenu.IsVisible(CvDispMenuGroup.Load, true, false),
             "load follows the load command only");
         Check(!CvDispMenu.IsVisible(CvDispMenuGroup.Toolbar, true, false) && CvDispMenu.IsVisible(CvDispMenuGroup.Toolbar, false, true),
-            "the clear group follows the toolbar only");
+            "the hide group follows the toolbar only");
 
         Check(!CvDispMenu.IsEnabled(CvDispMenuCmd.Save, false) && CvDispMenu.IsEnabled(CvDispMenuCmd.Save, true),
             "save is grey without a frame");
-        Check(CvDispMenu.IsEnabled(CvDispMenuCmd.Load, false) && CvDispMenu.IsEnabled(CvDispMenuCmd.Fit, false),
+        Check(!CvDispMenu.IsEnabled(CvDispMenuCmd.SaveWithGraphics, false) && CvDispMenu.IsEnabled(CvDispMenuCmd.SaveWithGraphics, true),
+            "save-with-graphics follows the same rule as save — graphics alone are no picture to export");
+        Check(CvDispMenu.IsEnabled(CvDispMenuCmd.Load, false) && CvDispMenu.IsEnabled(CvDispMenuCmd.Fit, false) && CvDispMenu.IsEnabled(CvDispMenuCmd.HideGraphics, false),
             "everything else stays enabled without a frame");
+    }
+
+    // ───────────── 그래픽 포함 내보내기 기하 ─────────────
+
+    /// <summary>내보내기 기하 — 두 UI 패키지가 이 값 하나로 출력 DPI 와 뷰를 정한다. k 는 기준 화면(1280×960 DIP)에 맞췄을 때 배율의 역수이고
+    /// 1 아래로 내려가지 않는다(작은 이미지에서 글자를 원본 픽셀보다 작게 줄이지 않는다 — 사용자 결정 0.35).</summary>
+    [Fact]
+    public void ExportGeomScalesTextByTheReferenceFit()
+    {
+        var big = CvExportGeom.Of(2448, 2048);
+        var fitBig = Math.Min(1280.0 / 2448, 960.0 / 2048) * 0.97;
+        Check(Math.Abs(big.K - 1 / fitBig) < 1e-12 && Math.Abs(big.K - 2.1993) < 1e-3,
+            $"a 5 MP frame exports text and lines k = 1/fit times larger, where fit is the on-screen fit rule (margin 0.97) on 1280x960 — k={big.K}");
+        Check(big.View.Scale == 1 / big.K && big.View.OffsetX == 0 && big.View.OffsetY == 0,
+            $"the export view is Scale 1/k at the origin, so image pixel (x,y) lands at DIP (x/k, y/k) — {big.View.Scale},{big.View.OffsetX},{big.View.OffsetY}");
+        Check(Math.Abs(big.Dpi - 96 * big.K) < 1e-12, "the bitmap DPI is 96k — one DIP becomes k pixels, so the image is drawn 1:1");
+        var (sx, sy) = big.View.ToScreen(2448, 2048);
+        Check(Math.Abs(sx * big.K - 2448) < 1e-9 && Math.Abs(sy * big.K - 2048) < 1e-9,
+            $"the far image corner maps to the far bitmap pixel corner ({sx * big.K},{sy * big.K})");
+
+        var same = CvExportGeom.Of(1280, 960);
+        Check(Math.Abs(same.K - 1 / 0.97) < 1e-12, $"a frame the size of the reference view still carries the fit margin, k = 1/0.97 — k={same.K}");
+
+        foreach (var (w, h) in new[] { (640, 480), (100, 100), (1, 1) })
+        {
+            var small = CvExportGeom.Of(w, h);
+            Check(small.K == 1 && small.View.Scale == 1, $"a {w}x{h} frame never shrinks text below its on-screen DIP size — k is floored at 1 (k={small.K})");
+        }
+
+        // 가로로 긴 띠 — 폭이 정한다. 비율 쪽 갈래가 바뀌면(높이만 보면) k 가 1 로 떨어진다.
+        var strip = CvExportGeom.Of(10000, 100);
+        Check(Math.Abs(strip.K - 10000 / (1280 * 0.97)) < 1e-9, $"a wide strip is governed by its width (k={strip.K})");
+
+        // 아주 긴 띠(라인 스캔 한 장) — 화면 맞춤의 줌 하한(0.02)에 걸리는 비율. k 는 글자 비율이지 줌이 아니라 자르지 않는다:
+        // 맞춤 배율을 줌 범위로 자르면 k 가 1/0.02 = 50 에 묶여 글자가 기준 화면 비율보다 작아진다.
+        var line = CvExportGeom.Of(100000, 10);
+        var kLine = 100000 / (1280 * 0.97);
+        Check(kLine > 1 / CvViewXform.MinScale && Math.Abs(line.K - kLine) < 1e-9,
+            $"a frame elongated past the zoom floor keeps the raw fit ratio, k = {kLine:0.###} > {1 / CvViewXform.MinScale} — not capped by the on-screen zoom clamp (k={line.K})");
+        Check(Math.Abs(line.View.Scale * line.K - 1) < 1e-12, $"...and its view stays Scale 1/k ({line.View.Scale})");
+        Check(Record.Exception(() => CvExportGeom.Of(0, 10)) is ArgumentOutOfRangeException
+              && Record.Exception(() => CvExportGeom.Of(10, 0)) is ArgumentOutOfRangeException,
+            "an empty frame is refused — the caller returns null without a frame instead of asking");
     }
 
     // ───────────── 도형 구독 ─────────────

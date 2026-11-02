@@ -73,6 +73,12 @@ internal readonly struct CvViewXform
         return true;
     }
 
+    /// <summary>맞춤 배율의 날값 — 여백(0.97)만 곱하고 줌 범위([<see cref="MinScale"/>, <see cref="MaxScale"/>])로 자르지 않는다.
+    /// 화면 맞춤(<see cref="TryFit"/>)은 이것을 줌 범위로 자르고, 그래픽 포함 내보내기(CvExportGeom)는 자르지 않은 값을 쓴다 — 내보내기의 글자 배수는
+    /// 줌 조작이 아니라 비율이라 줌 하한이 걸리면 아주 긴 프레임에서 배수가 1/MinScale(50)에 묶인다. 치수 검사는 부르는 쪽이 한다.</summary>
+    internal static double RawFitScale(double viewW, double viewH, int imgW, int imgH)
+        => Math.Min(viewW / imgW, viewH / imgH) * FitMargin;
+
     /// <summary>이미지를 표면 가운데에 맞춘 변환. 표면이 너무 작거나 이미지가 없으면 false — 호출자는 지금 뷰를 그대로 둔다.</summary>
     internal static bool TryFit(double viewW, double viewH, int imgW, int imgH, out CvViewXform fit)
     {
@@ -81,8 +87,7 @@ internal readonly struct CvViewXform
             fit = Identity;
             return false;
         }
-        var scale = Math.Min(viewW / imgW, viewH / imgH) * FitMargin;
-        scale = Math.Clamp(scale, MinScale, MaxScale);
+        var scale = Math.Clamp(RawFitScale(viewW, viewH, imgW, imgH), MinScale, MaxScale);
         fit = new CvViewXform(scale, (viewW - imgW * scale) / 2, (viewH - imgH * scale) / 2);
         return true;
     }

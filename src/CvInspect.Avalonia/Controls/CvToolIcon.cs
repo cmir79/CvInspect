@@ -1,4 +1,4 @@
-// 툴바 아이콘 — 7개 버튼(📸⏯✋⛶➕➖🧹)의 그림을 글자 대신 벡터 경로로 그린다.
+// 툴바 아이콘 — 7개 버튼(📸⏯✋⛶➕➖👁)의 그림을 글자 대신 벡터 경로로 그린다.
 // 글자로 두면 Skia 가 컬러 이모지 글꼴의 컬러 글리프를 그리고, 그 글꼴의 줄 높이 때문에 버튼 위쪽으로 쏠린다(헤드리스·데스크톱 실측).
 // 글꼴이 없는 OS(이모지 글꼴 없는 Linux 등)에서는 상자로 나온다. 경로는 글꼴과 무관하게 같은 모양·같은 자리다.
 // 색은 상속되는 글자색(TextElement.Foreground)을 그대로 쓴다 — 버튼 템플릿의 ContentPresenter 가 테마의 평소·비활성 글자색을,
@@ -13,7 +13,7 @@ using Avalonia.Media;
 namespace CvInspect.Avalonia.Controls;
 
 /// <summary>툴바 아이콘 종류.</summary>
-internal enum CvToolIconKind { Camera, PlayPause, Hand, Fit, ZoomIn, ZoomOut, Broom }
+internal enum CvToolIconKind { Camera, PlayPause, Hand, Fit, ZoomIn, ZoomOut, Eye }
 
 /// <summary>16×16 DIP 툴바 아이콘. 크기는 WPF 판 툴바(Segoe UI Symbol 16pt 기호)에서 잰 글리프 상자(가로·세로 11~18 px)에 맞췄다.
 /// 그림의 경계 상자(선 굵기 포함) 중심을 컨트롤 중심에 맞춰 그린다 — 경로 좌표를 손으로 맞추지 않아도 가운데다.</summary>
@@ -65,10 +65,17 @@ internal sealed class CvToolIcon : Control
         }
     }
 
-    // 선 끝은 둥글게 — 모서리 괄호(⛶)·빗자루 자루의 끝이 작은 크기에서 뭉개져 보이지 않게.
+    // 선 끝은 둥글게 — 모서리 괄호(⛶)의 끝이 작은 크기에서 뭉개져 보이지 않게.
     private static Pen PenOf(IBrush brush, double thickness) => new(brush, thickness, lineCap: PenLineCap.Round, lineJoin: PenLineJoin.Round);
 
     private static Part Fill(string data) => new(Geometry.Parse(data), 0);
+
+    /// <summary>눈 아이콘 경로(16×16, 짝홀 채움) — 바깥 아몬드, 안쪽 아몬드(구멍), 눈동자 원의 세 겹이 고리·구멍·눈동자가 된다.
+    /// WPF 판 툴바(CvInspect.Wpf 의 CvDispCtrl.EyeIconData)가 같은 경로를 쓴다 — 고치면 함께 고친다.</summary>
+    internal const string EyeData =
+        "M0.6,8 C2.7,4.1 5.2,2.6 8,2.6 C10.8,2.6 13.3,4.1 15.4,8 C13.3,11.9 10.8,13.4 8,13.4 C5.2,13.4 2.7,11.9 0.6,8 Z " +
+        "M2.4,8 C4.1,5.2 5.9,4.1 8,4.1 C10.1,4.1 11.9,5.2 13.6,8 C11.9,10.8 10.1,11.9 8,11.9 C5.9,11.9 4.1,10.8 2.4,8 Z " +
+        "M8,5.4 A2.6,2.6 0 1 1 8,10.6 A2.6,2.6 0 1 1 8,5.4 Z";
 
     private static Part Line(string data, double thickness) => new(Geometry.Parse(data), thickness);
 
@@ -109,12 +116,10 @@ internal sealed class CvToolIcon : Control
         [
             Fill("M1.5,6.5 H14.5 V9.5 H1.5 Z"),
         ],
-        // 빗자루 — 자루, 묶음 띠, 솔(띠와 솔 사이를 띄워 경계가 보이게)
+        // 눈 — 그래픽 숨기기 토글. 숨김 중인지는 그림이 아니라 버튼의 눌림 모양이 보인다(같은 그림을 쓴다).
         _ =>
         [
-            Line("M14.6,1.4 L9.6,6.4", 1.6),
-            Fill("M7.4,5.2 L10.8,8.6 L9.7,9.7 L6.3,6.3 Z"),
-            Fill("M5.8,7 L9,10.2 C8.3,12.2 7,13.9 5.3,14.9 C3.8,14.7 2.3,14.2 1,13.5 C2.3,11.6 3.6,8.9 5.8,7 Z"),
+            Fill(EyeData),
         ],
     };
 }

@@ -35,6 +35,21 @@ internal sealed partial class CvDispSurface : Control
     /// <summary>팬 모드 — true 면 좌드래그가 도형 히트 무시하고 항상 화면 이동 (툴바 ✋ 토글).</summary>
     public bool IsPanMode { get; set; }
 
+    private bool _isOverlayHidden;
+
+    /// <summary>결과 오버레이(모서리 HUD 포함)를 그리지 않는다 — 툴바 👁 토글. 숨긴 동안에도 <see cref="SetOverlay"/> 로 들어온 값은 그대로 받아 둔다
+    /// (풀면 지금 값이 그려진다). 편집 도형과 이미지는 이 값과 무관하게 그린다. 그래픽 포함 내보내기(<see cref="RenderWithOverlay"/>)도 무관하다.</summary>
+    public bool IsOverlayHidden
+    {
+        get => _isOverlayHidden;
+        set
+        {
+            if (_isOverlayHidden == value) return;
+            _isOverlayHidden = value;
+            if (_overlay is not null) InvalidateVisual();
+        }
+    }
+
     private bool _clipOverlayToImage;
 
     /// <summary>결과 오버레이를 이미지 사각으로 자를지 — 컨트롤의 같은 이름 속성이 설명을 갖는다.</summary>

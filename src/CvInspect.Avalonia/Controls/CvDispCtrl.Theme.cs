@@ -44,7 +44,7 @@ public sealed partial class CvDispCtrl
     /// 다른 종류(그라데이션 등)는 기본색으로 남고 경고 한 줄을 남긴다.</summary>
     public const string PlaceholderForegroundKey = CvDispTheme.PlaceholderForegroundKey;
 
-    /// <summary>툴바 아이콘 색 리소스 키 — 강조색을 쓰지 않는 버튼(📸·⛶·➕·➖·🧹, 풀린 ✋)의 아이콘을 평소·포인터 올림·눌림 상태에서 칠한다.
+    /// <summary>툴바 아이콘 색 리소스 키 — 강조색을 쓰지 않는 버튼(📸·⛶·➕·➖·👁 — 눌린 👁 포함, 풀린 ✋)의 아이콘을 평소·포인터 올림·눌림 상태에서 칠한다.
     /// 없으면 이 컨트롤이 물려받는 글자색(<c>TextElement.Foreground</c> — 테마가 창에 준 본문 글자색)이다. 버튼 테마의 글자색을 그대로 두지 않는
     /// 이유: 버튼 글자를 브랜드 색으로 칠하는 테마(Semi 등)에서는 아이콘 일곱 개가 전부 강조색이 되어 툴바가 지나치게 튀었다(소비자 실제 창).
     /// 비활성 버튼은 테마의 비활성 모양 그대로다. ⏯ 와 눌린 ✋ 는 강조 바탕 위 흰색이라 이 키와 무관하다.
@@ -222,6 +222,35 @@ public sealed partial class CvDispCtrl
         ApplyAccents();
     }
 
+    /// <summary>눌린 👁(그래픽 숨김 중)의 바탕 — 툴바 아이콘 색을 알파 <see cref="HideBackAlpha"/>(25%)로 옅게 깐 색. 풀리면 지역 값을 걷어 버튼 테마의
+    /// 평소 모양으로 돌린다.
+    /// 테마의 눌림 바탕을 그대로 두지 않는 이유: Fluent ToggleButton 은 :checked 에서 템플릿 안쪽 바탕을 테마 강조색으로 칠한다(✋ 의 PinAccent
+    /// 주석 실측) — 👁 는 ✋ 같은 모드가 아니라 보기 전환이라 강조색을 쓰지 않는다. 그래서 PinAccent(눌림만)로 안쪽 바탕을 버튼 Background 에 묶고
+    /// 여기서 중립색을 넣는다. 아이콘은 평범한 버튼과 같은 툴바 아이콘 색이다(ApplyToolbarForeground — 눌렸다고 흰색으로 바꾸지 않는다).
+    /// 아이콘 색에서 바탕을 만드는 이유: 밝은 툴바(검은 아이콘)에서는 옅은 회색, 어두운 툴바(밝은 아이콘)에서는 한 단계 밝은 회색이 되어 어느 쪽에서도
+    /// 아이콘과 대비가 남는다 — 고정 회색(구분선 기본 #DDDDDD)을 깔았던 시험판은 어두운 툴바의 흰 아이콘과 대비가 거의 없었다(헤드리스 다크 변형:
+    /// 같은 아이콘의 잉크 상자가 밝은 변형 16×12 에서 14×10 으로 줄어 가장자리가 바탕에 묻혔다).
+    /// 아이콘 색이 단색 브러시가 아니면(그라데이션 등) 구분선 색으로 떨어진다.</summary>
+    private void ApplyHideBack()
+    {
+        if (_hideBtn.IsChecked != true)
+        {
+            _hideBtn.ClearValue(TemplatedControl.BackgroundProperty);
+            return;
+        }
+        _hideBtn.Background = ToolbarIconBrush() is ISolidColorBrush s
+            ? new ImmutableSolidColorBrush(Color.FromArgb((byte)Math.Round(s.Color.A * Math.Clamp(s.Opacity, 0, 1) * HideBackAlpha / 255.0), s.Color.R, s.Color.G, s.Color.B))
+            : Pick(SeparatorBrushProperty, SeparatorBrushSlotProperty, DefaultSep);
+    }
+
+    /// <summary>눌린 👁 바탕의 알파(0~255) — 아이콘 색을 이만큼만 깐다.</summary>
+    private const byte HideBackAlpha = 0x40;
+
+    /// <summary>강조색 없는 툴바 아이콘의 색 — 속성 → 키 → 물려받는 글자색.</summary>
+    private IBrush? ToolbarIconBrush()
+        => CvDispTheme.Pick<IBrush>(GetValue(ToolbarForegroundProperty), GetValue(ToolbarForegroundSlotProperty))
+           ?? GetValue(TextElement.ForegroundProperty);
+
     /// <summary>강조색을 쓰지 않는 버튼의 아이콘 색 — 속성 → 키 → 물려받는 글자색. 버튼 Foreground 에 지역 값으로 넣어 버튼 테마의 글자색 세터를
     /// 이기고, PinForeground 가 단 스타일이 템플릿 안쪽 글자를 이 값에 묶어 둔다(포인터 올림·눌림 상태 포함, 비활성 제외 — CvDispCtrl.cs).
     /// 물려받는 글자색은 늘 값이 있다(아무도 안 주면 속성 기본값 검정) — 테마 없는 창에서는 검정이 된다.
@@ -229,10 +258,10 @@ public sealed partial class CvDispCtrl
     /// 꺼진 📸 가 살아 보인다. 활성이 바뀔 때마다 다시 부른다(OnToolButtonEnabledChanged). 눌린 ✋ 는 흰색(강조)이 이미 들어가 있어 건너뛴다 — 풀릴 때 여기로 돌아온다.</summary>
     private void ApplyToolbarForeground()
     {
-        var fg = CvDispTheme.Pick<IBrush>(GetValue(ToolbarForegroundProperty), GetValue(ToolbarForegroundSlotProperty))
-                 ?? GetValue(TextElement.ForegroundProperty);
+        var fg = ToolbarIconBrush();
         foreach (var b in _plainToolBtns) SetIconForeground(b, fg);
         if (_panBtn.IsChecked != true) SetIconForeground(_panBtn, fg);
+        ApplyHideBack();   // 눌린 👁 의 바탕은 아이콘 색에서 만든다 — 아이콘 색이 바뀌면 같이 바뀐다
     }
 
     private static void SetIconForeground(Button b, IBrush? fg)

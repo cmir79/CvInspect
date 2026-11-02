@@ -26,7 +26,8 @@ public sealed partial class CvDispCtrl
     /// 가는 변환 한 번뿐이다. 지원 포맷: 8비트 1/3/4채널(CV_8UC1/CV_8UC3/CV_8UC4) — 그 외는 빈 화면. 두 타입이 아닌 값도 빈 화면(경고 로그).
     /// 숨겼다 다시 보이는 것은 크기 변경이 아니라 줌이 남는다 — 첫 화면으로 돌리려면 <see cref="FitToView"/>.
     /// <see cref="Overlay"/>·<see cref="Shapes"/> 처럼 object 로 받는 이유: 바인딩 소스가 표시 계층의 구체 타입에 묶이지 않게 한다.
-    /// 화면 비트맵은 4채널 한 장을 치수가 바뀔 때까지 다시 쓴다 — 1·3채널 프레임은 대입마다 4채널로 변환한다(5MP 실측 약 2~3.5 ms).</summary>
+    /// 화면 비트맵은 4채널 한 장을 치수가 바뀔 때까지 다시 쓴다 — 1·3채널 프레임은 대입마다 4채널로 변환한다(5MP 실측 약 2~3.5 ms).
+    /// 새 값이 들어오면 툴바 👁 의 그래픽 숨김이 풀린다(<see cref="Overlay"/> 설명 — 같은 참조는 풀지 않는다).</summary>
     public object? Frame
     {
         get => GetValue(FrameProperty);
@@ -36,7 +37,9 @@ public sealed partial class CvDispCtrl
     public static readonly StyledProperty<object?> OverlayProperty =
         AvaloniaProperty.Register<CvDispCtrl, object?>(nameof(Overlay));
 
-    /// <summary>결과 오버레이 — ViOverlay 만 렌더 (그 외 타입 무시). 참조 교체로 갱신.</summary>
+    /// <summary>결과 오버레이 — ViOverlay 만 렌더 (그 외 타입 무시). 참조 교체로 갱신.
+    /// 툴바 👁(그래픽 숨기기)로 숨긴 동안에도 값은 받아 두고, 새 값이 들어오면(이 속성이나 <see cref="Frame"/> 이 바뀌면) 숨김이 저절로 풀린다.
+    /// 같은 참조를 다시 넣는 것은 속성 변경이 아니라서 풀리지 않는다 — 다시 보이려면 새 오버레이 객체를 넣는다.</summary>
     public object? Overlay
     {
         get => GetValue(OverlayProperty);
@@ -190,7 +193,8 @@ public sealed partial class CvDispCtrl
         AvaloniaProperty.Register<CvDispCtrl, bool>(nameof(IsToolbarVisible), true);
 
     /// <summary>툴바 전체 표시 여부 — 운전 화면처럼 조작을 상위 버튼이 전담하는 자리에서는 숨긴다.
-    /// 우클릭 메뉴의 구분선+"그래픽 지우기" 도 함께 감춘다. 팬·맞춤·확대·축소는 메뉴에 남는다 — 툴바를 감춘 화면에서 배율이 어긋나면
+    /// 우클릭 메뉴의 구분선+"그래픽 숨기기" 도 함께 감춘다 — 그래서 감추는 순간 👁 로 숨긴 그래픽은 다시 보인다(다시 켤 수단이 없어지므로).
+    /// 팬·맞춤·확대·축소는 메뉴에 남는다 — 툴바를 감춘 화면에서 배율이 어긋나면
     /// 되돌릴 수단이 그 메뉴뿐이다. (카메라 조작만 감추려면 <see cref="IsCamControlVisible"/>.)</summary>
     public bool IsToolbarVisible
     {
@@ -213,8 +217,16 @@ public sealed partial class CvDispCtrl
         base.OnPropertyChanged(change);
         var p = change.Property;
         // 형 분기(두 형이 아니면 경고 + 빈 화면)와 공급자 계약 검사는 코어 CvFrameBuf.Set 이 한다.
-        if (p == FrameProperty) _surface.SetFrame(change.NewValue);
-        else if (p == OverlayProperty) _surface.SetOverlay(change.NewValue as ViOverlay);
+        if (p == FrameProperty)
+        {
+            ReshowGraphics();
+            _surface.SetFrame(change.NewValue);
+        }
+        else if (p == OverlayProperty)
+        {
+            ReshowGraphics();
+            _surface.SetOverlay(change.NewValue as ViOverlay);
+        }
         else if (p == ClipOverlayToImageProperty) _surface.ClipOverlayToImage = change.GetNewValue<bool>();
         else if (p == OverlayLabelScaleProperty) _surface.OverlayLabelScale = change.GetNewValue<double>();
         else if (p == ShapesProperty) _surface.SetShapes(change.NewValue as IReadOnlyList<CvEditShape>);
@@ -229,6 +241,16 @@ public sealed partial class CvDispCtrl
         else OnThemePropertyChanged(change);
     }
 
+    /// <summary>그래픽 숨김(툴바 👁)을 푼다 — 새 <see cref="Frame"/>·<see cref="Overlay"/> 값이 들어올 때. 숨김은 "지금 이 결과를 잠깐 치운다" 는
+    /// 일시 상태라(사용자 결정), 다음 결과가 오면 다시 보인다. 라이브 중이면 다음 프레임에 풀린다 — 의도된 동작이다.
+    /// 속성 값이 바뀔 때만 불린다 — 같은 참조를 다시 넣으면 속성 변경이 아니라서 풀리지 않는다. <see cref="Shapes"/> 변경은 풀지 않는다(티칭 도형은 숨김 대상이 아니다).
+    /// 표면에 값을 넘기기 전에 푼다 — 프레임 반영이 던져도(화면 비트맵 실패) 숨김이 옛 결과에 남지 않게.
+    /// 툴바를 감출 때(<see cref="IsToolbarVisible"/> = false)도 푼다 — 토글과 메뉴 항목이 함께 사라져 다시 켤 수단이 없어진다.</summary>
+    private void ReshowGraphics()
+    {
+        if (_hideBtn.IsChecked == true) _hideBtn.IsChecked = false;
+    }
+
     private void SyncPlayState(bool running)
     {
         _syncingPlay = true;
@@ -237,8 +259,8 @@ public sealed partial class CvDispCtrl
         RefreshCamButtons();   // ⏯ 의 활성을 정하는 명령이 도는 쪽/멈춘 쪽에 따라 바뀐다
     }
 
-    /// <summary>우클릭 메뉴의 묶음(불러오기 / 툴바와 짝인 지우기·구분선)과 파일 항목, 무이미지 안내의 불러오기 줄을 함께 맞춘다 — 어떤 묶음이
-    /// 언제 보이는지는 코어 CvDispMenu.IsVisible. 불러오기는 받을 곳(명령)과 파일 열기 선택기가 둘 다 있어야, 저장은 파일 저장 선택기가 있어야
+    /// <summary>우클릭 메뉴의 묶음(불러오기 / 툴바와 짝인 숨기기·구분선)과 파일 항목, 무이미지 안내의 불러오기 줄을 함께 맞춘다 — 어떤 묶음이
+    /// 언제 보이는지는 코어 CvDispMenu.IsVisible. 불러오기는 받을 곳(명령)과 파일 열기 선택기가 둘 다 있어야, 저장 두 항목은 파일 저장 선택기가 있어야
     /// 보인다. 메뉴 표시 여부를 여는 시점이 아니라 조건이 바뀌는 시점에 정해야 팝업이 제 크기로 열린다.</summary>
     private void ApplyMenuGroups()
     {
@@ -248,13 +270,17 @@ public sealed partial class CvDispCtrl
         foreach (var (group, elem) in _menuGroupItems)
             elem.IsVisible = CvDispMenu.IsVisible(group, canLoad, isToolbarVisible);
         _saveItem.IsVisible = _canSaveFile;
-        _fileSep.IsVisible = _loadItem.IsVisible || _saveItem.IsVisible;
+        _saveGfxItem.IsVisible = _canSaveFile;
+        _fileSep.IsVisible = _loadItem.IsVisible || _saveItem.IsVisible || _saveGfxItem.IsVisible;
     }
 
     /// <summary>툴바와 짝인 조작을 툴바·우클릭 메뉴 양쪽에서 함께 여닫는다 (메뉴 쪽은 딸린 구분선까지).
     /// 팬·맞춤·확대·축소는 여기에 딸리지 않는다 — 툴바를 감춰도 메뉴에 남는 조작이다.</summary>
     private void SyncToolbarVisibility(bool visible)
     {
+        // 툴바를 감추면 숨긴 그래픽을 되살린다 — 👁 토글과 메뉴의 숨기기 항목이 둘 다 툴바 묶음이라, 숨긴 채 감추면 다시 켤 수단이 없다
+        // (새 Frame·Overlay 가 오기 전까지 그래픽이 안 보인 채 남는다).
+        if (!visible) ReshowGraphics();
         _toolbarBorder.IsVisible = visible;
         ApplyMenuGroups();
     }

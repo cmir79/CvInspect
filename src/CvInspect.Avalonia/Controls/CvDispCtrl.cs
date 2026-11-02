@@ -17,6 +17,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.Utilities;
 using CvInspect.Display;
+using Mat = OpenCvSharp.Mat;
 
 namespace CvInspect.Avalonia.Controls;
 
@@ -24,8 +25,8 @@ namespace CvInspect.Avalonia.Controls;
 /// OpenCV 검사용 Avalonia 디스플레이 — Mat 표시 + 중립 오버레이(ViOverlay) 렌더 + 편집 도형(CvEditShape) 인터랙션.
 /// 오버레이/도형 좌표는 "표시 중인 이미지"의 픽셀 공간 — 원본이든 단계(축소) 이미지든,
 /// 호출측이 이미지와 같은 공간의 좌표만 짝지어 바인딩한다.
-/// 조작 체계: 툴바(📸그랩·⏯️라이브 / ✋팬 │ ⛶맞춤·➕➖줌 │ 🧹지우기, <see cref="ToolbarDock"/> 로 4방향) +
-/// 우클릭 이미지 불러오기/저장 + 휠 줌·좌드래그 팬/도형 편집.
+/// 조작 체계: 툴바(📸그랩·⏯️라이브 / ✋팬 │ ⛶맞춤·➕➖줌 │ 👁그래픽 숨기기, <see cref="ToolbarDock"/> 로 4방향) +
+/// 우클릭 이미지 불러오기/저장/그래픽 포함 저장 + 휠 줌·좌드래그 팬/도형 편집.
 /// 툴바·상태 줄·영상 영역 바탕 색은 인스턴스 속성 → 호스트 리소스 키 → 고정색(영상 영역은 컨트롤 Background) 순으로 정해지고
 /// 실행 중 사전·테마 변형 교체를 따라온다(<see cref="ToolbarBackgroundKey"/> 등 — CvDispCtrl.Theme.cs).
 /// 테마를 강제하지 않는다 — 버튼·메뉴는 호스트 테마의 표준 컨트롤이라, 테마(Fluent·Simple 등)를 싣지 않은 앱에서는 보이지 않는다.
@@ -44,10 +45,12 @@ public sealed partial class CvDispCtrl : Grid
     private readonly (CvDispMenuGroup Group, Control Elem)[] _menuGroupItems;   // 함께 여닫는 메뉴 자리(구분선 포함) — 코어 CvDispMenu
     private readonly MenuItem _loadItem;
     private readonly MenuItem _saveItem;
-    private readonly Separator _fileSep;   // 파일 두 항목 뒤 구분선 — 둘 다 감추면 맨 위에 혼자 남지 않게 함께 감춘다
+    private readonly MenuItem _saveGfxItem;   // 이미지 저장(그래픽 포함) — 저장과 같은 선택기 조건을 따른다
+    private readonly Separator _fileSep;   // 파일 항목 뒤 구분선 — 다 감추면 맨 위에 혼자 남지 않게 함께 감춘다
     private readonly Button _grabBtn;
     private readonly ToggleButton _playBtn;
     private readonly ToggleButton _panBtn;
+    private readonly ToggleButton _hideBtn;   // 👁 그래픽 숨기기 — 눌림 = 결과 오버레이 숨김
     private readonly Button[] _plainToolBtns;   // 강조색을 쓰지 않는 버튼 — 아이콘 색은 ApplyToolbarForeground 가 칠한다
     private readonly TextBlock _statusLeft;
     private readonly TextBlock _statusRight;
@@ -128,10 +131,19 @@ public sealed partial class CvDispCtrl : Grid
             }
         };
 
-        var clearBtn = MakeToolButton(new Button(), CvToolIconKind.Broom, "Clear");
-        clearBtn.Click += (_, _) => _surface.SetOverlay(null);   // 결과 오버레이만 지움 — 다음 검사가 새 오버레이로 교체
+        // 그래픽 숨기기 토글 — 눌림 = 결과 오버레이(HUD 포함)를 숨긴다. 일시 상태라 공개 속성으로 두지 않는다: 새 Frame·Overlay 가 들어오면
+        // 저절로 풀린다(CvDispCtrl.Props.cs 의 ReshowGraphics). 오버레이를 지우지 않고 숨기기만 한다 — 풀면 지금 값이 다시 보인다.
+        // 강조색을 쓰지 않는다 — ✋ 처럼 드래그의 뜻을 바꾸는 모드가 아니라 보기 전환이다. 아이콘은 다른 평범한 버튼과 같은 툴바 아이콘 색이고
+        // (_plainToolBtns), 눌림은 테마의 강조 바탕 대신 아이콘 색을 옅게 깐 바탕으로 보인다(ApplyHideBack — 근거는 그쪽).
+        _hideBtn = MakeToolButton(new ToggleButton(), CvToolIconKind.Eye, "Hide Graphics");
+        PinAccent(_hideBtn, checkedOnly: true);
+        _hideBtn.IsCheckedChanged += (_, _) =>
+        {
+            _surface.IsOverlayHidden = _hideBtn.IsChecked == true;
+            ApplyHideBack();
+        };
 
-        // 버튼 순서/그룹 = 우클릭 메뉴와 동일 (팬 │ 화면 맞춤 → 줌 │ 클리어)
+        // 버튼 순서/그룹 = 우클릭 메뉴와 동일 (팬 │ 화면 맞춤 → 줌 │ 숨기기)
         _toolSeps = [MakeToolSeparator(), MakeToolSeparator()];
         _dispPanel.Children.Add(panBtn);
         _dispPanel.Children.Add(_toolSeps[0]);
@@ -139,9 +151,9 @@ public sealed partial class CvDispCtrl : Grid
         _dispPanel.Children.Add(zoomInBtn);
         _dispPanel.Children.Add(zoomOutBtn);
         _dispPanel.Children.Add(_toolSeps[1]);
-        _dispPanel.Children.Add(clearBtn);
+        _dispPanel.Children.Add(_hideBtn);
         toolbar.Children.Add(_dispPanel);
-        _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, clearBtn];
+        _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, _hideBtn];
         foreach (var b in _plainToolBtns)
         {
             PinForeground(b);
@@ -201,28 +213,40 @@ public sealed partial class CvDispCtrl : Grid
         var menu = new ContextMenu();
         var menuItems = new List<(CvDispMenuCmd Cmd, MenuItem Item)>();
         var groupItems = new List<(CvDispMenuGroup Group, Control Elem)>();
-        MenuItem? panItem = null, loadItem = null, saveItem = null;
+        MenuItem? panItem = null, hideItem = null, loadItem = null, saveItem = null, saveGfxItem = null;
         Separator? fileSep = null;
+        // 팬·숨기기 항목이 메뉴를 열 때 보여 준 체크 — 클릭은 "본 것의 반대" 로 정한다(두 UI 패키지 공통 규칙).
+        // 팬은 저절로 바뀌지 않지만 호스트 코드가 ✋ 를 바꿀 수는 있어 같은 규칙에 둔다. 숨기기는 메뉴가 열려 있는 사이 새 Frame·Overlay 로 숨김이 저절로 풀리면 툴바 토글은 이미 바뀌었는데 항목은 옛 체크를 보이고 있다.
+        // 사람은 본 체크를 끄려고(보이게 하려고) 누른 것이므로, 지금 토글을 뒤집으면(→ 다시 숨김) 정반대가 된다.
+        // 항목 자신의 체크에도 기대지 않는다: 사람의 클릭(메뉴 상호작용 처리기 DefaultMenuInteractionHandler.Click)은 CheckBox 항목의
+        // 체크를 먼저 뒤집고 Click 을 내지만(Avalonia 12.1.4 IL 확인), Click 이벤트를 직접 내는 길(자동화·코드)은 뒤집지 않는다 — 기록한 값은 두 길에서 같다.
+        var hideShown = false;
+        var panShown = false;
         foreach (var entry in CvDispMenu.Layout)
         {
             Control elem;
             if (entry.Cmd is { } cmd)
             {
-                var item = new MenuItem { ToggleType = cmd == CvDispMenuCmd.Pan ? MenuItemToggleType.CheckBox : MenuItemToggleType.None };
+                var checkable = cmd is CvDispMenuCmd.Pan or CvDispMenuCmd.HideGraphics;
+                var item = new MenuItem { ToggleType = checkable ? MenuItemToggleType.CheckBox : MenuItemToggleType.None };
                 item.Click += cmd switch
                 {
                     CvDispMenuCmd.Load => (_, _) => LoadImageFromFile(),
-                    CvDispMenuCmd.Save => (_, _) => SaveImageToFile(),
-                    // 팬은 툴바 ✋ 를 뒤집는다 — 메뉴 항목 자신의 체크가 클릭 전후 어느 쪽에서 바뀌는지에 기대지 않는다(열 때 ✋ 로 맞춰 둔다).
-                    CvDispMenuCmd.Pan => (_, _) => panBtn.IsChecked = panBtn.IsChecked != true,
+                    CvDispMenuCmd.Save => (_, _) => SaveImageToFile(withGraphics: false),
+                    CvDispMenuCmd.SaveWithGraphics => (_, _) => SaveImageToFile(withGraphics: true),
+                    // 팬·숨기기는 열 때 기록한 체크(panShown·hideShown)의 반대를 넣는다 — 위 주석. 메뉴 항목 자신의 체크가 클릭 전후 어느 쪽에서
+                    // 바뀌는지에 기대지 않는다(상호작용 처리기는 뒤집고 Click 을 내지만, Click 을 바로 올리면 뒤집지 않는다). 두 UI 패키지가 같은 규칙이다.
+                    CvDispMenuCmd.Pan => (_, _) => panBtn.IsChecked = !panShown,
                     CvDispMenuCmd.Fit => (_, _) => FitToView(),
                     CvDispMenuCmd.ZoomIn => (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep),
                     CvDispMenuCmd.ZoomOut => (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep),
-                    _ => (EventHandler<RoutedEventArgs>)((_, _) => _surface.SetOverlay(null)),   // Clear — 결과 오버레이만 지움
+                    _ => (EventHandler<RoutedEventArgs>)((_, _) => _hideBtn.IsChecked = !hideShown),   // HideGraphics
                 };
                 if (cmd == CvDispMenuCmd.Pan) panItem = item;
+                else if (cmd == CvDispMenuCmd.HideGraphics) hideItem = item;
                 else if (cmd == CvDispMenuCmd.Load) loadItem = item;
                 else if (cmd == CvDispMenuCmd.Save) saveItem = item;
+                else if (cmd == CvDispMenuCmd.SaveWithGraphics) saveGfxItem = item;
                 menuItems.Add((cmd, item));
                 elem = item;
             }
@@ -238,6 +262,7 @@ public sealed partial class CvDispCtrl : Grid
         _menuGroupItems = groupItems.ToArray();
         _loadItem = loadItem!;
         _saveItem = saveItem!;
+        _saveGfxItem = saveGfxItem!;
         _fileSep = fileSep!;
 
         void RefreshMenu()
@@ -246,10 +271,14 @@ public sealed partial class CvDispCtrl : Grid
             foreach (var (cmd, item) in menuItems)
             {
                 item.Header = CvLoc.T(CvDispMenu.LabelKey(cmd));   // 매번 다시 읽는다 — 언어 전환 대응
-                // 활성은 프레임에 걸린 항목(저장)에만 지역 값으로 넣는다 — 나머지에 넣으면 호스트 MenuItem 스타일의 IsEnabled 를 이긴다.
-                if (cmd == CvDispMenuCmd.Save) item.IsEnabled = CvDispMenu.IsEnabled(cmd, hasFrame);
+                // 활성은 프레임에 걸린 항목(저장 두 항목)에만 지역 값으로 넣는다 — 나머지에 넣으면 호스트 MenuItem 스타일의 IsEnabled 를 이긴다.
+                if (CvDispMenu.NeedsFrame(cmd)) item.IsEnabled = CvDispMenu.IsEnabled(cmd, hasFrame);
             }
-            panItem!.IsChecked = panBtn.IsChecked == true;
+            // 체크는 열 때마다 툴바 토글로 맞춘다 — 숨김은 새 Frame·Overlay 로 저절로 풀리므로 지난번 체크가 지금과 다를 수 있다.
+            panShown = panBtn.IsChecked == true;
+            panItem!.IsChecked = panShown;
+            hideShown = _hideBtn.IsChecked == true;
+            hideItem!.IsChecked = hideShown;
         }
 
         // 팝업이 뜨기 전에 맞춘다. 여기서 손대는 건 라벨·체크·활성 뿐이라 항목 수가 변하지 않는다 —
@@ -412,6 +441,29 @@ public sealed partial class CvDispCtrl : Grid
     /// UI 스레드에서 부른다.
     /// </summary>
     public void FitToView() => _surface.FitToView();
+
+    /// <summary>
+    /// 지금 표시 중인 프레임에 결과 오버레이(<see cref="Overlay"/>, 모서리 HUD 포함)를 얹어 <b>원본 해상도</b>로 다시 그린 한 장 — 화면 캡처가 아니다.
+    /// 우클릭 메뉴의 "이미지 저장(그래픽 포함)" 이 쓰는 그림 그대로다.
+    /// <list type="bullet">
+    /// <item>형식: BGR 8비트 3채널 <see cref="Mat"/>, 크기 = 프레임 W×H. 이미지 픽셀은 원본 그대로다(1채널 프레임도 그래픽 색을 담으려고 3채널로 낸다,
+    /// 4채널 프레임은 불투명으로 그린다 — 알파를 무시해 화면에서 투명한 화소도 원본 B·G·R 그대로 나온다).</item>
+    /// <item>글자·선 굵기: 이미지를 기준 화면(1280×960 DIP)에 맞춰 봤을 때 보이는 비율을 원본 해상도로 옮긴다 — 화면 DIP 크기의 k 배 픽셀,
+    /// k = max(1, 1/맞춤 배율). 5MP(2448×2048)는 k ≈ 2.2, 640×480 이하는 k = 1(작은 이미지에서 글자를 줄이지 않는다).
+    /// <see cref="OverlayLabelScale"/> 는 화면과 같이 곱한다.</item>
+    /// <item>넣지 않는 것: 편집 도형(<see cref="Shapes"/>), 영상 영역 바탕·안내 문구, <see cref="ClipOverlayToImage"/> 자르기(출력이 곧 이미지 사각이라
+    /// 이미지 밖 그래픽은 비트맵 경계에서 잘린다). 툴바 👁 로 그래픽을 숨긴 중이어도 오버레이를 넣는다.</item>
+    /// <item>프레임이 없으면 null. 오버레이가 없으면 이미지만.</item>
+    /// <item><b>반환 Mat 은 호출자 소유</b> — 다 쓰면 Dispose 한다. 컨트롤은 그것을 쥐지 않는다(부른 때의 스냅샷이다).</item>
+    /// <item><b>UI 스레드에서</b> 부른다 — 렌더러로 그린다. 다른 스레드에서 부르면 <see cref="InvalidOperationException"/>.</item>
+    /// </list>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">UI 스레드가 아닌 곳에서 불렀다.</exception>
+    public Mat? RenderWithOverlay()
+    {
+        Dispatcher.UIThread.VerifyAccess();
+        return _surface.RenderWithOverlay();
+    }
 
     /// <summary>렌더·입력 표면 — 회귀가 좌표로 조작한다.</summary>
     internal CvDispSurface Surface => _surface;
