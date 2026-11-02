@@ -16,6 +16,9 @@ public enum CvDispFileOp
 
     /// <summary>우클릭 메뉴의 이미지 저장.</summary>
     Save,
+
+    /// <summary>우클릭 메뉴의 이미지 저장(그래픽 포함) — <see cref="CvDispCtrl.RenderWithOverlay"/> 의 그림을 쓴다.</summary>
+    SaveWithGraphics,
 }
 
 /// <summary><see cref="CvDispCtrl.ImageFileFailed"/> 의 인자 — 무엇을 하다가, 어느 파일에서, 무엇 때문에 실패했는지.</summary>
@@ -28,7 +31,7 @@ public sealed class CvDispFileErrEvt : EventArgs
         Error = error;
     }
 
-    /// <summary>불러오기인지 저장인지.</summary>
+    /// <summary>불러오기인지, 저장인지, 그래픽 포함 저장인지.</summary>
     public CvDispFileOp Op { get; }
 
     /// <summary>선택한 파일의 이름(경로가 아니다 — 저장소에 따라 경로가 없다). 선택기 자체가 실패했으면 null.</summary>
@@ -113,8 +116,10 @@ public sealed partial class CvDispCtrl
         }
     }
 
-    private async void SaveImageToFile()
+    // 그래픽 포함 저장도 같은 길이다 — 선택기·기본 이름·형식·실패 알림이 같고, 쓰는 바이트만 RenderWithOverlay 의 그림이다.
+    private async void SaveImageToFile(bool withGraphics)
     {
+        var op = withGraphics ? CvDispFileOp.SaveWithGraphics : CvDispFileOp.Save;
         if (Frame is null || _fileBusy || PickerOf(save: true) is not { } sp) return;
         _fileBusy = true;
         string? name = null;
@@ -131,14 +136,15 @@ public sealed partial class CvDispCtrl
             if (file is null) return;
             name = file.Name;
             // 형식은 고른 이름의 확장자가 정한다(없으면 PNG — 코어 Encode). 인코드를 먼저 끝내고 연다 — 실패해도 기존 파일을 비우지 않게.
-            var bytes = CvImgFileIO.EncodeFrame(file.Name, _surface.FrameBuf);
+            // 그림은 선택기를 닫은 뒤의 것이다(저장과 같다) — 여기는 선택기의 await 뒤라도 UI 스레드다(디스패처 동기화 문맥이 이어 준다).
+            var bytes = withGraphics ? EncodeWithGraphics(file.Name) : CvImgFileIO.EncodeFrame(file.Name, _surface.FrameBuf);
             await using var dst = await file.OpenWriteAsync();
             if (dst.CanSeek) dst.SetLength(0);   // 더 긴 기존 파일 위에 쓰면 꼬리가 남는다
             await dst.WriteAsync(bytes);
         }
         catch (Exception ex)
         {
-            ReportFileError(CvDispFileOp.Save, name, ex);
+            ReportFileError(op, name, ex);
         }
         finally
         {
@@ -146,9 +152,22 @@ public sealed partial class CvDispCtrl
         }
     }
 
+    /// <summary>그래픽 포함 그림 → 파일 바이트(형식은 이름의 확장자 — 코어 CvImgFileIO.Encode, 경로를 쓰지 않는다). 그사이 프레임이 없어졌으면 던진다.</summary>
+    /// <exception cref="InvalidOperationException">표시 중인 프레임이 없다.</exception>
+    private byte[] EncodeWithGraphics(string fileName)
+    {
+        using var mat = RenderWithOverlay() ?? throw new InvalidOperationException("No frame is displayed");
+        return CvImgFileIO.Encode(fileName, mat);
+    }
+
     private void ReportFileError(CvDispFileOp op, string? fileName, Exception ex)
     {
-        var what = op == CvDispFileOp.Load ? "load" : "save";
+        var what = op switch
+        {
+            CvDispFileOp.Load => "load",
+            CvDispFileOp.SaveWithGraphics => "save (with graphics)",
+            _ => "save",
+        };
         var where = fileName is null ? "" : $" '{fileName}'";
         CvLog.Publish(CvLogLevel.Warning, CvDispLog.Source, $"Image file {what}{where} failed: {ex.Message}", ex);
         if (ImageFileFailed is not { } handler) return;

@@ -21,7 +21,8 @@ public sealed partial class CvDispCtrl
     /// Mat 은 할당 시점에 픽셀이 서피스 자체 버퍼로 복사되므로 이후 호스트가 dispose 해도 안전하다(dispose 된 Mat 을 새로 할당하는 것은 불가).
     /// ICvPixelSource 는 복사하지 않고 배열 참조를 붙잡는다 — 그 계약("발행 뒤 불변")이 이를 보장하며, 프레임당 복사는 WPF 백버퍼로
     /// 가는 한 번뿐이다. 지원 포맷: 8비트 1/3/4채널(CV_8UC1/CV_8UC3/CV_8UC4) — 그 외는 빈 화면. 두 타입이 아닌 값도 빈 화면(경고 로그).
-    /// <see cref="Overlay"/>·<see cref="Shapes"/> 처럼 object 로 받는 이유: 바인딩 소스가 표시 계층의 구체 타입에 묶이지 않게 한다.</summary>
+    /// <see cref="Overlay"/>·<see cref="Shapes"/> 처럼 object 로 받는 이유: 바인딩 소스가 표시 계층의 구체 타입에 묶이지 않게 한다.
+    /// 새 값이 들어오면 툴바 👁 의 그래픽 숨김이 풀린다(<see cref="Overlay"/> 설명 — 같은 참조는 풀지 않는다).</summary>
     public object? Frame
     {
         get => GetValue(FrameProperty);
@@ -29,13 +30,37 @@ public sealed partial class CvDispCtrl
     }
 
     // 형 분기(두 형이 아니면 경고 + 빈 화면)와 공급자 계약 검사는 코어 CvFrameBuf.Set 이 한다.
-    private void OnFrameChanged(object? value) => _surface.SetFrame(value);
+    private void OnFrameChanged(object? value)
+    {
+        ReshowGraphics();
+        _surface.SetFrame(value);
+    }
 
     public static readonly DependencyProperty OverlayProperty = DependencyProperty.Register(
         nameof(Overlay), typeof(object), typeof(CvDispCtrl),
-        new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d)._surface.SetOverlay(e.NewValue as ViOverlay)));
+        new PropertyMetadata(null, (d, e) => ((CvDispCtrl)d).OnOverlayChanged(e.NewValue)));
 
-    /// <summary>결과 오버레이 — ViOverlay 만 렌더 (그 외 타입 무시). 참조 교체로 갱신.</summary>
+    private void OnOverlayChanged(object? value)
+    {
+        ReshowGraphics();
+        _surface.SetOverlay(value as ViOverlay);
+    }
+
+    /// <summary>그래픽 숨김(툴바 👁)을 푼다 — 새 <see cref="Frame"/>·<see cref="Overlay"/> 값이 들어올 때. 숨김은 "지금 이 결과를 잠깐 치운다" 는
+    /// 일시 상태라(사용자 결정), 다음 결과가 오면 다시 보인다. 라이브 중이면 다음 프레임에 풀린다 — 의도된 동작이다.
+    /// 속성 값이 바뀔 때만 불린다(WPF 는 같은 값이면 변경 콜백을 부르지 않는다) — 같은 참조를 다시 넣으면 풀리지 않는다.
+    /// <see cref="Shapes"/> 변경은 풀지 않는다(티칭 도형은 숨김 대상이 아니다).
+    /// 표면에 값을 넘기기 전에 푼다 — 프레임 반영이 던져도(백버퍼 실패) 숨김이 옛 결과에 남지 않게.
+    /// 앱 사전 스타일이 Frame·Overlay 를 주면 생성자 안(자식을 붙이는 끝자리)에서 불린다 — 그때는 토글이 이미 만들어져 있다.
+    /// 툴바를 감출 때(<see cref="IsToolbarVisible"/> = false)도 푼다 — 토글과 메뉴 항목이 함께 사라져 다시 켤 수단이 없어진다.</summary>
+    private void ReshowGraphics()
+    {
+        if (_hideBtn.IsChecked == true) _hideBtn.IsChecked = false;
+    }
+
+    /// <summary>결과 오버레이 — ViOverlay 만 렌더 (그 외 타입 무시). 참조 교체로 갱신.
+    /// 툴바 👁(그래픽 숨기기)로 숨긴 동안에도 값은 받아 두고, 새 값이 들어오면(이 속성이나 <see cref="Frame"/> 이 바뀌면) 숨김이 저절로 풀린다.
+    /// 같은 참조를 다시 넣는 것은 속성 변경이 아니라서 풀리지 않는다 — 다시 보이려면 새 오버레이 객체를 넣는다.</summary>
     public object? Overlay
     {
         get => GetValue(OverlayProperty);
@@ -197,7 +222,7 @@ public sealed partial class CvDispCtrl
         ApplyMenuGroups(canLoad, IsToolbarVisible);
     }
 
-    /// <summary>우클릭 메뉴의 묶음(불러오기 / 툴바와 짝인 지우기·구분선)을 여닫는다 — 어떤 묶음이 언제 보이는지는 코어 CvDispMenu.IsVisible.</summary>
+    /// <summary>우클릭 메뉴의 묶음(불러오기 / 툴바와 짝인 숨기기·구분선)을 여닫는다 — 어떤 묶음이 언제 보이는지는 코어 CvDispMenu.IsVisible.</summary>
     private void ApplyMenuGroups(bool canLoad, bool isToolbarVisible)
     {
         foreach (var (group, elem) in _menuGroupItems)
@@ -221,6 +246,7 @@ public sealed partial class CvDispCtrl
         new PropertyMetadata(true, (d, e) => ((CvDispCtrl)d).SyncToolbarVisibility((bool)e.NewValue)));
 
     /// <summary>툴바 전체 표시 여부 — 운전 화면처럼 조작을 상위 버튼이 전담하는 자리에서는 숨긴다.
+    /// 우클릭 메뉴의 구분선+"그래픽 숨기기" 도 함께 감춘다 — 그래서 감추는 순간 👁 로 숨긴 그래픽은 다시 보인다(다시 켤 수단이 없어지므로).
     /// (카메라 조작만 감추려면 <see cref="IsCamControlVisible"/>.)</summary>
     public bool IsToolbarVisible
     {
@@ -232,6 +258,9 @@ public sealed partial class CvDispCtrl
     /// 팬·맞춤·확대·축소는 여기에 딸리지 않는다 — 툴바를 감춰도 메뉴에 남는 조작이다.</summary>
     private void SyncToolbarVisibility(bool visible)
     {
+        // 툴바를 감추면 숨긴 그래픽을 되살린다 — 👁 토글과 메뉴의 숨기기 항목이 둘 다 툴바 묶음이라, 숨긴 채 감추면 다시 켤 수단이 없다
+        // (새 Frame·Overlay 가 오기 전까지 그래픽이 안 보인 채 남는다).
+        if (!visible) ReshowGraphics();
         _toolbarBorder.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         ApplyMenuGroups(LoadFrameCommand is not null, visible);
     }

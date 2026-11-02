@@ -1635,8 +1635,9 @@ public class CvDispCtrlRenderTests
         void Pseudo(Button b, string pc, bool on)
             => ((IPseudoClasses)typeof(StyledElement).GetProperty("PseudoClasses", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
                 .GetValue(b)!).Set(pc, on);
-        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out", "Clear"];
-        List<Button> Plain() => [.. plain.Select(t => FindButton(ctrl, t)!), FindToggle(ctrl, "Pan")!];
+        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out"];
+        // 👁 는 토글이지만 강조색 없는 평범한 버튼과 같은 색 규칙을 탄다(눌렸을 때도 — 아래).
+        List<Button> Plain() => [.. plain.Select(t => FindButton(ctrl, t)!), FindToggle(ctrl, "Hide Graphics")!, FindToggle(ctrl, "Pan")!];
         string All(out bool allAre, Color want)
         {
             Settle(win);
@@ -1686,6 +1687,12 @@ public class CvDispCtrlRenderTests
         pan.IsChecked = false;
         Settle(win);
         Check(IconFg(pan) == text2, $"releasing ✋ brings its icon back to the toolbar icon color, not the button theme's ({IconFg(pan)})");
+
+        var hideT = FindToggle(ctrl, "Hide Graphics")!;
+        hideT.IsChecked = true;
+        Settle(win);
+        Check(IconFg(hideT) == text2, $"a checked 👁 keeps the toolbar icon color — it is a view switch, not an accented mode like ✋ ({IconFg(hideT)})");
+        hideT.IsChecked = false;
 
         ctrl.GrabCommand = new NeverCmd();
         var grab = FindButton(ctrl, "Grab")!;

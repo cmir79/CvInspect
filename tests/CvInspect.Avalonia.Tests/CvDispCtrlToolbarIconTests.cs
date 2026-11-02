@@ -1,4 +1,4 @@
-// 툴바 아이콘(📸⏯✋⛶➕➖🧹)이 흑백으로, 버튼 가운데에, WPF 판과 비슷한 크기로 그려지는지 — 그린 화면의 픽셀로 잰다.
+// 툴바 아이콘(📸⏯✋⛶➕➖👁)이 흑백으로, 버튼 가운데에, WPF 판과 비슷한 크기로 그려지는지 — 그린 화면의 픽셀로 잰다.
 // 결함: 글자(이모지)로 두었을 때 Skia 가 컬러 이모지 글꼴의 컬러 글리프를 작게, 버튼 위쪽에 그렸다(WPF 는 같은 글자를 흑백 기호로
 // 가운데 그린다). 아이콘은 이제 벡터 경로이고 상속 글자색으로 칠한다.
 // 판정(버튼마다, 테두리 안쪽 3 px 를 뺀 버튼 안쪽에서):
@@ -28,7 +28,7 @@ namespace CvInspect.Avalonia.Tests;
 
 public class CvDispCtrlToolbarIconTests
 {
-    private static readonly string[] Tips = ["Grab", "Play / Stop", "Pan", "Fit", "Zoom In", "Zoom Out", "Clear"];
+    private static readonly string[] Tips = ["Grab", "Play / Stop", "Pan", "Fit", "Zoom In", "Zoom Out", "Hide Graphics"];
 
     /// <summary>판정 한 번의 결과 — 실패 메시지에 그대로 싣는 한 줄과 가장 진한 화소.</summary>
     private readonly record struct IconProbe(bool Ok, string Report, Color Core);
@@ -161,6 +161,22 @@ public class CvDispCtrlToolbarIconTests
         // 다크에서는 평소 글자색도 흰색이라 눌림이 색을 바꾸지 않는다 — 이 대조는 밝은 변형에서만
         if (!dark) Check(released.Core != pressed.Core,$"control: releasing and pressing ✋ change the icon color ({released.Core} vs {pressed.Core})");
         pan.IsChecked = false;
+
+        // 눌린 👁(그래픽 숨김 중) — ✋ 같은 모드가 아니라 보기 전환이라 강조색을 쓰지 않는다(사용자 결정 0.35): 아이콘은 평범한 버튼과 같은
+        // 툴바 아이콘 색, 눌림 바탕은 테마의 강조 바탕(Fluent :checked)이 아니라 아이콘 색을 25% 로 옅게 깐 중립색이다(밝은·어두운 툴바 모두 대비가 남는다).
+        var hideT = FindToggle(ctrl, "Hide Graphics")!;
+        var plainFg = ColorOf(Part(FindButton(ctrl, "Fit")!)?.Foreground);
+        var wantBack = Color.FromArgb(0x40, plainFg.R, plainFg.G, plainFg.B);
+        hideT.IsChecked = true;
+        var hidePressed = Snap(hideT);
+        Check(hidePressed.Ok && ColorOf(Part(hideT)?.Foreground) == plainFg,
+            $"{tag}: the pressed 👁 keeps the plain toolbar icon color ({ColorOf(Part(hideT)?.Foreground)} vs Fit {plainFg}), monochrome and centered: {hidePressed.Report}");
+        Check(ColorOf(Part(hideT)?.Background) == wantBack,
+            $"{tag}: the pressed 👁 shows the icon color at 25% behind the icon, not the theme's checked accent ({ColorOf(Part(hideT)?.Background)}, want {wantBack})");
+        hideT.IsChecked = false;
+        Settle(win);
+        Check(ColorOf(Part(hideT)?.Background) != wantBack,
+            $"{tag}: control: releasing 👁 drops the pressed background back to the theme's ({ColorOf(Part(hideT)?.Background)})");
 
         // 비활성 — 테마의 비활성 글자색(템플릿이 :disabled 에서 내려보내는 색)으로 그린다
         var grab = FindButton(ctrl, "Grab")!;

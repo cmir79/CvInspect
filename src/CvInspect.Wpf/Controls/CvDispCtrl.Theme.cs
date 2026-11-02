@@ -44,7 +44,7 @@ public sealed partial class CvDispCtrl
     /// 다른 종류(그라데이션 등)는 기본색으로 남고 경고 한 줄을 남긴다.</summary>
     public const string PlaceholderForegroundKey = CvDispTheme.PlaceholderForegroundKey;
 
-    /// <summary>툴바 아이콘 색 리소스 키 — 강조색을 쓰지 않는 버튼(📸·⛶·➕·➖·🧹, 풀린 ✋)의 아이콘 글자를 칠한다.
+    /// <summary>툴바 아이콘 색 리소스 키 — 강조색을 쓰지 않는 버튼(📸·⛶·➕·➖·👁 — 눌린 👁 포함, 풀린 ✋)의 아이콘을 칠한다.
     /// 없으면 이 컨트롤이 물려받는 글자색(<c>TextElement.Foreground</c> — 창이나 테마가 준 본문 글자색)이다. 버튼 스타일의 글자색을 그대로 두지
     /// 않는 이유: 버튼 글자를 브랜드 색으로 칠하는 테마에서는 아이콘이 전부 강조색이 되어 툴바가 지나치게 튀었다(소비자 실제 창, Avalonia 판).
     /// Avalonia 판과 같은 규칙이라 호스트를 옮겨도 같은 키 한 줄로 따라온다. 비활성 버튼은 버튼 템플릿의 비활성 모양 그대로다.

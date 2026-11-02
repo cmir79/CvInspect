@@ -1500,8 +1500,9 @@ public class CvDispCtrlRenderTests
         Shoot(host);
 
         static Color Fg(System.Windows.Controls.Control b) => b.Foreground is SolidColorBrush s ? s.Color : Colors.Transparent;
-        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out", "Clear"];
-        List<System.Windows.Controls.Control> Plain() => [.. plain.Select(t => (System.Windows.Controls.Control)FindButton(ctrl, t)!), FindToggle(ctrl, "Pan")!];
+        string[] plain = ["Grab", "Fit", "Zoom In", "Zoom Out"];
+        // 👁 는 토글이지만 강조색 없는 평범한 버튼과 같은 색 규칙을 탄다(눌렸을 때도 — 아래).
+        List<System.Windows.Controls.Control> Plain() => [.. plain.Select(t => (System.Windows.Controls.Control)FindButton(ctrl, t)!), FindToggle(ctrl, "Hide Graphics")!, FindToggle(ctrl, "Pan")!];
         string All(out bool allAre, Color want)
         {
             Pump();
@@ -1541,6 +1542,15 @@ public class CvDispCtrlRenderTests
         pan.IsChecked = false;
         Pump();
         Check(Fg(pan) == text2, $"releasing ✋ brings its icon back to the toolbar icon color, not the button style's ({Fg(pan)})");
+
+        var hideT = FindToggle(ctrl, "Hide Graphics")!;
+        hideT.IsChecked = true;
+        Pump();
+        var eye = (System.Windows.Shapes.Path)hideT.Content;
+        Check(Fg(hideT) == text2 && eye.Fill is SolidColorBrush ef && ef.Color == text2,
+            $"a checked 👁 keeps the toolbar icon color on the button and on its vector icon — it is a view switch, not an accented mode like ✋ ({Fg(hideT)}, icon {(eye.Fill as SolidColorBrush)?.Color})");
+        hideT.IsChecked = false;
+        Pump();
 
         // 비활성 — 스타일이 IsEnabled 트리거로 버튼 자신의 Foreground 를 흐리게 바꾸는 테마. 지역 값을 넣으면 그 트리거를 이겨 꺼진 버튼이 살아 보인다.
         var dim = Color.FromRgb(0x99, 0x99, 0x99);

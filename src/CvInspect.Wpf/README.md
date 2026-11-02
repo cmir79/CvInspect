@@ -6,9 +6,11 @@ WPF display and shape-editing controls for the [CvInspect](https://www.nuget.org
 machine-vision toolkit, based on [OpenCvSharp](https://github.com/shimat/opencvsharp).
 
 - **`CvDispCtrl`** — an image display control with a dockable toolbar (grab / live toggle / fit /
-  zoom / pan / clear), a status bar (cursor position, pixel value, image size, zoom level), and a
-  right-click menu (load / save image file, view operations). Renders `OpenCvSharp.Mat` frames,
-  renderer-neutral result overlays (`ViOverlay`), and interactive teaching shapes.
+  zoom / pan / hide graphics), a status bar (cursor position, pixel value, image size, zoom level),
+  and a right-click menu (load / save image file, save image with graphics, view operations).
+  Renders `OpenCvSharp.Mat` frames, renderer-neutral result overlays (`ViOverlay`), and interactive
+  teaching shapes, and can re-draw the frame with its overlay at native resolution
+  (`RenderWithOverlay()`).
 - **Teaching shapes** — the draggable shapes (`CvEditShape` family: rotated rect, segment, circle,
   arc, concentric ring) and the contract by which option POCOs supply them (`ICvShapeSource`,
   implemented by every CvInspect option that has geometry, and by host-defined options the same way)
@@ -56,7 +58,48 @@ dotnet add package OpenCvSharp4.runtime.win
 | `IsRunning` | `bool` | Live state shown by the ⏯️ toggle (the view-model is the source of truth). |
 | `IsToolbarVisible` / `IsCamControlVisible` / `ToolbarDock` | | Toolbar visibility and docking (top/bottom/left/right). |
 | `FitToView()` | method | Same as the ⛶ toolbar button: drop the user's zoom and pan and fit the image. The fit is applied at the next draw, so it can be called while the control is hidden (it shows fitted when it comes back) or before the first frame. Call it on the UI thread. |
+| `RenderWithOverlay()` | method → `Mat?` | The displayed frame with `Overlay` drawn on it, at the frame's native resolution — see [Hiding and exporting graphics](#hiding-and-exporting-graphics). |
 | `ToolbarBackground` / `StatusBarBackground` / `StatusBarForeground` / `SeparatorBrush` / `ViewBackground` / `PlaceholderForeground` / `ToolbarForeground` | `Brush` | Per-instance toolbar, status bar, image-area, no-image text and toolbar icon colors; `null` (default) follows the resource keys — see [Localization and theming](#localization-and-theming). |
+
+### Hiding and exporting graphics
+
+The 👁 toolbar toggle (**Hide Graphics**, also a checkable entry in the right-click menu) hides the
+whole result overlay, including the corner summary HUD, so the image underneath can be inspected.
+Teaching `Shapes` and the image stay. Hiding is temporary: the overlay keeps being received while
+hidden, and the next new `Frame` or `Overlay` value shows the graphics again — during live view that
+is the next frame. Only a property change counts: assigning the same `Overlay` (or `Frame`) reference
+again does not un-hide, and a `Shapes` change never does. The hidden state is not a public property.
+The toggle is a view switch, not a mode like ✋, so it takes no accent: its icon keeps the normal
+toolbar icon color, and pressed it shows the button style's own checked look. The 👁 icon is a vector
+path rather than a character, because the eye glyph is missing from the UI fonts WPF uses for the
+toolbar (Segoe UI, Malgun Gothic) and would otherwise depend on font fallback. Its right-click entry
+is re-synced with the toggle every time the menu opens, and clicking it sets the opposite of the
+check it showed — if the graphics came back while the menu was open, clicking the checked entry
+leaves them shown. Both disappear with the toolbar when `IsToolbarVisible` is false, so hiding the
+toolbar also shows hidden graphics again (nothing would be left to turn them back on).
+
+`RenderWithOverlay()` re-draws the displayed frame with its overlay at the **frame's native
+resolution** — it is not a screen capture:
+
+- Returns an 8-bit BGR 3-channel `Mat` of the frame's width × height; image pixels are the source
+  pixels unchanged (a mono frame becomes three equal channels so the graphics keep their color; a
+  4-channel frame is drawn as opaque, so its alpha is ignored and every pixel keeps its source B, G,
+  R — even where the screen shows it transparent). Returns `null` when no frame is displayed.
+- Text and line widths keep the proportion they have when the image is fitted to a 1280×960 view:
+  everything is drawn `k` times its on-screen size in device-independent pixels, with
+  `k = max(1, 1 / fit scale)` — about 2.2 for a 2448×2048 frame, 1 for 640×480 and smaller (text is
+  never shrunk below its screen size). `OverlayLabelScale` applies as on screen.
+- Leaves out teaching `Shapes`, the image-area background and placeholder, and the
+  `ClipOverlayToImage` clip (the output is the image rectangle, so graphics outside it are cut at the
+  bitmap edge). The overlay is included even while it is hidden with 👁.
+- **The caller owns the returned `Mat`** and disposes it; it is a snapshot of the moment of the call.
+- **Call it on the UI thread** (it renders with WPF; no window is needed). Another thread gets
+  `InvalidOperationException`.
+
+The right-click entry **Save Image (with Graphics)** writes this picture to a file, with the same
+dialog, file types, default name and error message box as **Save Image**, and is grey without a
+frame like it. Files are encoded to bytes first and written by .NET, so non-ASCII (e.g. Korean)
+paths work.
 
 ## Property editor
 
@@ -172,7 +215,7 @@ dictionary at run time (a light/dark switch) repaints every display without a re
 | `SeparatorBrushKey` | `CvDispSeparatorBrush` | `SeparatorBrush` | `#DDDDDD` | Toolbar group separators, the toolbar's edge line, the status bar's edge line |
 | `ViewBackgroundKey` | `CvDispViewBackgroundBrush` | `ViewBackground` | the control's `Background` (`#2A2A2A`) | Image area around the picture and the no-image screen; opaque image pixels are drawn over it (a Bgra32 frame's transparent pixels show it through) |
 | `PlaceholderForegroundKey` | `CvDispPlaceholderForegroundBrush` | `PlaceholderForeground` | `#9E9E9E` | No-image title and load hint (`SolidColorBrush` only) |
-| `ToolbarForegroundKey` | `CvDispToolbarForegroundBrush` | `ToolbarForeground` | the inherited text color (`TextElement.Foreground`) | Toolbar icons that carry no accent (📸 ⛶ ➕ ➖ 🧹 and ✋ when released) |
+| `ToolbarForegroundKey` | `CvDispToolbarForegroundBrush` | `ToolbarForeground` | the inherited text color (`TextElement.Foreground`) | Toolbar icons that carry no accent (📸 ⛶ ➕ ➖ 👁 — also when 👁 is pressed — and ✋ when released) |
 
 ```xml
 <!-- the host's dark color dictionary — one place covers every CvDispCtrl, including those made by a DataTemplate -->

@@ -16,8 +16,8 @@ namespace CvInspect.Controls;
 /// OpenCV 검사용 WPF 디스플레이 — Mat 표시 + 중립 오버레이(ViOverlay) 렌더 + 편집 도형(CvEditShape) 인터랙션.
 /// 오버레이/도형 좌표는 "표시 중인 이미지"의 픽셀 공간 — 원본이든 단계(축소) 이미지든,
 /// 호출측이 이미지와 같은 공간의 좌표만 짝지어 바인딩한다.
-/// 조작 체계: 상단 툴바(좌: 📸그랩·⏯️라이브 / 우: ⛶Fit·➕➖줌) +
-/// 우클릭 이미지 불러오기/저장 + 휠 줌·좌드래그 팬/도형 편집.
+/// 조작 체계: 상단 툴바(좌: 📸그랩·⏯️라이브 / 우: ✋팬 │ ⛶Fit·➕➖줌 │ 👁그래픽 숨기기) +
+/// 우클릭 이미지 불러오기/저장/그래픽 포함 저장 + 휠 줌·좌드래그 팬/도형 편집.
 /// 툴바·상태 줄·영상 영역 바탕 색은 인스턴스 속성 → 호스트 리소스 키 → 고정색(영상 영역은 컨트롤 Background) 순으로 정해지고 실행 중 사전 교체를 따라온다
 /// (<see cref="ToolbarBackgroundKey"/> 등 — CvDispCtrl.Theme.cs).
 /// <c>Initialized</c> 는 생성자 안에서 난다(첫 논리 자식이 붙는 순간 — WPF 동작). XAML 의 <c>Initialized="…"</c> 처리기나 생성 뒤의
@@ -35,7 +35,8 @@ public sealed partial class CvDispCtrl : Grid
     private readonly Button _grabBtn;
     private readonly ToggleButton _playBtn;
     private readonly ToggleButton _panBtn;
-    private readonly Button[] _plainToolBtns;   // 강조색을 쓰지 않는 버튼 — 아이콘 색은 ApplyToolbarForeground 가 칠한다
+    private readonly ToggleButton _hideBtn;   // 👁 그래픽 숨기기 — 눌림 = 결과 오버레이 숨김
+    private readonly ButtonBase[] _plainToolBtns;   // 강조색을 쓰지 않는 버튼 — 아이콘 색은 ApplyToolbarForeground 가 칠한다
     private readonly TextBlock _statusLeft;
     private readonly TextBlock _statusRight;
     private readonly EventHandler<EventArgs> _onCamCommandCanExecuteChanged;
@@ -121,10 +122,25 @@ public sealed partial class CvDispCtrl : Grid
             ApplyToolbarForeground();
         };
 
-        var clearBtn = MakeToolButton("🧹", "Clear");
-        clearBtn.Click += (_, _) => _surface.SetOverlay(null);   // 결과 오버레이만 지움 — 다음 검사가 새 오버레이로 교체
+        // 그래픽 숨기기 토글 — 눌림 = 결과 오버레이(HUD 포함)를 숨긴다. 일시 상태라 공개 속성으로 두지 않는다: 새 Frame·Overlay 가 들어오면
+        // 저절로 풀린다(CvDispCtrl.Props.cs 의 ReshowGraphics). 오버레이를 지우지 않고 숨기기만 한다 — 풀면 지금 값이 다시 보인다.
+        // 강조색을 쓰지 않는다 — ✋ 처럼 드래그의 뜻을 바꾸는 모드가 아니라 보기 전환이다. 아이콘은 다른 평범한 버튼과 같은 툴바 아이콘 색이고
+        // (_plainToolBtns), 눌림은 버튼 스타일의 눌림 모양 그대로다(이 판의 기본 스타일은 강조색이 아니라 옅은 눌림 바탕이다).
+        // 아이콘은 글자가 아니라 벡터 경로다 — 근거는 EyeIcon.
+        _hideBtn = new ToggleButton
+        {
+            Content = EyeIcon(),
+            ToolTip = "Hide Graphics",
+            Padding = new Thickness(10, 4, 10, 4),
+            MinWidth = 44,
+            MinHeight = 40,
+            Margin = new Thickness(2, 0, 2, 0),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(_hideBtn, "Hide Graphics");   // 그림만 있는 버튼 — 화면 읽기 프로그램에 이름을 준다
+        _hideBtn.Checked += (_, _) => _surface.IsOverlayHidden = true;
+        _hideBtn.Unchecked += (_, _) => _surface.IsOverlayHidden = false;
 
-        // 버튼 순서/그룹 = 우클릭 메뉴와 동일 (팬 │ 화면 맞춤 → 줌 │ 클리어)
+        // 버튼 순서/그룹 = 우클릭 메뉴와 동일 (팬 │ 화면 맞춤 → 줌 │ 숨기기)
         _toolSeps = [MakeToolSeparator(), MakeToolSeparator()];
         dispPanel.Children.Add(panBtn);
         dispPanel.Children.Add(_toolSeps[0]);
@@ -132,9 +148,9 @@ public sealed partial class CvDispCtrl : Grid
         dispPanel.Children.Add(zoomInBtn);
         dispPanel.Children.Add(zoomOutBtn);
         dispPanel.Children.Add(_toolSeps[1]);
-        dispPanel.Children.Add(clearBtn);
+        dispPanel.Children.Add(_hideBtn);
         toolbar.Children.Add(dispPanel);
-        _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, clearBtn];
+        _plainToolBtns = [_grabBtn, fitBtn, zoomInBtn, zoomOutBtn, _hideBtn];
         // 활성이 바뀌면(명령의 CanExecute·부모가 꺼짐) 아이콘 색을 다시 정한다 — 꺼지면 지역 값을 걷어 스타일의 비활성 모양에 맡긴다(ApplyToolbarForeground).
         foreach (var b in _plainToolBtns) b.IsEnabledChanged += (_, _) => ApplyToolbarForeground();
         panBtn.IsEnabledChanged += (_, _) => ApplyToolbarForeground();
@@ -184,24 +200,34 @@ public sealed partial class CvDispCtrl : Grid
         var menu = new ContextMenu();
         var menuItems = new List<(CvDispMenuCmd Cmd, MenuItem Item)>();
         var groupItems = new List<(CvDispMenuGroup Group, FrameworkElement Elem)>();
-        MenuItem? panItem = null;
+        MenuItem? panItem = null, hideItem = null;
+        // 팬·숨기기 항목이 메뉴를 열 때 보여 준 체크 — 클릭은 "본 것의 반대" 로 정한다(두 UI 패키지 공통 규칙).
+        // 팬은 저절로 바뀌지 않지만 호스트 코드가 ✋ 를 바꿀 수는 있어 같은 규칙에 둔다. 숨기기는 메뉴가 열려 있는 사이 새 Frame·Overlay 로
+        // 숨김이 저절로 풀리면 툴바 토글은 이미 바뀌었는데 항목은 옛 체크를 보이고 있다.
+        // 사람은 본 체크를 끄려고(보이게 하려고) 누른 것이므로, 지금 토글을 뒤집으면(→ 다시 숨김) 정반대가 된다.
+        // 항목 자신의 체크에도 기대지 않는다 — 클릭이 체크를 뒤집는 것은 사람의 클릭 길이고, Click 을 직접 올리는 길은 뒤집지 않는다.
+        var hideShown = false;
+        var panShown = false;
         foreach (var entry in CvDispMenu.Layout)
         {
             FrameworkElement elem;
             if (entry.Cmd is { } cmd)
             {
-                var item = new MenuItem { IsCheckable = cmd == CvDispMenuCmd.Pan };
+                // 팬·숨기기는 항목의 체크에 기대지 않고 열 때 기록한 panShown·hideShown 의 반대를 넣는다 — 위 주석.
+                var item = new MenuItem { IsCheckable = cmd is CvDispMenuCmd.Pan or CvDispMenuCmd.HideGraphics };
                 item.Click += cmd switch
                 {
                     CvDispMenuCmd.Load => (_, _) => LoadImageFromFile(),
-                    CvDispMenuCmd.Save => (_, _) => SaveImageToFile(),
-                    CvDispMenuCmd.Pan => (_, _) => panBtn.IsChecked = item.IsChecked,
+                    CvDispMenuCmd.Save => (_, _) => SaveImageToFile(withGraphics: false),
+                    CvDispMenuCmd.SaveWithGraphics => (_, _) => SaveImageToFile(withGraphics: true),
+                    CvDispMenuCmd.Pan => (_, _) => panBtn.IsChecked = !panShown,
                     CvDispMenuCmd.Fit => (_, _) => FitToView(),
                     CvDispMenuCmd.ZoomIn => (_, _) => _surface.ZoomAtCenter(CvViewXform.ZoomStep),
                     CvDispMenuCmd.ZoomOut => (_, _) => _surface.ZoomAtCenter(1 / CvViewXform.ZoomStep),
-                    _ => (RoutedEventHandler)((_, _) => _surface.SetOverlay(null)),   // Clear — 결과 오버레이만 지움
+                    _ => (RoutedEventHandler)((_, _) => _hideBtn.IsChecked = !hideShown),   // HideGraphics
                 };
                 if (cmd == CvDispMenuCmd.Pan) panItem = item;
+                else if (cmd == CvDispMenuCmd.HideGraphics) hideItem = item;
                 menuItems.Add((cmd, item));
                 elem = item;
             }
@@ -220,10 +246,14 @@ public sealed partial class CvDispCtrl : Grid
             foreach (var (cmd, item) in menuItems)
             {
                 item.Header = CvLoc.T(CvDispMenu.LabelKey(cmd));   // 매번 다시 읽는다 — 언어 전환 대응
-                // 활성은 프레임에 걸린 항목(저장)에만 Local 로 넣는다 — 나머지에 Local 을 넣으면 호스트 MenuItem 스타일의 IsEnabled 를 이긴다.
-                if (cmd == CvDispMenuCmd.Save) item.IsEnabled = CvDispMenu.IsEnabled(cmd, hasFrame);
+                // 활성은 프레임에 걸린 항목(저장 두 항목)에만 Local 로 넣는다 — 나머지에 Local 을 넣으면 호스트 MenuItem 스타일의 IsEnabled 를 이긴다.
+                if (CvDispMenu.NeedsFrame(cmd)) item.IsEnabled = CvDispMenu.IsEnabled(cmd, hasFrame);
             }
-            panItem!.IsChecked = panBtn.IsChecked == true;
+            // 체크는 열 때마다 툴바 토글로 맞춘다 — 숨김은 새 Frame·Overlay 로 저절로 풀리므로 지난번 체크가 지금과 다를 수 있다.
+            panShown = panBtn.IsChecked == true;
+            panItem!.IsChecked = panShown;
+            hideShown = _hideBtn.IsChecked == true;
+            hideItem!.IsChecked = hideShown;
         }
 
         // 팝업이 뜨기 전에 맞춘다. 여기서 손대는 건 라벨·체크·활성 뿐이라 항목 수가 변하지 않는다 —
@@ -368,7 +398,9 @@ public sealed partial class CvDispCtrl : Grid
         }
     }
 
-    private void SaveImageToFile()
+    // 그래픽 포함 저장도 같은 길이다 — 대화상자·기본 이름·형식·오류 창이 같고, 쓰는 바이트만 RenderWithOverlay 의 그림이다.
+    // 바이트로 인코드해 쓴다(코어 CvImgFileIO.Encode) — 경로 기반 ImWrite 는 한글 경로에서 조용히 실패한다.
+    private void SaveImageToFile(bool withGraphics)
     {
         if (Frame is null) return;
         var dlg = new Microsoft.Win32.SaveFileDialog
@@ -379,11 +411,77 @@ public sealed partial class CvDispCtrl : Grid
         if (dlg.ShowDialog() != true) return;
         try
         {
-            CvImgFileIO.WriteFrame(dlg.FileName, _surface.FrameBuf);
+            if (!withGraphics)
+            {
+                CvImgFileIO.WriteFrame(dlg.FileName, _surface.FrameBuf);
+                return;
+            }
+            // 그림은 대화상자를 닫은 뒤의 것이다(저장과 같다). 인코드를 먼저 끝내고 쓴다 — 실패해도 기존 파일을 건드리지 않게.
+            byte[] bytes;
+            using (var mat = RenderWithOverlay() ?? throw new InvalidOperationException("No frame is displayed"))
+                bytes = CvImgFileIO.Encode(dlg.FileName, mat);
+            System.IO.File.WriteAllBytes(dlg.FileName, bytes);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, CvLoc.T(CvDispMenu.LabelKey(CvDispMenuCmd.Save)), MessageBoxButton.OK, MessageBoxImage.Error);
+            var cmd = withGraphics ? CvDispMenuCmd.SaveWithGraphics : CvDispMenuCmd.Save;
+            MessageBox.Show(ex.Message, CvLoc.T(CvDispMenu.LabelKey(cmd)), MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    /// <summary>
+    /// 지금 표시 중인 프레임에 결과 오버레이(<see cref="Overlay"/>, 모서리 HUD 포함)를 얹어 <b>원본 해상도</b>로 다시 그린 한 장 — 화면 캡처가 아니다.
+    /// 우클릭 메뉴의 "이미지 저장(그래픽 포함)" 이 쓰는 그림 그대로다.
+    /// <list type="bullet">
+    /// <item>형식: BGR 8비트 3채널 <see cref="Mat"/>, 크기 = 프레임 W×H. 이미지 픽셀은 원본 그대로다(1채널 프레임도 그래픽 색을 담으려고 3채널로 낸다,
+    /// 4채널 프레임은 불투명으로 그린다 — 알파를 무시해 화면에서 투명한 화소도 원본 B·G·R 그대로 나온다).</item>
+    /// <item>글자·선 굵기: 이미지를 기준 화면(1280×960 DIP)에 맞춰 봤을 때 보이는 비율을 원본 해상도로 옮긴다 — 화면 DIP 크기의 k 배 픽셀,
+    /// k = max(1, 1/맞춤 배율). 5MP(2448×2048)는 k ≈ 2.2, 640×480 이하는 k = 1(작은 이미지에서 글자를 줄이지 않는다).
+    /// <see cref="OverlayLabelScale"/> 는 화면과 같이 곱한다.</item>
+    /// <item>넣지 않는 것: 편집 도형(<see cref="Shapes"/>), 영상 영역 바탕·안내 문구, <see cref="ClipOverlayToImage"/> 자르기(출력이 곧 이미지 사각이라
+    /// 이미지 밖 그래픽은 비트맵 경계에서 잘린다). 툴바 👁 로 그래픽을 숨긴 중이어도 오버레이를 넣는다.</item>
+    /// <item>프레임이 없으면 null. 오버레이가 없으면 이미지만.</item>
+    /// <item><b>반환 Mat 은 호출자 소유</b> — 다 쓰면 Dispose 한다. 컨트롤은 그것을 쥐지 않는다(부른 때의 스냅샷이다).</item>
+    /// <item><b>UI 스레드에서</b> 부른다 — WPF 렌더러로 그린다(창은 없어도 된다). 다른 스레드에서 부르면 <see cref="InvalidOperationException"/>.</item>
+    /// </list>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">UI 스레드가 아닌 곳에서 불렀다.</exception>
+    public Mat? RenderWithOverlay()
+    {
+        VerifyAccess();
+        return _surface.RenderWithOverlay();
+    }
+
+    /// <summary>눈 아이콘(👁 그래픽 숨기기)의 경로 — 16×16, 짝홀 채움. 바깥 아몬드, 안쪽 아몬드(구멍), 눈동자 원의 세 겹이 고리·구멍·눈동자가 된다.
+    /// Avalonia 판 툴바(CvInspect.Avalonia 의 CvToolIcon.EyeData)와 같은 경로다 — 고치면 함께 고친다.</summary>
+    internal const string EyeIconData =
+        "M0.6,8 C2.7,4.1 5.2,2.6 8,2.6 C10.8,2.6 13.3,4.1 15.4,8 C13.3,11.9 10.8,13.4 8,13.4 C5.2,13.4 2.7,11.9 0.6,8 Z " +
+        "M2.4,8 C4.1,5.2 5.9,4.1 8,4.1 C10.1,4.1 11.9,5.2 13.6,8 C11.9,10.8 10.1,11.9 8,11.9 C5.9,11.9 4.1,10.8 2.4,8 Z " +
+        "M8,5.4 A2.6,2.6 0 1 1 8,10.6 A2.6,2.6 0 1 1 8,5.4 Z";
+
+    /// <summary>눈 아이콘 — 글자가 아니라 벡터 경로다. 다른 툴바 버튼은 글자(이모지)지만 눈 글자(U+1F441)는 그 버튼이 실제로 쓰는 글꼴에 없다:
+    /// 툴바 버튼은 창의 본문 글꼴을 물려받고(시스템 메시지 글꼴 — 한국어 Windows 는 '맑은 고딕', 영문 Windows 는 Segoe UI), 그런 글꼴은 이 글자를 갖고 있지 않아
+    /// (GlyphTypeface 조회 실측: Segoe UI 없음, Segoe UI Symbol·Segoe UI Emoji 에만 있다) WPF 의 글꼴 대체에 맡기게 된다 — OS·언어에 따라 모양이 갈린다.
+    /// 칠은 물려받는 글자색(TextElement.Foreground)에 묶는다 — 버튼 템플릿이 평소·비활성 글자색을 내려보내고, ApplyToolbarForeground 가 넣은
+    /// 툴바 아이콘 색도 그 길로 온다. 그래서 다른 글자 아이콘과 같은 색 규칙을 탄다.</summary>
+    private static System.Windows.Shapes.Path EyeIcon()
+    {
+        var geo = Geometry.Parse(EyeIconData);
+        geo.Freeze();
+        var path = new System.Windows.Shapes.Path
+        {
+            Data = geo,
+            Width = 16,
+            Height = 16,
+            Stretch = Stretch.None,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        path.SetBinding(System.Windows.Shapes.Shape.FillProperty, new System.Windows.Data.Binding
+        {
+            Path = new PropertyPath(System.Windows.Documents.TextElement.ForegroundProperty),
+            RelativeSource = System.Windows.Data.RelativeSource.Self,
+        });
+        return path;
     }
 }

@@ -40,6 +40,20 @@ internal static class CvPixConv
         }
     }
 
+    /// <summary><see cref="ToBgra"/> 와 같되 결과 알파를 모두 255 로 둔다 — 4채널 원본의 알파를 버리고 B·G·R 만 남긴다(1·3채널은 원래 255).
+    /// 그래픽 포함 내보내기(RenderWithOverlay)의 이미지 원본이 쓴다: 알파가 255 보다 작은 화소를 그대로 그리면 렌더 대상(미리 곱한 알파)에서
+    /// 색이 알파만큼 어두워져(알파 0 → 검정) 원본 B·G·R 이 남지 않는다. 화면 표시 경로는 이것을 쓰지 않는다(투명 화소는 영상 영역 바탕을 비춘다).</summary>
+    internal static void ToOpaqueBgra(int channels, ReadOnlySpan<byte> src, int srcStride, Span<byte> dst, int dstStride, int width, int height)
+    {
+        ToBgra(channels, src, srcStride, dst, dstStride, width, height);
+        if (channels != 4) return;
+        for (var y = 0; y < height; y++)
+        {
+            var row = dst.Slice(y * dstStride, width * 4);
+            for (var x = 3; x < row.Length; x += 4) row[x] = 255;
+        }
+    }
+
     /// <summary>Gray8 → BGRA: B=G=R=v, A=255.</summary>
     internal static void GrayToBgra(ReadOnlySpan<byte> src, int srcStride, Span<byte> dst, int dstStride, int width, int height)
     {
