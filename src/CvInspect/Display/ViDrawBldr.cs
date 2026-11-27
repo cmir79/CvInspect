@@ -81,10 +81,18 @@ internal static class ViDrawBldr
                     Label(dst, label, view, tm, labelScale, paint);
                     break;
                 case ViOverlayRect rect:
+                {
                     // 닫힌 도형 하나로 — 변마다 선분이면 끝이 평평해 모서리 바깥 (굵기/2)² 칸이 비어, 굵게 한 NG 박스의 네 모서리가
                     // 이 빠진 것처럼 보였다(배수 3 이면 3×3). 닫힌 도형은 모서리를 이어 그린다(마이터).
-                    dst.Add(new ViPrimPath(line, ViDrawGeom.OverlayRectCorners(rect, view), 4, isClosed: true));
+                    var corners = ViDrawGeom.OverlayRectCorners(rect, view);
+                    // 채움은 테두리 앞에(렌더 규칙: 채움 먼저). 이름 색은 전부 불투명이라 테두리가 온전히 덮는 화소는 순서와 무관하게
+                    // 테두리 색이다 — 순서가 정하는 것은 안티에일리어싱된 테두리 가장자리 화소, 그리고 호스트 렌더러가 따라 그릴 순서 하나다.
+                    // 알파가 0 이면 내지 않는다 — 채움 없는 항목의 목록이 0.35 와 프리미티브 하나까지 같아야 화면이 바이트 단위로 같다.
+                    if (ViDrawGeom.ResolveFillAlpha(rect.FillOpacity) is > 0 and var rectAlpha)
+                        dst.Add(new ViPrimTint(paint, rectAlpha, corners, 4));
+                    dst.Add(new ViPrimPath(line, corners, 4, isClosed: true));
                     break;
+                }
                 case ViOverlayPoly poly when poly.Points.Count >= 2:
                 {
                     // 폴리라인은 <b>경로 하나</b>로 — 점마다 선분이면 드로잉 명령이 점 수만큼 쌓인다. 에지 블랍 윤곽은 한 장에 수천 점이
@@ -93,8 +101,13 @@ internal static class ViDrawBldr
                     var n = poly.Points.Count;
                     var pts = ArrayPool<(double X, double Y)>.Shared.Rent(n);
                     for (var i = 0; i < n; i++) pts[i] = view.ToScreen(poly.Points[i].X, poly.Points[i].Y);
+                    var closed = poly.IsClosed && n >= 3;
+                    // 채움은 닫힌 다각형만, 테두리 앞에(사각과 같은 규칙). 열린 폴리라인은 안쪽이 정해지지 않으므로 값을 무시한다.
+                    // 점 배열은 테두리와 나눠 쓴다 — 풀 반환은 테두리 경로(IsPooled)가 한 번 한다.
+                    if (closed && ViDrawGeom.ResolveFillAlpha(poly.FillOpacity) is > 0 and var polyAlpha)
+                        dst.Add(new ViPrimTint(paint, polyAlpha, pts, n));
                     dst.Add(new ViPrimPath(new ViStroke(paint, ViDrawGeom.OverlayPolyThick * stroke, poly.IsDashed), pts, n,
-                        isClosed: poly.IsClosed && n >= 3, isPooled: true));
+                        isClosed: closed, isPooled: true));
                     break;
                 }
             }

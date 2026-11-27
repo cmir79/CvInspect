@@ -199,6 +199,7 @@ public sealed class ViOverlayRect : ViOverlayItem
         Width = source.Width;
         Height = source.Height;
         AngleDeg = source.AngleDeg;
+        FillOpacity = source.FillOpacity;
     }
 
     public double CenterX { get; init; }
@@ -206,6 +207,21 @@ public sealed class ViOverlayRect : ViOverlayItem
     public double Width { get; init; }
     public double Height { get; init; }
     public double AngleDeg { get; init; }
+
+    /// <summary>안쪽 반투명 채움의 불투명도 — 0(기본) = 채움 없음, 1 = 불투명. 채움 색은 이 항목의 <see cref="ViOverlayItem.Color"/> 다.
+    /// 칸마다 사각 하나를 두고 값의 크기를 진하기로 보이는 열지도(판단 근거 표시 등)용이다.
+    ///
+    /// 렌더 규칙(화면·그래픽 포함 저장이 이대로 그린다 — 호스트가 자기 렌더러로 같은 그림을 내려면 이대로 그린다):
+    /// <list type="number">
+    /// <item>값 해석 — NaN·음수는 0(채움 없음), 1 초과는 1. 알파 = <c>Math.Round(값 × 255, MidpointRounding.AwayFromZero)</c>
+    /// (0~255 바이트). 알파가 0 이면 채움을 그리지 않는다(0.35 와 같은 그림).</item>
+    /// <item>순서 — <b>채움 먼저, 그다음 테두리</b>. 테두리는 채움이 없을 때와 똑같다(색·굵기·점선 그대로, 채움이 테두리 색을 바꾸지 않는다).</item>
+    /// <item>영역 — 테두리 선의 <b>중심 경로</b> 안쪽: 회전(<see cref="AngleDeg"/>)을 적용한 네 꼭짓점을 이은 사각. 선 굵기만큼 넓히거나 좁히지 않는다
+    /// (테두리의 안쪽 절반이 채움 위에 덮인다).</item>
+    /// <item>합성 — source-over 알파 합성(이미지 위에, 그리고 앞서 그린 항목 위에 목록 순서대로). 겹친 채움은 겹친 만큼 진해진다.</item>
+    /// </list>
+    /// 테두리 없이 채움만 그리는 길은 없다 — 테두리는 늘 그린다.</summary>
+    public double FillOpacity { get; init; }
 }
 
 /// <summary>폴리라인 — 블랍 경계 등. IsClosed 면 시작점으로 닫아 그림.</summary>
@@ -218,8 +234,24 @@ public sealed class ViOverlayPoly : ViOverlayItem
     {
         Points = source.Points;
         IsClosed = source.IsClosed;
+        FillOpacity = source.FillOpacity;
     }
 
     public IReadOnlyList<(double X, double Y)> Points { get; init; } = [];
     public bool IsClosed { get; init; } = true;
+
+    /// <summary>안쪽 반투명 채움의 불투명도 — 0(기본) = 채움 없음, 1 = 불투명. 채움 색은 이 항목의 <see cref="ViOverlayItem.Color"/> 다.
+    /// <b>닫힌 다각형만 채운다</b> — <see cref="IsClosed"/> 가 false 이거나 점이 3개 미만이면(테두리도 닫히지 않는다) 이 값은 무시된다.
+    ///
+    /// 렌더 규칙(화면·그래픽 포함 저장이 이대로 그린다 — 호스트가 자기 렌더러로 같은 그림을 내려면 이대로 그린다):
+    /// <list type="number">
+    /// <item>값 해석 — NaN·음수는 0(채움 없음), 1 초과는 1. 알파 = <c>Math.Round(값 × 255, MidpointRounding.AwayFromZero)</c>
+    /// (0~255 바이트). 알파가 0 이면 채움을 그리지 않는다(0.35 와 같은 그림).</item>
+    /// <item>순서 — <b>채움 먼저, 그다음 테두리</b>. 테두리는 채움이 없을 때와 똑같다(색·굵기·점선 그대로).</item>
+    /// <item>영역 — 테두리 선의 <b>중심 경로</b> 안쪽: <see cref="Points"/> 를 차례로 잇고 마지막 점에서 첫 점으로 닫은 다각형. 선 굵기만큼
+    /// 넓히거나 좁히지 않는다. 스스로 교차하는 다각형은 짝홀 규칙(even-odd — GDI+ <c>FillPolygon</c> 의 기본 Alternate 와 같다)으로 칠한다.</item>
+    /// <item>합성 — source-over 알파 합성(이미지 위에, 그리고 앞서 그린 항목 위에 목록 순서대로). 겹친 채움은 겹친 만큼 진해진다.</item>
+    /// </list>
+    /// 테두리 없이 채움만 그리는 길은 없다 — 테두리는 늘 그린다.</summary>
+    public double FillOpacity { get; init; }
 }

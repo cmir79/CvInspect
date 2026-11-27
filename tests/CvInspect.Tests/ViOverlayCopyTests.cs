@@ -86,6 +86,27 @@ public class ViOverlayCopyTests
         }
     }
 
+    /// <summary>채움 불투명도(0.36) — 잘라 보이기(<see cref="ViOverlay.CropTo"/>)와 사본이 값을 잇는다. 빠뜨리면 잘라 본 화면·이력 렌더에서만 열지도가
+    /// 조용히 사라진다(테두리는 그대로라 결함이 안 보인다). 복사 생성자는 위 반사 시험도 보지만, 자르기 경로는 여기서 직접 본다.</summary>
+    [Fact]
+    public void CropAndCopyKeepFillOpacity()
+    {
+        var src = new ViOverlay();
+        src.Add(new ViOverlayRect { CenterX = 50, CenterY = 60, Width = 10, Height = 8, FillOpacity = 0.35 });
+        src.Add(new ViOverlayPoly { Points = [(10, 10), (30, 10), (20, 30)], FillOpacity = 0.8 });
+        src.Add(new ViOverlayRect { CenterX = 5, CenterY = 6, Width = 2, Height = 2 });
+        var cut = src.CropTo(4, 5, 100, 100);
+        var r = (ViOverlayRect)cut.Items[0];
+        var p = (ViOverlayPoly)cut.Items[1];
+        var plain = (ViOverlayRect)cut.Items[2];
+        Assert.True(r.FillOpacity == 0.35 && r.CenterX == 46 && r.CenterY == 55,
+            $"a cropped rect keeps its fill opacity while it moves (fill {r.FillOpacity}, centre {r.CenterX},{r.CenterY})");
+        Assert.True(p.FillOpacity == 0.8 && p.Points[0] == (6, 5), $"a cropped poly keeps its fill opacity while it moves (fill {p.FillOpacity}, first {p.Points[0]})");
+        Assert.True(plain.FillOpacity == 0, "control: an item without a fill stays without one — the crop does not invent a value");
+        Assert.True(new ViOverlayRect(r) { CenterX = 0 }.FillOpacity == 0.35 && new ViOverlayPoly(p) { IsClosed = false }.FillOpacity == 0.8,
+            "a copy that changes something else keeps the fill opacity");
+    }
+
     /// <summary>쓰는 모양 그대로 — 바꾼 것만 바뀌고 원본은 그대로다(항목은 이력·다른 화면이 같은 참조를 쥐고 있다).</summary>
     [Fact]
     public void ACopyWithOneChangeLeavesTheSourceAlone()

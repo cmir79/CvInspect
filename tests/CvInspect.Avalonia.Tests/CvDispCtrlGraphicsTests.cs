@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
+using Avalonia.Styling;
 using CvInspect.Avalonia.Controls;
 using CvInspect.Imaging;
 using CvInspect.Vision.Edit;
@@ -488,5 +489,226 @@ public class CvDispCtrlGraphicsTests
         Check(Math.Abs(textRatio - kBig / kSmall) < 0.35,
             $"the label text is k times taller on the large frame: {small.TextH}px at k=1 vs {big.TextH}px at k={kBig:0.###} (ratio {textRatio:0.##})");
         Check(bm.Rows == 1920 && bm.Cols == 2560, $"the large export is its native size ({bm.Cols}x{bm.Rows}), not the reference view");
+    }
+
+    // === 반투명 채움(FillOpacity, 0.36) — 렌더 규칙: 채움 먼저·테두리 그대로·알파 = round(v×255)·source-over ===
+
+    /// <summary>회색 128 위에 빨강(255,0,0)을 알파 a 로 source-over — 기대 R·G(=B).</summary>
+    private static (double R, double G) RedOverGray(int alpha) => (128 + (255 - 128) * alpha / 255.0, 128 * (1 - alpha / 255.0));
+
+    /// <summary>상태 줄·툴바를 감춘 400 칸 — 표면이 창 전체라 400×400 프레임의 가운데가 화면 가운데(200,200)다.</summary>
+    private static CvDispCtrl Bare(ViOverlay? overlay)
+        => new() { IsToolbarVisible = false, IsStatusBarVisible = false, Frame = GrayFrame(Box, Box), Overlay = overlay };
+
+    private static ViOverlay One(ViOverlayItem item)
+    {
+        var o = new ViOverlay();
+        o.Add(item);
+        return o;
+    }
+
+    private static ViOverlayRect RedRect(double fill) => new() { CenterX = 200, CenterY = 200, Width = 160, Height = 100, Color = ViOverlayColor.Red, FillOpacity = fill };
+
+    [AvaloniaFact]
+    public void AFilledRectBlendsInsideAndKeepsItsOutline()
+    {
+        var bare = Render(Bare(null), Box, Box);
+        var plain = Render(Bare(One(RedRect(0))), Box, Box);
+        var filled = Render(Bare(One(RedRect(0.5))), Box, Box);
+
+        // 안쪽 가운데 — 빨강 알파 128(round(0.5×255)) 이 회색 128 위에 합성된 색.
+        int c = (200 * Box + 200) * 4;
+        var (wr, wg) = RedOverGray(128);
+        Check(bare[c + 2] == 128 && plain[c + 2] == 128, $"premise: without a fill the rect's inside is the gray image ({plain[c + 2]})");
+        Check(Math.Abs(filled[c + 2] - wr) <= 2 && Math.Abs(filled[c + 1] - wg) <= 2 && Math.Abs(filled[c] - wg) <= 2,
+            $"inside the rect the red fill is blended source-over at alpha 128: got R{filled[c + 2]} G{filled[c + 1]} B{filled[c]}, want ~R{wr:0} G{wg:0} B{wg:0}");
+
+        // 테두리 — 채움 없을 때 완전히 빨갛던 화소는 채움이 있어도 그대로다(채움 먼저, 테두리가 그 위). 영역 밖은 한 화소도 안 바뀐다.
+        int solid = 0, solidChanged = 0, outside = 0, outsideChanged = 0;
+        for (int y = 0; y < Box; y++)
+            for (int x = 0; x < Box; x++)
+            {
+                int i = (y * Box + x) * 4;
+                bool isSolidRed = plain[i + 2] >= 250 && plain[i + 1] <= 5 && plain[i] <= 5;
+                if (isSolidRed)
+                {
+                    solid++;
+                    if (filled[i] != plain[i] || filled[i + 1] != plain[i + 1] || filled[i + 2] != plain[i + 2]) solidChanged++;
+                }
+                // 사각은 화면에서 대략 x 122~278, y 151~249(맞춤 배율 0.97) — 여유 8 화소 밖만 센다.
+                if (x < 110 || x > 290 || y < 140 || y > 260)
+                {
+                    outside++;
+                    if (filled[i] != plain[i] || filled[i + 1] != plain[i + 1] || filled[i + 2] != plain[i + 2]) outsideChanged++;
+                }
+            }
+        Check(solid > 100, $"premise: the outline has fully red pixels to compare ({solid})");
+        Check(solidChanged == 0, $"every fully red outline pixel is unchanged by the fill — the outline keeps its width and colour ({solidChanged} of {solid} changed)");
+        Check(outsideChanged == 0 && outside > 0, $"the fill does not leak outside the rect ({outsideChanged} of {outside} outside pixels changed)");
+    }
+
+    /// <summary>오각별 — 가운데 오각형은 두 번 감겨 짝홀 규칙이면 비고 0 아님 규칙이면 찬다. 꼭짓점은 반지름 120, 중심 (200,200).</summary>
+    private static ViOverlayPoly RedStar(double fill) => new()
+    {
+        Points = Enumerable.Range(0, 5).Select(k => (X: 200 + 120 * Math.Cos((-90 + 144 * k) * Math.PI / 180), Y: 200 + 120 * Math.Sin((-90 + 144 * k) * Math.PI / 180))).ToArray(),
+        IsClosed = true,
+        Color = ViOverlayColor.Red,
+        FillOpacity = fill,
+    };
+
+    [AvaloniaFact]
+    public void ASelfIntersectingPolyFillsEvenOdd()
+    {
+        var plain = Render(Bare(One(RedStar(0))), Box, Box);
+        var filled = Render(Bare(One(RedStar(0.5))), Box, Box);
+        // 가운데(두 번 감김) — 선에서 약 37 화소 떨어져 테두리에 안 닿는다. 위 꼭짓점 안쪽(한 번 감김) — 꼭짓점 아래 약 45 화소, 변에서 10 화소 넘게.
+        int c = (200 * Box + 200) * 4;
+        int tip = (125 * Box + 200) * 4;
+        var (wr, wg) = RedOverGray(128);
+        Check(plain[c + 2] == 128 && plain[tip + 2] == 128, $"premise: without a fill both sample points are the gray image (centre R{plain[c + 2]}, tip R{plain[tip + 2]})");
+        Check(filled[c] == 128 && filled[c + 1] == 128 && filled[c + 2] == 128,
+            $"the doubly wound centre of a pentagram stays the image colour — the fill rule is even-odd (got R{filled[c + 2]} G{filled[c + 1]} B{filled[c]})");
+        Check(Math.Abs(filled[tip + 2] - wr) <= 2 && Math.Abs(filled[tip + 1] - wg) <= 2 && Math.Abs(filled[tip] - wg) <= 2,
+            $"a singly wound tip is blended at alpha 128: got R{filled[tip + 2]} G{filled[tip + 1]} B{filled[tip]}, want ~R{wr:0} G{wg:0}");
+    }
+
+    [AvaloniaFact]
+    public void ZeroOpacityDrawsExactlyAsWithoutAFill()
+    {
+        var none = Render(Bare(One(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 160, Height = 100, Color = ViOverlayColor.Red })), Box, Box);
+        foreach (var v in new[] { 0.0, -1.0, double.NaN, 0.001 })
+            Check(Diff(Render(Bare(One(RedRect(v))), Box, Box), none) == 0,
+                $"FillOpacity {v} resolves to alpha 0 and draws byte-identical to a rect without FillOpacity (0.35 picture)");
+        Check(Diff(Render(Bare(One(RedRect(0.002))), Box, Box), none) > 0, "control: the smallest non-zero alpha (opacity 0.002 -> alpha 1) does change the picture");
+    }
+
+    [AvaloniaFact]
+    public void AnOpenPolyIgnoresFillOpacity()
+    {
+        (double X, double Y)[] pts = [(120, 120), (280, 140), (260, 280), (140, 260)];
+        ViOverlayPoly Poly(bool closed, double fill) => new() { Points = pts, IsClosed = closed, Color = ViOverlayColor.Cyan, FillOpacity = fill };
+        Check(Diff(Render(Bare(One(Poly(false, 0.9))), Box, Box), Render(Bare(One(Poly(false, 0))), Box, Box)) == 0,
+            "an open polyline has no inside: FillOpacity draws nothing (documented)");
+        Check(Diff(Render(Bare(One(Poly(true, 0.9))), Box, Box), Render(Bare(One(Poly(true, 0))), Box, Box)) > 0,
+            "control: the same points closed do fill");
+    }
+
+    [AvaloniaFact]
+    public void TheFillFollowsHideAndClip()
+    {
+        // 숨김(👁) — 채움도 오버레이의 일부라 함께 사라진다. 툴바를 감춘 컨트롤로 찍는다(토글은 감춘 툴바 안에도 있다 — 보이면 눌린 모양이 화면을 바꾼다).
+        var ctrl = Bare(One(RedRect(0.5)));
+        var bareTb = Render(Bare(null), Box, Box);
+        Check(Diff(Render(ctrl, Box, Box), bareTb) > 0, "premise: the filled rect draws while shown");
+        var hide = HideOf(ctrl);
+        hide.IsChecked = true;
+        Check(Diff(Render(ctrl, Box, Box), bareTb) == 0, "hidden: the fill goes with the rest of the overlay (the picture equals the no-overlay one)");
+
+        // 자르기 — 200×400 을 400 칸에 맞추면 이미지는 가운데 약 x 103~297. 이미지 오른쪽 가장자리(x=200)에 중심을 둔 120 폭 사각은 절반이
+        // 오른쪽 여백(x≈297~355)에 걸친다. 여백 x ≥ 310 만 센다(테두리 오른변 x≈355 는 채움 비교에서 양쪽에 같이 있어 빠진다).
+        ViOverlay Edge(double fill) => One(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 120, Height = 120, Color = ViOverlayColor.Red, FillOpacity = fill });
+        CvDispCtrl Narrow(ViOverlay? o, bool clip) => new() { IsToolbarVisible = false, IsStatusBarVisible = false, Frame = GrayFrame(200, Box), Overlay = o, ClipOverlayToImage = clip };
+        int MarginDiff(byte[] a, byte[] b)
+        {
+            int n = 0;
+            for (int y = 0; y < Box; y++)
+                for (int x = 310; x < Box; x++)
+                {
+                    int i = (y * Box + x) * 4;
+                    if (a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2]) n++;
+                }
+            return n;
+        }
+        var bareNarrow = Render(Narrow(null, false), Box, Box);
+        Check(MarginDiff(Render(Narrow(Edge(0.6), false), Box, Box), Render(Narrow(Edge(0), false), Box, Box)) > 0,
+            "premise: without the clip the fill itself (filled vs unfilled) spills into the fit margin right of the image");
+        Check(MarginDiff(Render(Narrow(Edge(0.6), true), Box, Box), bareNarrow) == 0,
+            "with ClipOverlayToImage the fill is cut to the image like its outline — nothing reaches the margin");
+    }
+
+    [AvaloniaFact]
+    public void RenderWithOverlayIncludesTheFillAtNativeSize()
+    {
+        const int w = 640, h = 480;
+        var o = new ViOverlay();
+        o.Add(new ViOverlayRect { CenterX = 320, CenterY = 240, Width = 200, Height = 100, Color = ViOverlayColor.Red, FillOpacity = 0.5 });
+        var ctrl = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(w, h), Overlay = o };
+        using var mat = ctrl.RenderWithOverlay()!;
+        var px = Bytes(mat);
+        int c = (240 * w + 320) * 3;
+        var (wr, wg) = RedOverGray(128);
+        Check(mat.Cols == w && mat.Rows == h, $"native size ({mat.Cols}x{mat.Rows})");
+        Check(Math.Abs(px[c + 2] - wr) <= 2 && Math.Abs(px[c + 1] - wg) <= 2 && Math.Abs(px[c] - wg) <= 2,
+            $"the export carries the fill blended at alpha 128 at the rect centre: R{px[c + 2]} G{px[c + 1]} B{px[c]}, want ~R{wr:0} G{wg:0}");
+        int corner = (10 * w + 10) * 3;
+        Check(px[corner] == 128 && px[corner + 1] == 128 && px[corner + 2] == 128, "control: away from the rect the export is the gray image");
+    }
+
+    // === 상태 줄 표시(IsStatusBarVisible, 0.36) ===
+
+    [AvaloniaFact]
+    public void IsStatusBarVisibleCollapsesTheRowAndRestoresIt()
+    {
+        var ctrl = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(Box, Box) };
+        Check(ctrl.IsStatusBarVisible, "the status bar is shown by default");
+        Shoot(ctrl, Box, Box);
+        var withBar = ctrl.Surface.Bounds.Height;
+        Check(withBar < Box - 5, $"premise: with the status bar the surface is shorter than the control ({withBar} of {Box})");
+
+        ctrl.IsStatusBarVisible = false;
+        Shoot(ctrl, Box, Box);
+        Check(ctrl.Surface.Bounds.Height == Box, $"false collapses the status row — it takes no space and the surface gets the full height ({ctrl.Surface.Bounds.Height} of {Box})");
+
+        ctrl.IsStatusBarVisible = true;
+        Shoot(ctrl, Box, Box);
+        Check(ctrl.Surface.Bounds.Height == withBar, $"true brings the row back at its old height ({ctrl.Surface.Bounds.Height}, was {withBar})");
+
+        // 바인딩 — 값이 바뀌면 따라간다.
+        var bound = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(Box, Box) };
+        var src = new BoolSource();
+        bound.Bind(CvDispCtrl.IsStatusBarVisibleProperty, src);
+        src.Push(false);
+        Shoot(bound, Box, Box);
+        Check(!bound.IsStatusBarVisible && bound.Surface.Bounds.Height == Box, $"a bound false collapses the row ({bound.Surface.Bounds.Height})");
+        src.Push(true);
+        Shoot(bound, Box, Box);
+        Check(bound.Surface.Bounds.Height == withBar, $"a bound true restores it ({bound.Surface.Bounds.Height})");
+
+        // 스타일 세터 — 앱 스타일이 컨트롤이 트리에 붙을 때 준다.
+        var style = new Style(x => x.OfType<CvDispCtrl>());
+        style.Setters.Add(new Setter(CvDispCtrl.IsStatusBarVisibleProperty, false));
+        var app = global::Avalonia.Application.Current!;
+        app.Styles.Add(style);
+        try
+        {
+            var styled = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(Box, Box) };
+            Shoot(styled, Box, Box);
+            Check(!styled.IsStatusBarVisible && styled.Surface.Bounds.Height == Box,
+                $"an application style setter hides the status row ({styled.IsStatusBarVisible}, surface {styled.Surface.Bounds.Height})");
+        }
+        finally { app.Styles.Remove(style); }
+    }
+
+    /// <summary>값을 손으로 밀어 넣는 바인딩 원천.</summary>
+    private sealed class BoolSource : IObservable<object?>
+    {
+        private readonly List<IObserver<object?>> _obs = new();
+
+        public IDisposable Subscribe(IObserver<object?> observer)
+        {
+            _obs.Add(observer);
+            return new Unsub(() => _obs.Remove(observer));
+        }
+
+        public void Push(object? v)
+        {
+            foreach (var o in _obs.ToArray()) o.OnNext(v);
+            Pump();
+        }
+
+        private sealed class Unsub(Action a) : IDisposable
+        {
+            public void Dispose() => a();
+        }
     }
 }

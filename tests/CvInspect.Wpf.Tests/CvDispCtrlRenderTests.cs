@@ -1424,6 +1424,20 @@ public class CvDispCtrlRenderTests
             Check(ex2 is null && hidden!.IsToolbarVisible == false, $"an application-level style hiding the toolbar does not break construction: {ex2}");
             Check(hidden!.ContextMenu.Items[hidden.ContextMenu.Items.Count - 1] is System.Windows.Controls.MenuItem clear && clear.Visibility == Visibility.Collapsed,
                 "...and the toolbar-paired context-menu entry is hidden with it");
+            Shoot(hidden);
+            Check(hidden.Surface.ActualHeight < VH - 5, $"control: with only the toolbar hidden the status row still takes space ({hidden.Surface.ActualHeight} of {VH})");
+
+            // 상태 줄 — 콜백이 상태 줄 테두리를 만진다. 생성자 안에서 그것이 아직 없으면 여기서 던진다.
+            var noStatus = new Style(typeof(CvDispCtrl));
+            noStatus.Setters.Add(new Setter(CvDispCtrl.IsToolbarVisibleProperty, false));
+            noStatus.Setters.Add(new Setter(CvDispCtrl.IsStatusBarVisibleProperty, false));
+            app.Resources = new ResourceDictionary { [typeof(CvDispCtrl)] = noStatus };
+            CvDispCtrl? bare = null;
+            var ex3 = Record.Exception(() => bare = new CvDispCtrl());
+            Check(ex3 is null && bare!.IsStatusBarVisible == false, $"an application-level style hiding the status bar does not break construction: {ex3}");
+            Shoot(bare!);
+            Check(bare!.Surface.ActualHeight == VH,
+                $"...and the status row is collapsed — the surface gets the full height ({bare.Surface.ActualHeight} of {VH})");
         }
         finally { app.Resources = before; }
     });

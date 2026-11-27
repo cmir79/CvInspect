@@ -87,6 +87,18 @@ internal sealed class ViPrimFill(ViPaint paint, (double X, double Y)[] points) :
     internal (double X, double Y)[] Points { get; } = points;
 }
 
+/// <summary>반투명 채움 영역(외곽선 없음) — 오버레이 사각·닫힌 다각형의 <c>FillOpacity</c>. 색은 <see cref="Paint"/>(이름 색이면 어댑터의 그 색),
+/// 알파는 <see cref="Alpha"/> 를 곱한다(이름 색은 불투명이라 그대로 이 값이 된다). 점은 앞 <see cref="Count"/> 개이고 마지막 점에서 첫 점으로 닫는다.
+/// 스스로 교차하면 짝홀 규칙(even-odd)으로 칠한다 — 두 UI 의 기본 채움 규칙이 갈릴 수 있어 어댑터가 명시한다.
+/// 점 배열은 바로 뒤 테두리 경로와 <b>같은 배열</b>일 수 있다(다각형은 풀에서 빌린 배열) — 풀 반환은 그 경로가 맡으므로 이 프리미티브는 돌려주지 않는다.</summary>
+internal sealed class ViPrimTint(ViPaint paint, byte alpha, (double X, double Y)[] points, int count) : ViPrim
+{
+    internal ViPaint Paint { get; } = paint;
+    internal byte Alpha { get; } = alpha;
+    internal (double X, double Y)[] Points { get; } = points;
+    internal int Count { get; } = count;
+}
+
 /// <summary>채운 축 정렬 사각(외곽선 없음) — 핸들, 라벨 배경.</summary>
 internal sealed class ViPrimBox(ViPaint paint, ViBox box) : ViPrim
 {

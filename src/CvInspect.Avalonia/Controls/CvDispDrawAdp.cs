@@ -56,11 +56,13 @@ internal static class CvDispDrawAdp
 
     /// <summary>목록 순서대로 그린다. 펜은 이 호출 안에서 같은 값(색·굵기·점선·닫힘)끼리 하나를 나눠 쓴다(불변 펜 — 변경 추적이 없다).
     /// 이름 색 브러시는 Avalonia 의 공용 불변 브러시, ARGB 브러시(라벨 배경·안내 회색)는 쓸 때마다 새로 만든다.
+    /// 반투명 채움 브러시는 펜처럼 이 호출 안에서 (색, 알파) 끼리 하나를 나눠 쓴다 — 같은 색·불투명도의 영역이 많아도 브러시는 하나다.
     /// 자르기는 밀어 넣은 상태를 스택으로 쥐고 푼다 — 목록이 짝을 못 맞춰 끝나도 남은 자르기를 여기서 풀어, 바깥 상태(변환 등)를 푸는
     /// 순서가 어긋나 던지는 일이 없게 한다.</summary>
     internal static void Draw(DrawingContext dc, IReadOnlyList<ViPrim> prims)
     {
         var pens = new Dictionary<(ViStroke Stroke, bool Closed), ImmutablePen>();
+        var tints = new Dictionary<(ViPaint Paint, byte Alpha), IImmutableBrush>();
         var clips = new Stack<DrawingContext.PushedState>();
         try
         {
@@ -93,6 +95,20 @@ internal static class CvDispDrawAdp
                             ctx.EndFigure(true);
                         }
                         dc.DrawGeometry(BrushOf(fill.Paint), null, geo);
+                        break;
+                    }
+                    case ViPrimTint tint when tint.Count >= 3:
+                    {
+                        // 채움 규칙을 짝홀로 못 박는다 — 렌더 규칙(ViOverlayRect·ViOverlayPoly.FillOpacity)이 그렇게 적혀 있고, 두 UI 가 같은 그림이어야 한다.
+                        var geo = new StreamGeometry();
+                        using (var ctx = geo.Open())
+                        {
+                            ctx.SetFillRule(FillRule.EvenOdd);
+                            ctx.BeginFigure(Pt(tint.Points[0]), isFilled: true);
+                            for (var i = 1; i < tint.Count; i++) ctx.LineTo(Pt(tint.Points[i]), isStroked: false);
+                            ctx.EndFigure(true);
+                        }
+                        dc.DrawGeometry(TintOf(tints, tint.Paint, tint.Alpha), null, geo);
                         break;
                     }
                     case ViPrimBox box:
@@ -140,6 +156,22 @@ internal static class CvDispDrawAdp
 
     internal static IImmutableBrush BrushOf(ViPaint paint)
         => paint.Named is { } named ? MapBrush(named) : new ImmutableSolidColorBrush(Color.FromArgb(paint.A, paint.R, paint.G, paint.B));
+
+    private static IImmutableBrush TintOf(Dictionary<(ViPaint Paint, byte Alpha), IImmutableBrush> tints, ViPaint paint, byte alpha)
+    {
+        if (tints.TryGetValue((paint, alpha), out var brush)) return brush;
+        brush = TintBrush(paint, alpha);
+        tints[(paint, alpha)] = brush;
+        return brush;
+    }
+
+    /// <summary>반투명 채움 브러시 — 색의 알파에 <paramref name="alpha"/>/255 를 곱한다. 이름 색은 불투명이라 알파가 그대로 이 값이 된다
+    /// (브러시 불투명도로 미루지 않고 바이트로 정한다 — 호스트 렌더러가 같은 바이트로 옮겨 그릴 수 있게).</summary>
+    private static IImmutableBrush TintBrush(ViPaint paint, byte alpha)
+    {
+        var c = paint.Named is { } named ? ((ISolidColorBrush)MapBrush(named)).Color : Color.FromArgb(paint.A, paint.R, paint.G, paint.B);
+        return new ImmutableSolidColorBrush(Color.FromArgb((byte)((c.A * alpha + 127) / 255), c.R, c.G, c.B));
+    }
 
     private static IImmutableBrush MapBrush(ViOverlayColor color) => color switch
     {

@@ -481,4 +481,206 @@ public class CvDispCtrlGraphicsTests
         Check(pan.IsChecked == true,
             "a raw Click on the pan entry that showed unchecked turns pan on — the opposite of what it showed, as in the Avalonia control (the item's own check was not flipped on this path)");
     });
+
+    // === 반투명 채움(FillOpacity, 0.36) — 렌더 규칙: 채움 먼저·테두리 그대로·알파 = round(v×255)·source-over. Avalonia 판과 같은 절 ===
+
+    /// <summary>회색 128 위에 빨강(255,0,0)을 알파 a 로 source-over — 기대 R·G(=B).</summary>
+    private static (double R, double G) RedOverGray(int alpha) => (128 + (255 - 128) * alpha / 255.0, 128 * (1 - alpha / 255.0));
+
+    /// <summary>상태 줄·툴바를 감춘 400 칸 — 표면이 컨트롤 전체라 400×400 프레임의 가운데가 화면 가운데(200,200)다.</summary>
+    private static CvDispCtrl Bare(ViOverlay? overlay)
+        => new() { IsToolbarVisible = false, IsStatusBarVisible = false, Frame = GrayFrame(Box, Box), Overlay = overlay };
+
+    private static ViOverlay One(ViOverlayItem item)
+    {
+        var o = new ViOverlay();
+        o.Add(item);
+        return o;
+    }
+
+    private static ViOverlayRect RedRect(double fill) => new() { CenterX = 200, CenterY = 200, Width = 160, Height = 100, Color = ViOverlayColor.Red, FillOpacity = fill };
+
+    [Fact]
+    public void AFilledRectBlendsInsideAndKeepsItsOutline() => RunSta(() =>
+    {
+        var plain = Render(Bare(One(RedRect(0))));
+        var filled = Render(Bare(One(RedRect(0.5))));
+
+        int c = (200 * Box + 200) * 4;
+        var (wr, wg) = RedOverGray(128);
+        Check(plain[c + 2] == 128, $"premise: without a fill the rect's inside is the gray image ({plain[c + 2]})");
+        Check(Math.Abs(filled[c + 2] - wr) <= 2 && Math.Abs(filled[c + 1] - wg) <= 2 && Math.Abs(filled[c] - wg) <= 2,
+            $"inside the rect the red fill is blended source-over at alpha 128: got R{filled[c + 2]} G{filled[c + 1]} B{filled[c]}, want ~R{wr:0} G{wg:0} B{wg:0}");
+
+        int solid = 0, solidChanged = 0, outside = 0, outsideChanged = 0;
+        for (int y = 0; y < Box; y++)
+            for (int x = 0; x < Box; x++)
+            {
+                int i = (y * Box + x) * 4;
+                bool same = filled[i] == plain[i] && filled[i + 1] == plain[i + 1] && filled[i + 2] == plain[i + 2];
+                if (plain[i + 2] >= 250 && plain[i + 1] <= 5 && plain[i] <= 5)
+                {
+                    solid++;
+                    if (!same) solidChanged++;
+                }
+                if (x < 110 || x > 290 || y < 140 || y > 260)
+                {
+                    outside++;
+                    if (!same) outsideChanged++;
+                }
+            }
+        Check(solid > 100, $"premise: the outline has fully red pixels to compare ({solid})");
+        Check(solidChanged == 0, $"every fully red outline pixel is unchanged by the fill — the outline keeps its width and colour ({solidChanged} of {solid} changed)");
+        Check(outsideChanged == 0 && outside > 0, $"the fill does not leak outside the rect ({outsideChanged} of {outside} outside pixels changed)");
+    });
+
+    /// <summary>오각별 — 가운데 오각형은 두 번 감겨 짝홀 규칙이면 비고 0 아님 규칙이면 찬다. 꼭짓점은 반지름 120, 중심 (200,200).</summary>
+    private static ViOverlayPoly RedStar(double fill) => new()
+    {
+        Points = Enumerable.Range(0, 5).Select(k => (X: 200 + 120 * Math.Cos((-90 + 144 * k) * Math.PI / 180), Y: 200 + 120 * Math.Sin((-90 + 144 * k) * Math.PI / 180))).ToArray(),
+        IsClosed = true,
+        Color = ViOverlayColor.Red,
+        FillOpacity = fill,
+    };
+
+    [Fact]
+    public void ASelfIntersectingPolyFillsEvenOdd() => RunSta(() =>
+    {
+        var plain = Render(Bare(One(RedStar(0))));
+        var filled = Render(Bare(One(RedStar(0.5))));
+        // 가운데(두 번 감김) — 선에서 약 37 화소 떨어져 테두리에 안 닿는다. 위 꼭짓점 안쪽(한 번 감김) — 꼭짓점 아래 약 45 화소, 변에서 10 화소 넘게.
+        int c = (200 * Box + 200) * 4;
+        int tip = (125 * Box + 200) * 4;
+        var (wr, wg) = RedOverGray(128);
+        Check(plain[c + 2] == 128 && plain[tip + 2] == 128, $"premise: without a fill both sample points are the gray image (centre R{plain[c + 2]}, tip R{plain[tip + 2]})");
+        Check(filled[c] == 128 && filled[c + 1] == 128 && filled[c + 2] == 128,
+            $"the doubly wound centre of a pentagram stays the image colour — the fill rule is even-odd (got R{filled[c + 2]} G{filled[c + 1]} B{filled[c]})");
+        Check(Math.Abs(filled[tip + 2] - wr) <= 2 && Math.Abs(filled[tip + 1] - wg) <= 2 && Math.Abs(filled[tip] - wg) <= 2,
+            $"a singly wound tip is blended at alpha 128: got R{filled[tip + 2]} G{filled[tip + 1]} B{filled[tip]}, want ~R{wr:0} G{wg:0}");
+    });
+
+    [Fact]
+    public void ZeroOpacityDrawsExactlyAsWithoutAFill() => RunSta(() =>
+    {
+        var none = Render(Bare(One(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 160, Height = 100, Color = ViOverlayColor.Red })));
+        foreach (var v in new[] { 0.0, -1.0, double.NaN, 0.001 })
+            Check(Diff(Render(Bare(One(RedRect(v)))), none) == 0,
+                $"FillOpacity {v} resolves to alpha 0 and draws byte-identical to a rect without FillOpacity (0.35 picture)");
+        Check(Diff(Render(Bare(One(RedRect(0.002)))), none) > 0, "control: the smallest non-zero alpha (opacity 0.002 -> alpha 1) does change the picture");
+    });
+
+    [Fact]
+    public void AnOpenPolyIgnoresFillOpacity() => RunSta(() =>
+    {
+        (double X, double Y)[] pts = [(120, 120), (280, 140), (260, 280), (140, 260)];
+        ViOverlayPoly Poly(bool closed, double fill) => new() { Points = pts, IsClosed = closed, Color = ViOverlayColor.Cyan, FillOpacity = fill };
+        Check(Diff(Render(Bare(One(Poly(false, 0.9)))), Render(Bare(One(Poly(false, 0))))) == 0,
+            "an open polyline has no inside: FillOpacity draws nothing (documented)");
+        Check(Diff(Render(Bare(One(Poly(true, 0.9)))), Render(Bare(One(Poly(true, 0))))) > 0,
+            "control: the same points closed do fill");
+    });
+
+    [Fact]
+    public void TheFillFollowsHideAndClip() => RunSta(() =>
+    {
+        // 툴바를 감춘 컨트롤로 찍는다(토글은 감춘 툴바 안에도 있다 — 보이면 눌린 모양이 화면을 바꾼다).
+        var ctrl = Bare(One(RedRect(0.5)));
+        var bareTb = Render(Bare(null));
+        Check(Diff(Render(ctrl), bareTb) > 0, "premise: the filled rect draws while shown");
+        HideOf(ctrl).IsChecked = true;
+        Check(Diff(Render(ctrl), bareTb) == 0, "hidden: the fill goes with the rest of the overlay (the picture equals the no-overlay one)");
+
+        // 200×400 을 400 칸에 맞추면 이미지는 가운데 약 x 103~297 — 이미지 오른쪽 가장자리에 중심을 둔 사각의 절반이 오른쪽 여백에 걸친다.
+        ViOverlay Edge(double fill) => One(new ViOverlayRect { CenterX = 200, CenterY = 200, Width = 120, Height = 120, Color = ViOverlayColor.Red, FillOpacity = fill });
+        CvDispCtrl Narrow(ViOverlay? o, bool clip) => new() { IsToolbarVisible = false, IsStatusBarVisible = false, Frame = GrayFrame(200, Box), Overlay = o, ClipOverlayToImage = clip };
+        int MarginDiff(byte[] a, byte[] b)
+        {
+            int n = 0;
+            for (int y = 0; y < Box; y++)
+                for (int x = 310; x < Box; x++)
+                {
+                    int i = (y * Box + x) * 4;
+                    if (a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2]) n++;
+                }
+            return n;
+        }
+        var bareNarrow = Render(Narrow(null, false));
+        Check(MarginDiff(Render(Narrow(Edge(0.6), false)), Render(Narrow(Edge(0), false))) > 0,
+            "premise: without the clip the fill itself (filled vs unfilled) spills into the fit margin right of the image");
+        Check(MarginDiff(Render(Narrow(Edge(0.6), true)), bareNarrow) == 0,
+            "with ClipOverlayToImage the fill is cut to the image like its outline — nothing reaches the margin");
+    });
+
+    [Fact]
+    public void RenderWithOverlayIncludesTheFillAtNativeSize() => RunSta(() =>
+    {
+        const int w = 640, h = 480;
+        var o = new ViOverlay();
+        o.Add(new ViOverlayRect { CenterX = 320, CenterY = 240, Width = 200, Height = 100, Color = ViOverlayColor.Red, FillOpacity = 0.5 });
+        var ctrl = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(w, h), Overlay = o };
+        using var mat = ctrl.RenderWithOverlay()!;
+        var px = Bytes(mat);
+        int c = (240 * w + 320) * 3;
+        var (wr, wg) = RedOverGray(128);
+        Check(mat.Cols == w && mat.Rows == h, $"native size ({mat.Cols}x{mat.Rows})");
+        Check(Math.Abs(px[c + 2] - wr) <= 2 && Math.Abs(px[c + 1] - wg) <= 2 && Math.Abs(px[c] - wg) <= 2,
+            $"the export carries the fill blended at alpha 128 at the rect centre: R{px[c + 2]} G{px[c + 1]} B{px[c]}, want ~R{wr:0} G{wg:0}");
+        int corner = (10 * w + 10) * 3;
+        Check(px[corner] == 128 && px[corner + 1] == 128 && px[corner + 2] == 128, "control: away from the rect the export is the gray image");
+    });
+
+    // === 상태 줄 표시(IsStatusBarVisible, 0.36) ===
+
+    private sealed class Flag : System.ComponentModel.INotifyPropertyChanged
+    {
+        private bool _value = true;
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+        public bool Value
+        {
+            get => _value;
+            set
+            {
+                _value = value;
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Value)));
+            }
+        }
+    }
+
+    [Fact]
+    public void IsStatusBarVisibleCollapsesTheRowAndRestoresIt() => RunSta(() =>
+    {
+        var ctrl = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(Box, Box) };
+        Check(ctrl.IsStatusBarVisible, "the status bar is shown by default");
+        Render(ctrl);
+        var withBar = ctrl.Surface.ActualHeight;
+        Check(withBar < Box - 5, $"premise: with the status bar the surface is shorter than the control ({withBar} of {Box})");
+
+        ctrl.IsStatusBarVisible = false;
+        Render(ctrl);
+        Check(ctrl.Surface.ActualHeight == Box, $"false collapses the status row — it takes no space and the surface gets the full height ({ctrl.Surface.ActualHeight} of {Box})");
+
+        ctrl.IsStatusBarVisible = true;
+        Render(ctrl);
+        Check(ctrl.Surface.ActualHeight == withBar, $"true brings the row back at its old height ({ctrl.Surface.ActualHeight}, was {withBar})");
+
+        // 바인딩
+        var flag = new Flag();
+        var bound = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(Box, Box) };
+        System.Windows.Data.BindingOperations.SetBinding(bound, CvDispCtrl.IsStatusBarVisibleProperty, new System.Windows.Data.Binding(nameof(Flag.Value)) { Source = flag });
+        flag.Value = false;
+        Render(bound);
+        Check(!bound.IsStatusBarVisible && bound.Surface.ActualHeight == Box, $"a bound false collapses the row ({bound.Surface.ActualHeight})");
+        flag.Value = true;
+        Render(bound);
+        Check(bound.Surface.ActualHeight == withBar, $"a bound true restores it ({bound.Surface.ActualHeight})");
+
+        // 스타일 세터
+        var style = new Style(typeof(CvDispCtrl));
+        style.Setters.Add(new Setter(CvDispCtrl.IsStatusBarVisibleProperty, false));
+        var styled = new CvDispCtrl { IsToolbarVisible = false, Frame = GrayFrame(Box, Box), Style = style };
+        Render(styled);
+        Check(!styled.IsStatusBarVisible && styled.Surface.ActualHeight == Box,
+            $"a style setter hides the status row ({styled.IsStatusBarVisible}, surface {styled.Surface.ActualHeight})");
+    });
 }

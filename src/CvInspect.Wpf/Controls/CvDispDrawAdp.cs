@@ -30,10 +30,12 @@ internal sealed class CvDispTextPort(double pixelsPerDip) : ITextMetricPort
 internal static class CvDispDrawAdp
 {
     /// <summary>목록 순서대로 그린다. 펜은 이 호출 안에서 같은 값(색·굵기·점선)끼리 하나를 나눠 쓴다(얼려서 변경 추적 비용을 뺀다).
-    /// 이름 색 브러시는 WPF 의 공용 브러시, ARGB 브러시(라벨 배경·안내 회색)는 쓸 때마다 새로 얼린다.</summary>
+    /// 이름 색 브러시는 WPF 의 공용 브러시, ARGB 브러시(라벨 배경·안내 회색)는 쓸 때마다 새로 얼린다.
+    /// 반투명 채움 브러시는 펜처럼 이 호출 안에서 (색, 알파) 끼리 하나를 나눠 쓴다 — 같은 색·불투명도의 영역이 많아도 브러시는 하나다.</summary>
     internal static void Draw(DrawingContext dc, IReadOnlyList<ViPrim> prims, double pixelsPerDip)
     {
         var pens = new Dictionary<ViStroke, Pen>();
+        var tints = new Dictionary<(ViPaint Paint, byte Alpha), Brush>();
         foreach (var prim in prims)
         {
             switch (prim)
@@ -63,6 +65,19 @@ internal static class CvDispDrawAdp
                     }
                     geo.Freeze();
                     dc.DrawGeometry(BrushOf(fill.Paint), null, geo);
+                    break;
+                }
+                case ViPrimTint tint when tint.Count >= 3:
+                {
+                    // 채움 규칙을 짝홀로 못 박는다 — 렌더 규칙(ViOverlayRect·ViOverlayPoly.FillOpacity)이 그렇게 적혀 있고, 두 UI 가 같은 그림이어야 한다.
+                    var geo = new StreamGeometry { FillRule = FillRule.EvenOdd };
+                    using (var ctx = geo.Open())
+                    {
+                        ctx.BeginFigure(Pt(tint.Points[0]), isFilled: true, isClosed: true);
+                        for (var i = 1; i < tint.Count; i++) ctx.LineTo(Pt(tint.Points[i]), isStroked: false, isSmoothJoin: false);
+                    }
+                    geo.Freeze();
+                    dc.DrawGeometry(TintOf(tints, tint.Paint, tint.Alpha), null, geo);
                     break;
                 }
                 case ViPrimBox box:
@@ -106,6 +121,24 @@ internal static class CvDispDrawAdp
     {
         if (paint.Named is { } named) return MapBrush(named);
         var b = new SolidColorBrush(Color.FromArgb(paint.A, paint.R, paint.G, paint.B));
+        b.Freeze();
+        return b;
+    }
+
+    private static Brush TintOf(Dictionary<(ViPaint Paint, byte Alpha), Brush> tints, ViPaint paint, byte alpha)
+    {
+        if (tints.TryGetValue((paint, alpha), out var brush)) return brush;
+        brush = TintBrush(paint, alpha);
+        tints[(paint, alpha)] = brush;
+        return brush;
+    }
+
+    /// <summary>반투명 채움 브러시 — 색의 알파에 <paramref name="alpha"/>/255 를 곱한다. 이름 색은 불투명이라 알파가 그대로 이 값이 된다
+    /// (불투명도로 미루지 않고 바이트로 정한다 — 호스트 렌더러가 같은 바이트로 옮겨 그릴 수 있게).</summary>
+    private static Brush TintBrush(ViPaint paint, byte alpha)
+    {
+        var c = paint.Named is { } named ? ((SolidColorBrush)MapBrush(named)).Color : Color.FromArgb(paint.A, paint.R, paint.G, paint.B);
+        var b = new SolidColorBrush(Color.FromArgb((byte)((c.A * alpha + 127) / 255), c.R, c.G, c.B));
         b.Freeze();
         return b;
     }

@@ -45,6 +45,13 @@ internal static class ViDrawGeom
             ? Math.Clamp(strokeScale, MinStrokeScale, MaxStrokeScale)
             : 1.0;
 
+    /// <summary>채움 불투명도 → 알파 바이트 — NaN·음수는 0, 1 초과는 1 로 자른 뒤 <c>round(값 × 255)</c>(0.5 는 위로).
+    /// 규칙 전문은 <c>ViOverlayRect.FillOpacity</c> — 호스트 렌더러가 같은 식으로 옮겨 쓰므로 바꾸면 문서와 함께 바꾼다.</summary>
+    internal static byte ResolveFillAlpha(double fillOpacity)
+        => fillOpacity > 0   // NaN 은 비교가 거짓이라 여기서 0 으로 떨어진다
+            ? (byte)Math.Round(Math.Min(fillOpacity, 1.0) * 255, MidpointRounding.AwayFromZero)
+            : (byte)0;
+
     /// <summary>라벨의 글자 크기(pt) — 모서리 요약 HUD 는 그대로, 그 밖은 표면의 라벨 배율을 곱한다(float 로 — 지금 화면과 같은 값).</summary>
     internal static float LabelSizePt(ViOverlayLabel label, double labelScale)
         => IsCornerHud(label) ? label.FontSize : (float)(label.FontSize * labelScale);

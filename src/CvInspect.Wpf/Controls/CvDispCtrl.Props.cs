@@ -265,6 +265,20 @@ public sealed partial class CvDispCtrl
         ApplyMenuGroups(LoadFrameCommand is not null, visible);
     }
 
+    public static readonly DependencyProperty IsStatusBarVisibleProperty = DependencyProperty.Register(
+        nameof(IsStatusBarVisible), typeof(bool), typeof(CvDispCtrl),
+        new PropertyMetadata(true, (d, e) =>
+            ((CvDispCtrl)d)._statusBorder.Visibility = (bool)e.NewValue ? Visibility.Visible : Visibility.Collapsed));
+
+    /// <summary>하단 상태 줄(커서 아래 이미지 좌표·픽셀 값, 이미지 크기·줌 배율) 표시 여부 — 기본 true. false 면 그 행을 접어 <b>자리도 차지하지 않는다</b>
+    /// (영상 영역이 그 높이까지 내려온다). 바인딩·스타일 세터로 줄 수 있다. 썸네일·다분할 화면처럼 줄 하나가 아까운 자리용이다.
+    /// 상태 줄은 표시 전용이라 감춰도 다른 동작(탐침·줌·메뉴)은 그대로다. 비공개 요소를 리플렉션으로 접던 우회는 이 속성으로 바꾼다.</summary>
+    public bool IsStatusBarVisible
+    {
+        get => (bool)GetValue(IsStatusBarVisibleProperty);
+        set => SetValue(IsStatusBarVisibleProperty, value);
+    }
+
     public static readonly DependencyProperty ToolbarDockProperty = DependencyProperty.Register(
         nameof(ToolbarDock), typeof(Dock), typeof(CvDispCtrl),
         new PropertyMetadata(Dock.Top, (d, e) => ((CvDispCtrl)d).ApplyToolbarDock((Dock)e.NewValue)));

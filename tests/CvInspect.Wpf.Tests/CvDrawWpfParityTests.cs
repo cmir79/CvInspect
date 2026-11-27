@@ -219,4 +219,40 @@ public class CvDrawWpfParityTests(ITestOutputHelper output)
         var e = (EllipseGeometry)dot.Geometry;
         Assert.True(dot.Pen is null && e.Center == new Point(5, 6) && e.RadiusX == 4.5 && e.RadiusY == 4.5, "a dot is a pen-less filled circle");
     });
+
+    [Fact]
+    public void AdapterDrawsATintAsOneEvenOddFigureOfCountPoints() => RunSta(() =>
+    {
+        // 반투명 채움 — 점 배열은 테두리와 나눠 쓰는 풀 배열이라 Count 보다 길다. 남는 칸(멀리 떨어진 점)을 그리면 채움이 엉뚱한 삼각형으로 번진다.
+        var red = ViPaint.Of(ViOverlayColor.Red);
+        var cyan = ViPaint.Of(ViOverlayColor.Cyan);
+        (double X, double Y)[] pooled = [(0, 0), (20, 0), (20, 20), (500, 500)];
+        var prims = new List<ViPrim>
+        {
+            new ViPrimTint(red, 64, pooled, 3),
+            new ViPrimTint(red, 64, [(30, 0), (40, 0), (40, 10)], 3),
+            new ViPrimTint(cyan, 64, [(50, 0), (60, 0), (60, 10)], 3),
+        };
+        var dv = new DrawingVisual();
+        using (var dc = dv.RenderOpen()) CvDispDrawAdp.Draw(dc, prims, 1.0);
+        var tints = Flatten(dv.Drawing).OfType<GeometryDrawing>().ToList();
+        Assert.Equal(3, tints.Count);
+
+        var first = tints[0];
+        Assert.True(first.Pen is null, "a tint has no outline — the outline is its own path primitive");
+        Assert.True(first.Geometry is StreamGeometry { FillRule: FillRule.EvenOdd }, "a tint fills even-odd (the documented render rule) — set explicitly so both UI packages draw the same picture");
+        var fig = PathGeometry.CreateFromGeometry(first.Geometry).Figures.Single();
+        Assert.True(fig.IsFilled && fig.IsClosed && fig.Segments.All(s => !s.IsStroked), "a tint is one filled, closed figure with unstroked segments");
+        var pts = new[] { fig.StartPoint }.Concat(fig.Segments.OfType<PolyLineSegment>().SelectMany(s => s.Points))
+            .Concat(fig.Segments.OfType<LineSegment>().Select(s => s.Point)).ToList();
+        Assert.True(pts.Count == 3 && !pts.Contains(new Point(500, 500)),
+            $"only the first Count points of the pooled array are drawn — the trailing far point must not stretch the fill (got {pts.Count} points)");
+        Assert.True(first.Brush is SolidColorBrush { Color: { A: 64, R: 255, G: 0, B: 0 } },
+            "the brush is the opaque named colour with the alpha byte as its alpha (no Opacity)");
+        Assert.True(first.Brush.Opacity == 1, "the alpha is in the colour, not deferred to the brush opacity");
+
+        // 브러시는 이 호출 안에서 (색, 알파) 끼리 하나 — 다른 색은 다른 브러시(대조).
+        Assert.True(ReferenceEquals(tints[0].Brush, tints[1].Brush), "two tints of the same colour and alpha share one brush within a draw call");
+        Assert.False(ReferenceEquals(tints[0].Brush, tints[2].Brush), "a tint of another colour gets its own brush");
+    });
 }

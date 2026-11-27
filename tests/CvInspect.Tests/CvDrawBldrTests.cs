@@ -55,6 +55,7 @@ public class CvDrawBldrTests
         ViPrimLine => "Line",
         ViPrimPath => "Path",
         ViPrimFill => "Fill",
+        ViPrimTint => "Tint",
         ViPrimBox => "Box",
         ViPrimDot => "Dot",
         ViPrimText => "Text",
@@ -292,6 +293,96 @@ public class CvDrawBldrTests
 
         var openThree = Overlay(view, 1, false, 100, 100, new ViOverlayPoly { Points = [(1, 1), (20, 5), (10, 30)], IsClosed = false });
         Assert.False(((ViPrimPath)openThree[0]).IsClosed, "an open polyline stays open whatever its point count");
+    }
+
+    // ───────────── 반투명 채움(FillOpacity, 0.36) ─────────────
+    // 렌더 규칙은 ViOverlayRect.FillOpacity 문서가 정본이다 — 호스트의 자기 렌더러가 그 글을 보고 같은 그림을 낸다. 여기는 목록이 그 글대로인지 본다.
+
+    /// <summary>테두리 경로 둘이 값까지 같은가 — 채움이 붙어도 테두리는 0.35 와 같아야 한다(순서·값이 곧 화면이다).</summary>
+    private static void SamePath(ViPrimPath want, ViPrimPath got, string why)
+    {
+        Assert.True(want.Stroke == got.Stroke && want.Count == got.Count && want.IsClosed == got.IsClosed && want.IsPooled == got.IsPooled,
+            $"{why} — stroke/count/closed/pooled ({want.Stroke},{want.Count},{want.IsClosed},{want.IsPooled} vs {got.Stroke},{got.Count},{got.IsClosed},{got.IsPooled})");
+        for (var i = 0; i < want.Count; i++) NearPt(want.Points[i], got.Points[i], $"{why} — point {i}", 0);
+    }
+
+    [Fact]
+    public void FilledRectEmitsTheTintBeforeAnUnchangedOutline()
+    {
+        var view = new CvViewXform(2, 10, 20);
+        ViOverlayRect R(double fill) => new()
+        {
+            CenterX = 50, CenterY = 40, Width = 20, Height = 10, AngleDeg = 30, Color = ViOverlayColor.Orange, IsDashed = true, StrokeScale = 1.5, FillOpacity = fill,
+        };
+        var plain = Overlay(view, 1, false, 100, 100, R(0));
+        Seq(plain, "Path", "opacity 0 is the 0.35 list exactly — no tint primitive, so the screen is byte-identical to an item without FillOpacity");
+        var filled = Overlay(view, 1, false, 100, 100, R(0.4));
+        Seq(filled, "Tint Path", "the fill comes first and the outline after it — every named colour is opaque, so order cannot change a fully covered outline pixel; fill then outline fixes the anti-aliased edge pixels and gives host renderers one order to reproduce");
+        var tint = (ViPrimTint)filled[0];
+        Assert.True(tint.Alpha == 102, $"alpha = round(0.4 x 255) = 102 (got {tint.Alpha})");
+        Assert.True(IsNamed(tint.Paint, ViOverlayColor.Orange), "the fill takes the item colour; the adapter maps the named colour and applies the alpha");
+        var path = (ViPrimPath)filled[1];
+        SamePath((ViPrimPath)plain[0], path, "the outline with a fill is the same primitive as without one");
+        Assert.True(tint.Count == 4, $"the rect fill is the four corners (got {tint.Count})");
+        for (var i = 0; i < 4; i++)
+            NearPt(path.Points[i], tint.Points[i], "the fill area is the outline's centre path, rotation included — the same four corners", 0);
+    }
+
+    [Theory]
+    [InlineData(double.NaN, 0)]
+    [InlineData(-0.5, 0)]
+    [InlineData(double.NegativeInfinity, 0)]
+    [InlineData(0.001, 0)]          // 0.255 → 0 — 알파 0 은 그리지 않는다
+    [InlineData(0.002, 1)]          // 0.51 → 1
+    [InlineData(0.5, 128)]          // 127.5 → 128 (0.5 는 위로 — 짝수 반올림이면 128 이라 아래 줄이 그 갈래를 가린다)
+    [InlineData(2.5 / 255, 3)]      // 2.5 → 3 (짝수 반올림이면 2 — 문서의 AwayFromZero 가 여기서 갈린다)
+    [InlineData(1.0, 255)]
+    [InlineData(1.7, 255)]
+    [InlineData(double.PositiveInfinity, 255)]
+    public void FillOpacityIsClampedAndRoundedToAnAlphaByte(double opacity, int alpha)
+    {
+        var view = new CvViewXform(1, 0, 0);
+        var dst = Overlay(view, 1, false, 100, 100, new ViOverlayRect { CenterX = 50, CenterY = 50, Width = 20, Height = 20, FillOpacity = opacity });
+        if (alpha == 0)
+        {
+            Seq(dst, "Path", $"opacity {opacity} resolves to alpha 0 (NaN/negative -> 0, tiny -> rounds to 0), so no tint is emitted and nothing throws");
+            return;
+        }
+        Seq(dst, "Tint Path", $"opacity {opacity} draws a fill");
+        var got = ((ViPrimTint)dst[0]).Alpha;
+        Assert.True(got == alpha, $"opacity {opacity} -> alpha {alpha} (clamp to [0,1], then round half away from zero of v x 255), got {got}");
+    }
+
+    [Fact]
+    public void ClosedPolyFillsAndOpenPolyIgnoresFillOpacity()
+    {
+        var view = new CvViewXform(2, 5, 5);
+        (double X, double Y)[] pts = [(1, 1), (20, 5), (10, 30), (2, 18)];
+        var closedPlain = Overlay(view, 1, false, 100, 100, new ViOverlayPoly { Points = pts, IsClosed = true, Color = ViOverlayColor.Cyan });
+        var closed = Overlay(view, 1, false, 100, 100, new ViOverlayPoly { Points = pts, IsClosed = true, Color = ViOverlayColor.Cyan, FillOpacity = 0.25 });
+        Seq(closed, "Tint Path", "a closed poly with a fill draws the fill then its outline");
+        var tint = (ViPrimTint)closed[0];
+        var path = (ViPrimPath)closed[1];
+        Assert.True(tint.Alpha == 64 && IsNamed(tint.Paint, ViOverlayColor.Cyan), $"round(0.25 x 255) = 64 in the item colour (got {tint.Alpha})");
+        // Clear 는 IsPooled 인 ViPrimPath 의 배열만 풀에 돌려준다 — 채움(ViPrimTint)은 돌려주지 않으므로, 같은 배열을 나눠 쓰면 반환은 한 번이다.
+        Assert.True(tint.Count == 4 && ReferenceEquals(tint.Points, path.Points),
+            "the fill shares the outline's screen points — the same centre path, and the pooled array is returned once by the outline");
+        SamePath((ViPrimPath)closedPlain[0], path, "the closed poly outline is unchanged by the fill");
+
+        var open = Overlay(view, 1, false, 100, 100, new ViOverlayPoly { Points = pts, IsClosed = false, FillOpacity = 0.9 });
+        Seq(open, "Path", "an open polyline has no inside, so FillOpacity is ignored (documented)");
+        var two = Overlay(view, 1, false, 100, 100, new ViOverlayPoly { Points = [(1, 1), (20, 5)], IsClosed = true, FillOpacity = 0.9 });
+        Seq(two, "Path", "two points do not close, so there is no area to fill");
+    }
+
+    [Fact]
+    public void TintFollowsTheClipLikeItsOutline()
+    {
+        var view = new CvViewXform(1, 0, 0);
+        var dst = Overlay(view, 1, true, 100, 100,
+            new ViOverlayRect { CenterX = 95, CenterY = 50, Width = 20, Height = 20, FillOpacity = 0.5 },
+            new ViOverlayLabel { Text = "OK", FontSize = 10, Align = ViOverlayAlign.TopLeft, IsHud = true });
+        Seq(dst, "Push Tint Path Pop Box Text", "with ClipOverlayToImage the fill is inside the image clip together with its outline; the HUD stays outside");
     }
 
     // ───────────── 편집 도형 ─────────────

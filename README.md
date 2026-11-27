@@ -77,7 +77,20 @@ same code runs on factory lines today. What it does differently from "OpenCV plu
   and lines as data in `ViOverlayLabel.Hud`) put back in its corner
   (on `CvDispCtrl`, turn on `ClipOverlayToImage` for that view). Items are init-only; each type has a
   copy constructor, so a changed copy names only what changes —
-  `new ViOverlayLabel(label) { FontSize = label.FontSize * 1.5f }` — and keeps up when a property is added
+  `new ViOverlayLabel(label) { FontSize = label.FontSize * 1.5f }` — and keeps up when a property is added.
+  `ViOverlayRect.FillOpacity` and `ViOverlayPoly.FillOpacity` (0 by default = no fill; since 0.36) add a
+  translucent fill in the item's `Color`, e.g. one rect per cell of a heat map. The display controls, their
+  save-with-graphics and `RenderWithOverlay` all draw it by this rule — follow it to get the same picture
+  from your own renderer:
+  - NaN and negative values mean 0, values above 1 mean 1; alpha = `Math.Round(v * 255, MidpointRounding.AwayFromZero)`.
+    An alpha of 0 draws no fill (the picture is the same as without the property).
+  - The fill is drawn first, then the outline, which is exactly as without a fill (same colour, width and dash).
+  - The fill area is the outline's centre path: the four corners of the rect with its rotation applied, or the
+    polygon's points closed back to the first. It is neither grown nor shrunk by the line width.
+    A self-intersecting polygon is filled even-odd (GDI+ `FillPolygon`'s default `Alternate`).
+  - Only closed polygons fill: an open polyline (`IsClosed = false`) or one with fewer than 3 points ignores the value.
+  - Fills are blended source-over in list order, so overlapping fills get darker where they overlap.
+  - There is no fill-only mode; the outline is always drawn. `CropTo` and the copy constructors carry the value.
 
 Companion packages keep this core platform-neutral: **CvInspect.Wpf** (WPF display control,
 shape dragging, property editor), **CvInspect.Avalonia** (the same display control and property

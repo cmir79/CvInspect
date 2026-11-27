@@ -290,6 +290,7 @@ public sealed partial class CvDispCtrl : Grid
         // 속성 콜백은 값이 바뀔 때만 돈다 — 기본값 그대로인 구성의 메뉴·안내 문구 상태를 여기서 한 번 잡아 둔다.
         ApplyMenuGroups();
         _toolbarBorder.IsVisible = IsToolbarVisible;
+        _statusBorder.IsVisible = IsStatusBarVisible;
 
         // 색 — 요소가 다 만들어진 뒤에. 슬롯을 묶는 순간 현재 값이 들어와 콜백이 돈다.
         ApplyTheme();

@@ -1563,12 +1563,13 @@ public class CvDispCtrlRenderTests
         style.Setters.Add(new Setter(CvDispCtrl.IsRunningProperty, true));
         style.Setters.Add(new Setter(CvDispCtrl.ContinuousCommandProperty, counting));
         style.Setters.Add(new Setter(CvDispCtrl.StopCommandProperty, counting));
+        style.Setters.Add(new Setter(CvDispCtrl.IsStatusBarVisibleProperty, false));
         app.Styles.Add(style);
         try
         {
             CvDispCtrl? ctrl = null;
             var ex = Record.Exception(() => ctrl = new CvDispCtrl());
-            Check(ex is null, $"constructing under an application style that sets the colors, ToolbarDock, IsCamControlVisible, IsRunning and the commands does not throw: {ex}");
+            Check(ex is null, $"constructing under an application style that sets the colors, ToolbarDock, IsCamControlVisible, IsRunning, the commands and IsStatusBarVisible does not throw: {ex}");
             Check(ctrl!.ToolbarDock == Dock.Top, $"the application style is not applied inside the constructor — only when the control joins the tree (dock={ctrl.ToolbarDock})");
             var shot = Shoot(ctrl);
             var play = FindToggle(ctrl, "Play / Stop")!;
@@ -1577,6 +1578,8 @@ public class CvDispCtrlRenderTests
             Check(commandRuns == 0, $"applying the style runs no command: {commandRuns}");
             var tb = shot.At((int)(2 * shot.S), shot.H / 3);
             Check(tb == bar, $"the left-docked toolbar shows the style color: {tb} (want {bar})");
+            Check(!ctrl.IsStatusBarVisible && ctrl.Surface.Bounds.Height == VH,
+                $"the styled IsStatusBarVisible collapses the status row — with the toolbar docked left the surface gets the full height ({ctrl.Surface.Bounds.Height} of {VH})");
         }
         finally { app.Styles.Remove(style); }
     }
